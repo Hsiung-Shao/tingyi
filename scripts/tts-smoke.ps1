@@ -19,7 +19,9 @@ if (-not $NoWait) {
         try {
             $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -UseBasicParsing -TimeoutSec 2
             if ($r.StatusCode -eq 200) { $ready = $true; break }
-        } catch { }
+        } catch {
+            # llama-server 載入模型期間連線被拒或回 503 都屬預期,忽略後繼續輪詢
+        }
         Start-Sleep -Milliseconds 500
     }
     if (-not $ready) { Write-Host "llama-server 在 $MaxWaitSec 秒內未就緒,仍繼續唸"; }

@@ -26,11 +26,13 @@ export default function App() {
   const [glossaryText, setGlossaryText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
+  // get_info 只是狀態列資訊,失敗(例如後端尚未就緒)不影響操作,10 秒後會再查,故不報錯。
   const refreshInfo = () => invoke<Info>("get_info").then(setInfo).catch(() => {});
   const autostarted = useRef(false);
 
   useEffect(() => {
-    // 開發用自動開始(TINGYI_AUTOSTART=1)
+    // 開發用自動開始(TINGYI_AUTOSTART=1):只在 autostart 旗標首次為 true 時觸發一次;
+    // 刻意不把 start / info 放進依賴,否則每次 info 刷新都會重跑這個 effect。
     if (info?.autostart && !info.running && !autostarted.current) {
       autostarted.current = true;
       void start();
