@@ -21,7 +21,7 @@ export default function App() {
   const [model, setModel] = useState<string>("Hy-MT2-1.8B-Q8_0");
   const [translate, setTranslate] = useState(true);
   const [lang, setLang] = useState<LangOpt>("auto");
-  const [mode, setMode] = useState<OverlayMode>("bilingual");
+  const [mode, setMode] = useState<OverlayMode>("translation");
   const [unlocked, setUnlocked] = useState(false);
   const [glossaryText, setGlossaryText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);

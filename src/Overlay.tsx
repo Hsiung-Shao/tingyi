@@ -4,34 +4,30 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSubtitles } from "./lib/useSubtitles";
 import type { OverlayMode } from "./lib/types";
 
-const SHOW_COUNT = 2;
-const MIN_STAY_MS = 3000;
+// 使用者回饋(2026-10-06):同時只顯示一句譯文與灰字預覽,畫面最乾淨。
+const SHOW_COUNT = 1;
 
 export default function Overlay() {
   const { sentences, partial } = useSubtitles();
-  const [mode, setMode] = useState<OverlayMode>("bilingual");
+  const [mode, setMode] = useState<OverlayMode>("translation");
   const [interactive, setInteractive] = useState(false);
-  const [, tick] = useState(0);
 
   useEffect(() => {
     const a = listen<string>("overlay-mode", (e) => setMode(e.payload as OverlayMode));
     const b = listen<boolean>("overlay-interactive", (e) => setInteractive(e.payload));
-    const t = setInterval(() => tick((x) => x + 1), 500);
     return () => {
       a.then((f) => f());
       b.then((f) => f());
-      clearInterval(t);
     };
   }, []);
 
-  // 顯示最近 2 句;最新一句未滿 3 秒時不把更早的擠掉(保留 3 句上限避免跳動)。
+  // 只顯示最近一句(優先顯示已有譯文的那句:新句還在等譯文時,保留上一句譯文不要閃成空白)。
   const visible = useMemo(() => {
-    const now = Date.now();
     const recent = sentences.slice(-SHOW_COUNT - 1);
     if (recent.length > SHOW_COUNT) {
       const newest = recent[recent.length - 1];
-      if (now - newest.at < MIN_STAY_MS) return recent;
-      return recent.slice(-SHOW_COUNT);
+      const hasText = newest.translation.length > 0 || newest.state === "no_translate";
+      return hasText ? [newest] : [recent[recent.length - 2]];
     }
     return recent;
   }, [sentences]);
