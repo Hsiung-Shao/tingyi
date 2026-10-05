@@ -3,10 +3,12 @@
 # 用法:
 #   powershell -ExecutionPolicy Bypass -File scripts\download-models.ps1            # 必要項目
 #   powershell -ExecutionPolicy Bypass -File scripts\download-models.ps1 -With7B    # 加 7B
+#   ... -WithWhisper  加 Whisper large-v3-turbo q8 模型(執行檔需 scriptsuild-whisper.ps1 自行編譯)
 #   ... -ListOnly  只列清單不下載
 param(
     [switch]$With7B,
     [switch]$With1_8B_Q4,
+    [switch]$WithWhisper,
     [switch]$ListOnly
 )
 
@@ -33,6 +35,10 @@ $items = @(
 if ($With1_8B_Q4) {
     $items += @{ Name = 'Hy-MT2-1.8B-Q4_K_M.gguf'; Size = '1.13 GB'; Dest = (Join-Path $models 'Hy-MT2-1.8B-Q4_K_M.gguf');
        Url = 'https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf'; Source = 'tencent/Hy-MT2-1.8B-GGUF (Hugging Face)' }
+}
+if ($WithWhisper) {
+    $items += @{ Name = 'ggml-large-v3-turbo-q8_0.bin'; Size = '874 MB'; Dest = (Join-Path $models 'ggml-large-v3-turbo-q8_0.bin');
+       Url = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin'; Source = 'ggerganov/whisper.cpp (Hugging Face, MIT);執行檔請另跑 scriptsuild-whisper.ps1' }
 }
 if ($With7B) {
     $items += @{ Name = 'Hy-MT2-7B-Q4_K_M.gguf'; Size = '4.62 GB'; Dest = (Join-Path $models 'Hy-MT2-7B-Q4_K_M.gguf');

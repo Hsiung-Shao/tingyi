@@ -16,7 +16,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber};
+use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
+
+/// 段落正式辨識用的引擎;即時預覽一律用 SenseVoice。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsrEngine {
+    SenseVoice,
+    /// 需要已啟動的 whisper-server(見 `llama::WhisperServerProcess`)。
+    Whisper { base_url: String },
+}
 use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
 use crate::metrics::{SentenceTiming, TimingSnapshot};
@@ -71,6 +79,7 @@ pub struct PipelineConfig {
     pub capture: CaptureConfig,
     pub vad: VadConfig,
     pub asr: SenseVoiceConfig,
+    pub asr_engine: AsrEngine,
     /// 允許的來源語言;空集合 = 全部允許。
     pub allowed_langs: HashSet<Lang>,
     /// 使用者鎖定語言(覆蓋自動偵測)。
@@ -107,6 +116,7 @@ impl Default for PipelineConfig {
             capture: CaptureConfig::default(),
             vad: VadConfig::default(),
             asr: SenseVoiceConfig::default(),
+            asr_engine: AsrEngine::SenseVoice,
             allowed_langs: [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect(),
             lock_lang: None,
             glossary: Glossary::default(),
@@ -166,14 +176,22 @@ pub fn start(
 ) -> Result<PipelineHandle> {
     let stop = Arc::new(AtomicBool::new(false));
 
-    // 先載模型,失敗就直接回錯,不啟動擷取。
-    let asr = SenseVoice::new(&cfg.asr)?;
+    // 先載模型,失敗就直接回錯,不啟動擷取。預覽永遠用 SenseVoice;正式辨識依設定。
+    let preview_asr = SenseVoice::new(&cfg.asr)?;
+    let final_asr: Box<dyn Transcriber> = match &cfg.asr_engine {
+        AsrEngine::SenseVoice => Box::new(SenseVoice::new(&cfg.asr)?),
+        AsrEngine::Whisper { base_url } => Box::new(WhisperServer::new(WhisperServerConfig {
+            base_url: base_url.clone(),
+            language: cfg.lock_lang,
+            ..Default::default()
+        })),
+    };
     let segmenter = Segmenter::new(&cfg.vad)?;
     if let Some(d) = &cfg.record_dir {
         std::fs::create_dir_all(d).map_err(|e| anyhow!("建立錄音目錄 {}: {e}", d.display()))?;
     }
     let _ = events.send(PipelineEvent::Status {
-        message: format!("模型載入完成:{}", asr.name()),
+        message: format!("模型載入完成:{}(預覽 {})", final_asr.name(), preview_asr.name()),
     });
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
@@ -187,7 +205,7 @@ pub fn start(
         let cfg = cfg.clone();
         std::thread::Builder::new()
             .name("tingyi-worker".into())
-            .spawn(move || worker_loop(cfg, segmenter, asr, audio_rx, utt_tx, events, stop))
+            .spawn(move || worker_loop(cfg, segmenter, final_asr, preview_asr, audio_rx, utt_tx, events, stop))
             .map_err(|e| anyhow!("spawn worker: {e}"))?
     };
 
@@ -205,10 +223,12 @@ pub fn start(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker_loop(
     cfg: PipelineConfig,
     mut segmenter: Segmenter,
-    asr: SenseVoice,
+    asr: Box<dyn Transcriber>,
+    preview_asr: SenseVoice,
     audio_rx: crossbeam_channel::Receiver<AudioChunk>,
     utt_tx: mpsc::UnboundedSender<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
@@ -314,7 +334,7 @@ fn worker_loop(
                             } else {
                                 cur
                             };
-                            if let Ok(t) = asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
+                            if let Ok(t) = preview_asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
                                 if !t.text.is_empty() {
                                     preview_shown = true;
                                     let _ = events.send(PipelineEvent::Partial {

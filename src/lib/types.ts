@@ -68,6 +68,7 @@ export interface Info {
   autostart: boolean;
   /// 依顯示記憶體與已下載檔案建議的翻譯模型
   recommended_model: string;
+  asr_engines: { id: string; label: string; present: boolean; note: string }[];
 }
 
 export type OverlayMode = "bilingual" | "translation";

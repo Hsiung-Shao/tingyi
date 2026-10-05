@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tingyi_core::asr::Lang;
-use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec};
+use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec, WhisperServerProcess, WhisperServerSpec};
+use tingyi_core::pipeline::AsrEngine;
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
 use tingyi_core::pipeline::{self, PipelineConfig};
 use tingyi_core::postprocess::{Glossary, GlossaryEntry};
@@ -29,6 +30,16 @@ pub struct Info {
     pub autostart: bool,
     /// 依顯示記憶體與已下載檔案建議的翻譯模型。
     pub recommended_model: String,
+    /// 可用的辨識引擎。
+    pub asr_engines: Vec<AsrEngineInfo>,
+}
+
+#[derive(Serialize)]
+pub struct AsrEngineInfo {
+    pub id: String,
+    pub label: String,
+    pub present: bool,
+    pub note: String,
 }
 
 /// 總顯示記憶體 ≥ 8 GB 且 7B 檔存在 → 7B Q4;≥ 4 GB → 1.8B Q8;否則 1.8B Q4。
@@ -68,11 +79,31 @@ pub fn get_info(state: State<'_, AppState>) -> Info {
         .collect();
     let gpu_info = gpu::nvidia_info();
     let recommended_model = recommend_model(gpu_info.as_ref().map(|g| g.1));
+    let whisper_present = paths::whisper_server_exe().exists() && paths::whisper_model().exists();
+    let asr_engines = vec![
+        AsrEngineInfo {
+            id: "sensevoice".into(),
+            label: "SenseVoice-Small(CPU,快)".into(),
+            present: paths::sensevoice_model().exists(),
+            note: "預設;不佔顯示記憶體".into(),
+        },
+        AsrEngineInfo {
+            id: "whisper-turbo".into(),
+            label: "Whisper large-v3-turbo(GPU,準)".into(),
+            present: whisper_present,
+            note: if whisper_present {
+                "顯示記憶體約 +1.5 GB;預覽仍用 SenseVoice".into()
+            } else {
+                "需先執行 scripts/build-whisper.ps1 並下載模型".into()
+            },
+        },
+    ];
     Info {
         data_dir: paths::data_dir().display().to_string(),
         device: tingyi_core::audio::capture::default_render_device_name().ok(),
         gpu: gpu_info,
         recommended_model,
+        asr_engines,
         gpu_used_mib: gpu::nvidia_used_mib(),
         models,
         sensevoice_ready: paths::sensevoice_model().exists() && paths::sensevoice_tokens().exists(),
@@ -87,6 +118,8 @@ pub fn get_info(state: State<'_, AppState>) -> Info {
 pub struct StartOptions {
     /// 翻譯模型名稱;None 或空字串 = 只辨識不翻譯。
     pub model: Option<String>,
+    /// 辨識引擎:"sensevoice"(預設)或 "whisper-turbo"。
+    pub asr_engine: Option<String>,
     /// 鎖定來源語言 en/ja/ko;None = 自動(限 en/ja/ko)。
     pub lang: Option<String>,
     pub glossary: Option<Vec<GlossaryEntry>>,
@@ -164,8 +197,38 @@ pub async fn start_session(
         translator = Some(Arc::new(tr));
     }
 
-    // 2. 管線
+    // 1b. Whisper 辨識引擎(可選)
     let mut cfg = PipelineConfig::default();
+    if opts.asr_engine.as_deref() == Some("whisper-turbo") {
+        emit_status("啟動 whisper-server(large-v3-turbo)…");
+        let wport = port + 1;
+        let mut spec = WhisperServerSpec::new(paths::whisper_model(), wport);
+        spec.log_file = Some(paths::data_dir().join("whisper-server.log"));
+        let before = gpu::nvidia_used_mib();
+        let wp = tokio::task::spawn_blocking(move || -> anyhow::Result<WhisperServerProcess> {
+            let mut p = WhisperServerProcess::spawn(spec)?;
+            p.wait_ready_blocking(Duration::from_secs(120))?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            if let Some(mut s) = state.server.lock().unwrap().take() {
+                s.shutdown();
+            }
+            format!("{e:#}")
+        })?;
+        let after = gpu::nvidia_used_mib();
+        if let (Some(a), Some(b)) = (before, after) {
+            emit_status(&format!("whisper-server 就緒,顯示記憶體 +{} MiB", b.saturating_sub(a)));
+        }
+        cfg.asr_engine = AsrEngine::Whisper {
+            base_url: wp.base_url(),
+        };
+        *state.whisper.lock().unwrap() = Some(wp);
+    }
+
+    // 2. 管線
     cfg.lock_lang = opts.lang.as_deref().and_then(parse_lang);
     if cfg.lock_lang.is_some() {
         cfg.allowed_langs = HashSet::new();
@@ -193,6 +256,9 @@ pub async fn start_session(
             if let Some(mut s) = state.server.lock().unwrap().take() {
                 s.shutdown();
             }
+            if let Some(mut w) = state.whisper.lock().unwrap().take() {
+                w.shutdown();
+            }
             return Err(e);
         }
     };
@@ -218,6 +284,10 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     }
     if let Some(f) = state.forwarder.lock().unwrap().take() {
         f.abort();
+    }
+    let whisper = state.whisper.lock().unwrap().take();
+    if let Some(mut w) = whisper {
+        let _ = tokio::task::spawn_blocking(move || w.shutdown()).await;
     }
     let server = state.server.lock().unwrap().take();
     if let Some(mut s) = server {

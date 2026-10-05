@@ -175,3 +175,156 @@ impl Drop for LlamaServerProcess {
         self.shutdown();
     }
 }
+
+/// 對 `127.0.0.1:port` 發 GET,只要收到任何 HTTP 回應就算 listen 中(whisper-server 沒有 /health,
+/// 模型載入期間尚未開 listen,開了就代表就緒)。
+pub fn http_responding(port: u16, path: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    if s.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 16];
+    matches!(s.read(&mut buf), Ok(n) if n >= 8 && buf.starts_with(b"HTTP/"))
+}
+
+/// whisper.cpp 的 whisper-server 子程序設定。
+#[derive(Debug, Clone)]
+pub struct WhisperServerSpec {
+    pub exe: PathBuf,
+    pub model: PathBuf,
+    pub port: u16,
+    pub threads: u32,
+    /// 預設語言;每次請求可用 multipart `language` 覆蓋。
+    pub language: String,
+    pub extra_args: Vec<String>,
+    pub log_file: Option<PathBuf>,
+}
+
+impl WhisperServerSpec {
+    pub fn new(model: PathBuf, port: u16) -> Self {
+        Self {
+            exe: crate::paths::whisper_server_exe(),
+            model,
+            port,
+            threads: 4,
+            language: "auto".into(),
+            extra_args: vec![],
+            log_file: None,
+        }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+pub struct WhisperServerProcess {
+    child: Child,
+    spec: WhisperServerSpec,
+    started_at: Instant,
+}
+
+impl WhisperServerProcess {
+    pub fn spawn(spec: WhisperServerSpec) -> Result<Self> {
+        if !spec.exe.exists() {
+            return Err(anyhow!("找不到 whisper-server:{}(請執行 scripts/build-whisper.ps1)", spec.exe.display()));
+        }
+        if !spec.model.exists() {
+            return Err(anyhow!("找不到 Whisper 模型:{}", spec.model.display()));
+        }
+        let mut cmd = Command::new(&spec.exe);
+        cmd.arg("-m")
+            .arg(&spec.model)
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(spec.port.to_string())
+            .arg("-t")
+            .arg(spec.threads.to_string())
+            .arg("-l")
+            .arg(&spec.language)
+            .arg("-nt")
+            .args(&spec.extra_args)
+            .current_dir(spec.exe.parent().unwrap_or(Path::new(".")))
+            .stdin(Stdio::null());
+        match &spec.log_file {
+            Some(p) => {
+                let f = std::fs::File::create(p)
+                    .with_context(|| format!("建立 log {}", p.display()))?;
+                let f2 = f.try_clone()?;
+                cmd.stdout(Stdio::from(f)).stderr(Stdio::from(f2));
+            }
+            None => {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let child = cmd.spawn().context("spawn whisper-server")?;
+        tracing::info!(
+            "whisper-server 啟動 pid={} model={} port={}",
+            child.id(),
+            spec.model.display(),
+            spec.port
+        );
+        Ok(Self {
+            child,
+            spec,
+            started_at: Instant::now(),
+        })
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn base_url(&self) -> String {
+        self.spec.base_url()
+    }
+
+    pub fn wait_ready_blocking(&mut self, max_wait: Duration) -> Result<Duration> {
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Err(anyhow!("whisper-server 提前結束:{status}"));
+            }
+            if http_responding(self.spec.port, "/") {
+                return Ok(self.started_at.elapsed());
+            }
+            if self.started_at.elapsed() > max_wait {
+                return Err(anyhow!("whisper-server 在 {max_wait:?} 內未就緒"));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    pub fn shutdown(&mut self) -> bool {
+        let _ = self.child.kill();
+        for _ in 0..25 {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => return false,
+            }
+        }
+        tracing::warn!("whisper-server pid={} kill 後 2.5 秒仍存活", self.pid());
+        false
+    }
+}
+
+impl Drop for WhisperServerProcess {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}

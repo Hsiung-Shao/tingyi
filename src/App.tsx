@@ -20,6 +20,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [model, setModel] = useState<string>("Hy-MT2-1.8B-Q8_0");
   const [translate, setTranslate] = useState(true);
+  const [asrEngine, setAsrEngine] = useState("sensevoice");
   const [lang, setLang] = useState<LangOpt>("auto");
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [unlocked, setUnlocked] = useState(false);
@@ -95,6 +96,7 @@ export default function App() {
       await invoke("start_session", {
         opts: {
           model: translate ? model : null,
+          asr_engine: asrEngine,
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
         },
@@ -162,6 +164,22 @@ export default function App() {
               {info?.models.map((m) => (
                 <option key={m.name} value={m.name} disabled={!m.present}>
                   {m.name} {m.present ? `(${(m.size_mb / 1000).toFixed(1)} GB)` : "(未下載)"} — {m.note}
+                </option>
+              ))}
+            </select>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <label className="text-neutral-400">辨識引擎</label>
+            <select
+              className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 disabled:opacity-50"
+              value={asrEngine}
+              onChange={(e) => setAsrEngine(e.target.value)}
+              disabled={running}
+            >
+              {info?.asr_engines.map((e) => (
+                <option key={e.id} value={e.id} disabled={!e.present}>
+                  {e.label} — {e.note}
                 </option>
               ))}
             </select>

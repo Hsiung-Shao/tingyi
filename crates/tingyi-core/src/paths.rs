@@ -83,6 +83,16 @@ pub fn llama_server_exe() -> PathBuf {
     bin_dir().join("llama").join("llama-server.exe")
 }
 
+/// whisper-server 執行檔(`scripts/build-whisper.ps1` 產出,放在 `bin/whisper/`)。
+pub fn whisper_server_exe() -> PathBuf {
+    bin_dir().join("whisper").join("whisper-server.exe")
+}
+
+/// Whisper large-v3-turbo q8_0 GGML 模型。
+pub fn whisper_model() -> PathBuf {
+    models_dir().join("ggml-large-v3-turbo-q8_0.bin")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

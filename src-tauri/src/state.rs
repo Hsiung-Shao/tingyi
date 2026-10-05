@@ -1,12 +1,13 @@
 //! 全域狀態:目前的 llama-server 子程序與管線句柄。
 
 use std::sync::Mutex;
-use tingyi_core::llama::LlamaServerProcess;
+use tingyi_core::llama::{LlamaServerProcess, WhisperServerProcess};
 use tingyi_core::pipeline::PipelineHandle;
 
 #[derive(Default)]
 pub struct AppState {
     pub server: Mutex<Option<LlamaServerProcess>>,
+    pub whisper: Mutex<Option<WhisperServerProcess>>,
     pub pipeline: Mutex<Option<PipelineHandle>>,
     pub forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -24,6 +25,11 @@ impl AppState {
         }
         if let Ok(mut s) = self.server.lock() {
             if let Some(mut proc) = s.take() {
+                proc.shutdown();
+            }
+        }
+        if let Ok(mut w) = self.whisper.lock() {
+            if let Some(mut proc) = w.take() {
                 proc.shutdown();
             }
         }

@@ -7,8 +7,10 @@
 ## 架構
 
 ```
-系統音訊(WASAPI loopback)→ 16 kHz mono → Silero VAD 切段
-  → SenseVoice-Small int8(sherpa-onnx,CPU)辨識 + 語言判斷
+系統音訊(WASAPI loopback)→ 16 kHz mono → Silero VAD 切段 → 音量正規化
+  → 辨識:SenseVoice-Small int8(sherpa-onnx,CPU;也負責講話中的即時預覽)
+        或 Whisper large-v3-turbo(whisper-server sidecar,CUDA GPU,選配)
+  → 依語言判斷句子是否說完,未完則等下一段合併
   → Hy-MT2(llama-server sidecar,Vulkan GPU)串流翻譯 + 台灣用語後處理
   → Tauri 2 事件 → React 主視窗(紀錄、指標)+ 懸浮字幕視窗(置頂、透明、滑鼠穿透)
 ```
@@ -19,7 +21,8 @@
 | `crates/tingyi-bench` | 量測 CLI:`devices` / `vad` / `asr` / `asr-file` / `mt` / `live` / `serve` |
 | `src-tauri` | Tauri 2 後端:命令、狀態、事件轉發 |
 | `src` | React 19 + Tailwind 4 前端:`App.tsx` 主視窗、`Overlay.tsx` 懸浮字幕 |
-| `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄 |
+| `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄(`-WithWhisper` 加 Whisper 模型) |
+| `scripts/build-whisper.ps1` | 以 CUDA 自行編譯 whisper.cpp 的 whisper-server(官方無 Windows Vulkan 版;需 CUDA 12.8+、Ninja) |
 | `scripts/tts-smoke.ps1` | 用 Windows TTS 透過喇叭唸句子,自動化測試整條管線 |
 | `scripts/shot-windows.ps1` | 以 PrintWindow 截取 app 各視窗(含被遮住的),驗 UI 用 |
 | `data/`(gitignore) | 模型、llama-server、測試音檔 |
@@ -45,6 +48,8 @@ pnpm tauri dev
 cargo build -p tingyi-bench
 .\target\debug\tingyi-bench.exe devices
 .\target\debug\tingyi-bench.exe asr-file data\test_wavs\en.wav data\test_wavs\ja.wav
+.\target\debug\tingyi-bench.exe asr-file --engine whisper data\test_wavs\ja.wav     # 需先 build-whisper + -WithWhisper
+.\target\debug\tingyi-bench.exe live --seconds 120 --asr whisper --record bench-out\segs --out bench-out\live-whisper.jsonl
 .\target\debug\tingyi-bench.exe mt --sentences docs\bench\sentences-30.tsv --models Hy-MT2-1.8B-Q8_0 Hy-MT2-7B-Q4_K_M --out bench-out\mt.jsonl
 .\target\debug\tingyi-bench.exe live --seconds 180 --model Hy-MT2-1.8B-Q8_0 --out bench-out\live.jsonl
 ```

@@ -85,6 +85,9 @@ enum Cmd {
         /// 關閉送辨識前的音量正規化
         #[arg(long)]
         no_normalize: bool,
+        /// 正式辨識引擎:sensevoice(預設)或 whisper(自動啟動 whisper-server 於 port+1)
+        #[arg(long, default_value = "sensevoice")]
+        asr: String,
     },
     Serve {
         #[arg(long, default_value = "Hy-MT2-1.8B-Q8_0")]
@@ -102,7 +105,52 @@ enum Cmd {
         /// 送辨識前做音量正規化(與不帶旗標比較,做 A/B)
         #[arg(long)]
         normalize: bool,
+        /// 辨識引擎:sensevoice(預設)或 whisper(自動啟動 whisper-server)
+        #[arg(long, default_value = "sensevoice")]
+        engine: String,
     },
+}
+
+/// 建立正式辨識引擎;whisper 時順便啟動 whisper-server(回傳的 process 要活到辨識結束)。
+fn make_engine(
+    engine: &str,
+    threads: i32,
+    lock: Option<Lang>,
+    port: u16,
+) -> Result<(Box<dyn tingyi_core::asr::Transcriber>, Option<tingyi_core::llama::WhisperServerProcess>)> {
+    use tingyi_core::asr::{SenseVoice, SenseVoiceConfig, WhisperServer, WhisperServerConfig};
+    use tingyi_core::llama::{WhisperServerProcess, WhisperServerSpec};
+    match engine {
+        "whisper" => {
+            let before = gpu::nvidia_used_mib();
+            let mut spec = WhisperServerSpec::new(paths::whisper_model(), port);
+            spec.log_file = Some(paths::data_dir().join("whisper-server.log"));
+            let mut p = WhisperServerProcess::spawn(spec)?;
+            let t = p.wait_ready_blocking(Duration::from_secs(120))?;
+            let after = gpu::nvidia_used_mib();
+            println!(
+                "whisper-server 就緒 {:.1}s,顯示記憶體增量 {:?} MiB",
+                t.as_secs_f32(),
+                after.zip(before).map(|(a, b)| a.saturating_sub(b))
+            );
+            let w = WhisperServer::new(WhisperServerConfig {
+                base_url: p.base_url(),
+                language: lock,
+                ..Default::default()
+            });
+            Ok((Box::new(w), Some(p)))
+        }
+        _ => {
+            let t0 = Instant::now();
+            let s = SenseVoice::new(&SenseVoiceConfig {
+                num_threads: threads,
+                language: lock,
+                ..Default::default()
+            })?;
+            println!("SenseVoice 載入 {} ms", t0.elapsed().as_millis());
+            Ok((Box::new(s), None))
+        }
+    }
 }
 
 fn parse_lang(s: &str) -> Result<Lang> {
@@ -141,7 +189,7 @@ async fn main() -> Result<()> {
             out,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
-            run_pipeline(seconds, lock, threads, None, out, None, true).await?;
+            run_pipeline(seconds, lock, threads, None, out, None, true, tingyi_core::pipeline::AsrEngine::SenseVoice).await?;
         }
         Cmd::Mt {
             sentences,
@@ -159,8 +207,18 @@ async fn main() -> Result<()> {
             out,
             record,
             no_normalize,
+            asr,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
+            // whisper 引擎:先啟動 whisper-server(活到量測結束)
+            let mut whisper_proc = None;
+            let mut asr_engine = tingyi_core::pipeline::AsrEngine::SenseVoice;
+            if asr == "whisper" {
+                let (_, p) = make_engine("whisper", 4, lock, port + 1)?;
+                let p = p.expect("whisper process");
+                asr_engine = tingyi_core::pipeline::AsrEngine::Whisper { base_url: p.base_url() };
+                whisper_proc = Some(p);
+            }
             let before = gpu::nvidia_used_mib();
             let mut server = None;
             if !attach {
@@ -191,20 +249,17 @@ async fn main() -> Result<()> {
                     &mut noop,
                 )
                 .await;
-            run_pipeline(seconds, lock, 4, Some(translator), out, record, !no_normalize).await?;
+            run_pipeline(seconds, lock, 4, Some(translator), out, record, !no_normalize, asr_engine).await?;
             if let Some(mut s) = server {
                 println!("關閉 llama-server:{}", if s.shutdown() { "已結束" } else { "未確認" });
             }
+            if let Some(mut w) = whisper_proc {
+                println!("關閉 whisper-server:{}", if w.shutdown() { "已結束" } else { "未確認" });
+            }
         }
-        Cmd::AsrFile { files, lang, threads, normalize } => {
-            use tingyi_core::asr::{SenseVoice, SenseVoiceConfig, Transcriber};
+        Cmd::AsrFile { files, lang, threads, normalize, engine } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
-            let t0 = Instant::now();
-            let asr = SenseVoice::new(&SenseVoiceConfig {
-                num_threads: threads,
-                ..Default::default()
-            })?;
-            println!("SenseVoice 載入 {} ms", t0.elapsed().as_millis());
+            let (asr, _server) = make_engine(&engine, threads, lock, 8179)?;
             for f in files {
                 let w = sherpa_onnx::Wave::read(&f.to_string_lossy())
                     .ok_or_else(|| anyhow!("讀不到 wav:{}", f.display()))?;
@@ -293,6 +348,7 @@ fn run_vad(seconds: u64) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_pipeline(
     seconds: u64,
     lock: Option<Lang>,
@@ -301,11 +357,13 @@ async fn run_pipeline(
     out: Option<PathBuf>,
     record: Option<PathBuf>,
     normalize: bool,
+    asr_engine: tingyi_core::pipeline::AsrEngine,
 ) -> Result<()> {
     let mut cfg = PipelineConfig::default();
     cfg.lock_lang = lock;
     cfg.record_dir = record;
     cfg.normalize_audio = normalize;
+    cfg.asr_engine = asr_engine;
     cfg.asr.num_threads = threads;
     if lock.is_some() {
         cfg.allowed_langs = HashSet::new();
