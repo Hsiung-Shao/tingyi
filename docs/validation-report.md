@@ -123,7 +123,7 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 準確度明顯較好,速度仍遠低於目標;即時預覽維持用 SenseVoice(每秒一次)。
 - 陷阱:multipart 送 `detect_language=true` 會讓 whisper-server **只偵測語言、回空文字**;`language=auto` 本身就會自動偵測並辨識。
 - 陷阱:CMake 的 Visual Studio 產生器需要 CUDA 的 VS 整合(本機沒裝)→ 改 Ninja + vcvars64;本機 CUDA 13.1 目錄只有 stub,實際 nvcc 在 12.8(支援 sm_120)。
-- 待使用者以直播影片實測:快語速日文的錯誤率是否明顯下降。
+- 使用者以直播影片實測(2026-10-06):錯字明顯減少、翻譯也較準。建議有 NVIDIA 卡且顯示記憶體充足時預設 Whisper。
 
 ## 7. 驗證週發現的陷阱
 

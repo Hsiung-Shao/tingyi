@@ -10,7 +10,7 @@
 - [x] D. `pipeline.rs` `AsrEngine` 設定、`final_asr` / `preview_asr` 分離
 - [x] E. Tauri `start_session.asr_engine`、`AppState.whisper`、`get_info.asr_engines`;前端引擎下拉
 - [x] F. bench `live --asr whisper`、`asr-file --engine whisper`;A/B 寫進報告
-- [ ] 驗證:build 產出 exe、curl /inference、cargo test、pnpm build、使用者實測、/handoff-check
+- [x] 驗證:build 產出 exe、curl /inference、cargo test、pnpm build、使用者實測(錯字明顯減少、翻譯較準);/handoff-check 於整批收尾時跑
 
 # 相關檔案
 
@@ -35,4 +35,5 @@
 - [x] `cargo test -p tingyi-core`(21 passed)、`pnpm build`
 - [x] `tingyi-bench asr-file --engine whisper` 五語正確、130–210 ms、+1.2 GB
 - [x] A/B(SenseVoice vs Whisper)寫進 validation-report §6b
-- [ ] 使用者 app 實測切換引擎;`/handoff-check` 全 PASS
+- [x] 使用者 app 實測切換引擎:錯字明顯減少、翻譯較準(2026-10-06)
+- [ ] `/handoff-check` 全 PASS(整批收尾)
