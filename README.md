@@ -21,6 +21,7 @@
 | `src` | React 19 + Tailwind 4 前端:`App.tsx` 主視窗、`Overlay.tsx` 懸浮字幕 |
 | `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄 |
 | `scripts/tts-smoke.ps1` | 用 Windows TTS 透過喇叭唸句子,自動化測試整條管線 |
+| `scripts/shot-windows.ps1` | 以 PrintWindow 截取 app 各視窗(含被遮住的),驗 UI 用 |
 | `data/`(gitignore) | 模型、llama-server、測試音檔 |
 
 ## 環境需求
