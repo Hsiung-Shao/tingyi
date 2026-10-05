@@ -173,7 +173,41 @@ pub fn strip_tags(raw: &str) -> String {
         }
     }
     out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    let joined = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapse_cjk_spaces(&joined)
+}
+
+fn is_cjk_char(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x30FF   // CJK 標點、平假名、片假名
+        | 0x31F0..=0x31FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF // 漢字
+        | 0xAC00..=0xD7AF // 諺文
+        | 0xFF00..=0xFFEF // 全形字元
+    )
+}
+
+/// 移除 CJK 字元之間的空白。
+///
+/// SenseVoice 對語速快的日文常輸出「クレン ゲーム に 行っ た」這種以空白斷開的 token,
+/// 翻譯模型吃到會明顯變差;拉丁字母之間的空白(英文單字)保留。
+pub fn collapse_cjk_spaces(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ' ' {
+            let prev = chars[..i].iter().rev().find(|x| **x != ' ').copied();
+            let next = chars[i + 1..].iter().find(|x| **x != ' ').copied();
+            if let (Some(p), Some(n)) = (prev, next) {
+                if is_cjk_char(p) || is_cjk_char(n) {
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// 字集啟發式語言判斷。
@@ -215,11 +249,21 @@ mod tests {
     fn strips_sensevoice_tags() {
         assert_eq!(
             strip_tags("<|ja|><|NEUTRAL|><|Speech|><|woitn|>今日は いい天気ですね"),
-            "今日は いい天気ですね"
+            "今日はいい天気ですね"
         );
         assert_eq!(strip_tags("<|en|><|HAPPY|><|Laughter|>hello  there"), "hello there");
         assert_eq!(strip_tags("<|BGM|>"), "");
         assert_eq!(strip_tags("no tags"), "no tags");
+    }
+
+    #[test]
+    fn collapses_spaces_between_cjk_only() {
+        assert_eq!(collapse_cjk_spaces("クレン ゲーム に 行っ た 話 とか"), "クレンゲームに行った話とか");
+        assert_eq!(collapse_cjk_spaces("2000 円 ぐらい で 2 個"), "2000円ぐらいで2個");
+        assert_eq!(collapse_cjk_spaces("hello there world"), "hello there world");
+        assert_eq!(collapse_cjk_spaces("Twitter で 見た"), "Twitterで見た");
+        assert_eq!(collapse_cjk_spaces("안녕 하세요 OK then"), "안녕하세요OK then");
+        assert_eq!(strip_tags("<|ja|> 今日 は いい 天気"), "今日はいい天気");
     }
 
     #[test]

@@ -28,10 +28,12 @@ impl Default for VadConfig {
     fn default() -> Self {
         Self {
             model: crate::paths::silero_vad_model(),
+            // 2026-10-06 真實影片實測:0.5 s 靜音在連續對白中很少成立,段落常撞上限才切;
+            // 改 0.35 s / 5 s 讓字幕更快出現(規格書原值 0.5 s / 8 s)。
             threshold: 0.5,
-            min_silence_sec: 0.5,
+            min_silence_sec: 0.35,
             min_speech_sec: 0.25,
-            max_speech_sec: 8.0,
+            max_speech_sec: 5.0,
             window_size: 512,
             pad_ms: 200,
             num_threads: 1,
@@ -163,10 +165,22 @@ impl Segmenter {
 }
 
 /// 斷句合併判斷(規格書):段落很短且無句末標點 → 等下一段合併。
+///
+/// 極短碎片(英文 ≤ 2 個詞、CJK ≤ 3 字)即使帶句號也視為碎片:
+/// SenseVoice 的 ITN 會替「By.」「Mi.」補句號,單獨翻會得到「由於」「米」。
 pub fn is_fragment(text: &str, lang_is_cjk: bool) -> bool {
     let t = text.trim();
     if t.is_empty() {
         return false;
+    }
+    let body: String = t.chars().filter(|c| !c.is_ascii_punctuation() && !"。!?、,…「」".contains(*c)).collect();
+    let tiny = if lang_is_cjk {
+        body.chars().count() <= 3
+    } else {
+        body.split_whitespace().count() <= 2
+    };
+    if tiny {
+        return true;
     }
     if ends_with_terminal_punct(t) {
         return false;
@@ -193,10 +207,13 @@ mod tests {
     fn fragment_rules() {
         assert!(is_fragment("and then", false));
         assert!(!is_fragment("and then we go", false));
-        assert!(!is_fragment("ok.", false));
+        assert!(is_fragment("ok.", false)); // 極短碎片即使有句號也合併
+        assert!(is_fragment("By.", false));
+        assert!(!is_fragment("See you all tomorrow.", false));
         assert!(is_fragment("それで", true));
         assert!(!is_fragment("それでは始めましょう", true));
-        assert!(!is_fragment("そう?", true));
+        assert!(is_fragment("そう?", true)); // ≤ 3 字
+        assert!(is_fragment("好在。", true)); // ≤ 3 字即使有句號也等待合併(逾時 1.5 s 後仍會送出)
         assert!(!is_fragment("", true));
     }
 }

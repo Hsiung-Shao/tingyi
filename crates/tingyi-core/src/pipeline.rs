@@ -10,7 +10,10 @@
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
+static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -165,12 +168,11 @@ fn worker_loop(
     events: mpsc::UnboundedSender<PipelineEvent>,
     stop: Arc<AtomicBool>,
 ) {
-    let mut next_id: u64 = 1;
+    let mut next_id: u64 = 0; // 未使用,保留簽名;實際編號取自 NEXT_SENTENCE_ID
     let mut last_lang: Option<Lang> = None;
 
-    let handle_segment = |seg: Segment, next_id: &mut u64, last_lang: &mut Option<Lang>| {
-        let id = *next_id;
-        *next_id += 1;
+    let handle_segment = |seg: Segment, _next_id: &mut u64, last_lang: &mut Option<Lang>| {
+        let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
         let audio_ms = seg.duration_ms();
         let _ = events.send(PipelineEvent::Segment { id, audio_ms });
         let mut timing = SentenceTiming::new(id, seg.end_at, audio_ms);

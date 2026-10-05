@@ -99,6 +99,8 @@ pub async fn start_session(
     let emit_status = |msg: &str| {
         let _ = app.emit("status", msg.to_string());
     };
+    // 新回合:前端清空上一輪的字幕列表
+    let _ = app.emit("session-start", ());
 
     // 1. 翻譯模型(可選)
     let mut translator: Option<Arc<dyn Translator>> = None;

@@ -10,8 +10,12 @@ interface State {
 
 const MAX_SENTENCES = 500;
 
-function reducer(state: State, ev: PipelineEvent): State {
+type Action = PipelineEvent | { type: "reset" };
+
+function reducer(state: State, ev: Action): State {
   switch (ev.type) {
+    case "reset":
+      return { sentences: [], status: state.status, errors: [] };
     case "status":
       return { ...state, status: ev.message };
     case "error":
@@ -82,8 +86,11 @@ export function useSubtitles() {
   const [state, dispatch] = useReducer(reducer, { sentences: [], status: "", errors: [] });
   useEffect(() => {
     const un = listen<PipelineEvent>("pipeline", (e) => dispatch(e.payload));
+    // 後端每次「開始」都會發 session-start:清掉上一輪的句子,避免新舊編號互相覆蓋
+    const un2 = listen("session-start", () => dispatch({ type: "reset" }));
     return () => {
       un.then((f) => f());
+      un2.then((f) => f());
     };
   }, []);
   return state;
