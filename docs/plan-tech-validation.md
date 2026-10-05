@@ -20,7 +20,7 @@
   - **第一組實測**:llama-server 1.8B Q8 ctx 4096 載入 10 秒,顯示記憶體 +2,161 MiB(4742 − 2581);curl 測一句英文/日文:生成 208 tok/s,冷啟動 prompt 1,545 ms、有快取 15 ms;譯文品質為自然台灣口語
 - [x] 2. 音訊擷取 + VAD:`audio/{mod,capture}.rs`(重取樣用 sherpa-onnx LinearResampler,未另用 rubato;環形緩衝併入 vad.rs history)、`vad.rs`
   - 2026-10-06 live 實測:Razer 喇叭 48 kHz 2ch → 16 kHz mono 正常;TTS 六句被切成 11 段,段長 1.4–3.4 秒
-  - 觀察:第 1 段長 10.3 秒(超過 max_speech 8 s)且開頭含雜音被幻聽成日文假名;待用真實影片再驗
+  - 觀察:第 1 段長 10.3 秒(超過 max_speech 8 s)且開頭含雜音被幻聽成日文假名;第 7 項已用真實影片驗證(見報告 §2:連續對白常撞 8 秒上限)
 - [x] 3. SenseVoice 辨識:`asr.rs`(Transcriber trait、字集啟發式語言判斷、標籤剝除);`tingyi-bench asr-file` 離線回歸
   - 問題:2025-09-09 版是粵語微調 → 改 2024-07-17 原版(見 memory error_sensevoice_2025_09_09_is_cantonese_finetune)
   - 實測:test_wavs 五語全對,RTF ≈ 0.015;live 11 句辨識 p50 52 ms、max 150 ms
