@@ -69,10 +69,70 @@ pub struct Segmenter {
     history_cap: usize,
     /// 目前正在講的這段語音的起點(樣本索引);None = 沒在講話。即時預覽用。
     speech_start: Option<i64>,
+    /// 目前生效的設定(VAD 建立後不能改,要換參數得重建)。
+    cfg: VadConfig,
+    /// 等待套用的新參數(靜音秒數、單段上限秒數);在沒講話時重建 VAD 套用。
+    pending: Option<(f32, f32)>,
 }
 
 impl Segmenter {
     pub fn new(cfg: &VadConfig) -> Result<Self> {
+        let vad = Self::build_vad(cfg)?;
+        let pad_samples = (cfg.pad_ms as usize * TARGET_SAMPLE_RATE as usize) / 1000;
+        // history 要能容納最大的單段上限(自適應最高 6 s)+ 緩衝
+        let history_cap = (cfg.max_speech_sec.max(6.0) as usize + 4) * TARGET_SAMPLE_RATE as usize;
+        Ok(Self {
+            vad,
+            pad_samples,
+            fed: 0,
+            history: VecDeque::with_capacity(history_cap),
+            history_start: 0,
+            history_cap,
+            speech_start: None,
+            cfg: cfg.clone(),
+            pending: None,
+        })
+    }
+
+    /// 要求換參數;會在下一次「沒在講話」時重建 VAD 套用,避免丟掉進行中的語音。
+    pub fn set_params(&mut self, min_silence_sec: f32, max_speech_sec: f32) {
+        if (self.cfg.min_silence_sec - min_silence_sec).abs() < 1e-3
+            && (self.cfg.max_speech_sec - max_speech_sec).abs() < 1e-3
+        {
+            self.pending = None;
+            return;
+        }
+        self.pending = Some((min_silence_sec, max_speech_sec));
+    }
+
+    /// 目前生效的(靜音秒數、單段上限秒數)。
+    pub fn current_params(&self) -> (f32, f32) {
+        (self.cfg.min_silence_sec, self.cfg.max_speech_sec)
+    }
+
+    fn apply_pending_if_idle(&mut self) {
+        let Some((ms, mx)) = self.pending else { return };
+        if self.vad.detected() || self.speech_start.is_some() {
+            return;
+        }
+        let mut cfg = self.cfg.clone();
+        cfg.min_silence_sec = ms;
+        cfg.max_speech_sec = mx;
+        match Self::build_vad(&cfg) {
+            Ok(v) => {
+                self.vad = v;
+                self.cfg = cfg;
+                self.pending = None;
+                tracing::debug!("VAD 參數已套用:靜音 {ms:.2}s、上限 {mx:.1}s");
+            }
+            Err(e) => {
+                tracing::warn!("重建 VAD 失敗,維持舊參數:{e:#}");
+                self.pending = None;
+            }
+        }
+    }
+
+    fn build_vad(cfg: &VadConfig) -> Result<VoiceActivityDetector> {
         let model = cfg.model.to_string_lossy().to_string();
         if !cfg.model.exists() {
             return Err(anyhow!("找不到 Silero VAD 模型:{model}"));
@@ -93,23 +153,13 @@ impl Segmenter {
             ..Default::default()
         };
         // VAD 內部緩衝 60 秒,足以容納 max_speech + 靜音。
-        let vad = VoiceActivityDetector::create(&config, 60.0)
-            .ok_or_else(|| anyhow!("VoiceActivityDetector::create 失敗"))?;
-        let pad_samples = (cfg.pad_ms as usize * TARGET_SAMPLE_RATE as usize) / 1000;
-        let history_cap = (cfg.max_speech_sec as usize + 4) * TARGET_SAMPLE_RATE as usize;
-        Ok(Self {
-            vad,
-            pad_samples,
-            fed: 0,
-            history: VecDeque::with_capacity(history_cap),
-            history_start: 0,
-            history_cap,
-            speech_start: None,
-        })
+        VoiceActivityDetector::create(&config, 60.0)
+            .ok_or_else(|| anyhow!("VoiceActivityDetector::create 失敗"))
     }
 
     /// 餵入樣本,回傳這次新切出的段落(可能 0 個或多個)。
     pub fn push(&mut self, samples: &[f32]) -> Vec<Segment> {
+        self.apply_pending_if_idle();
         let before = self.fed;
         self.vad.accept_waveform(samples);
         self.fed += samples.len() as i64;

@@ -7,6 +7,8 @@
 pub mod audio;
 pub mod vad;
 pub mod sentence;
+pub mod tuner;
+pub mod speaker;
 pub mod asr;
 pub mod mt;
 pub mod postprocess;

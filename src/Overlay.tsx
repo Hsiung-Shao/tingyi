@@ -8,7 +8,7 @@ import type { OverlayMode } from "./lib/types";
 const SHOW_COUNT = 1;
 
 export default function Overlay() {
-  const { sentences, partial } = useSubtitles();
+  const { sentences, partial, speakers } = useSubtitles();
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [interactive, setInteractive] = useState(false);
 
@@ -52,8 +52,9 @@ export default function Overlay() {
       )}
       {visible.map((s) => {
         const hasTranslation = s.translation.length > 0;
-        const mainText =
-          s.state === "no_translate" ? s.source : hasTranslation ? s.translation : s.source;
+        const body = s.state === "no_translate" ? s.source : hasTranslation ? s.translation : s.source;
+        // 超過一位說話者時在譯文前加名字
+        const mainText = speakers.length > 1 && s.speaker ? `${s.speaker}:${body}` : body;
         const pending = s.state === "translating" && !hasTranslation;
         return (
           <div key={s.id} className="fade-in-up text-center max-w-full">

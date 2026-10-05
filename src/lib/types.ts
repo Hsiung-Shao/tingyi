@@ -24,7 +24,10 @@ export type PipelineEvent =
       lang: Lang;
       asr_ms: number;
       will_translate: boolean;
+      speaker: string | null;
     }
+  | { type: "segmentation"; min_silence_ms: number; max_speech_ms: number; reason: string }
+  | { type: "speakers"; names: string[] }
   | { type: "translation_delta"; id: number; delta: string }
   | {
       type: "translation_done";
@@ -32,6 +35,7 @@ export type PipelineEvent =
       source: string;
       text: string;
       timing: TimingSnapshot;
+      speaker: string | null;
     }
   | { type: "translation_failed"; id: number; error: string }
   | { type: "error"; message: string };
@@ -40,6 +44,7 @@ export interface Sentence {
   id: number;
   source: string;
   lang: Lang;
+  speaker: string | null;
   translation: string;
   state: "transcribed" | "translating" | "done" | "failed" | "no_translate";
   asrMs: number;
@@ -69,6 +74,12 @@ export interface Info {
   /// 依顯示記憶體與已下載檔案建議的翻譯模型
   recommended_model: string;
   asr_engines: { id: string; label: string; present: boolean; note: string }[];
+  speaker_model_ready: boolean;
+  seg_offset_ms: number;
+  seg_adaptive: boolean;
+  seg_current_ms: number;
 }
+
+export type Sensitivity = "fast" | "normal" | "slow";
 
 export type OverlayMode = "bilingual" | "translation";

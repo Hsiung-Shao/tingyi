@@ -88,6 +88,11 @@ pub fn whisper_server_exe() -> PathBuf {
     bin_dir().join("whisper").join("whisper-server.exe")
 }
 
+/// 說話者 embedding 模型(3D-Speaker CAM++ 中英 advanced,16 kHz)。
+pub fn speaker_model() -> PathBuf {
+    models_dir().join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")
+}
+
 /// Whisper large-v3-turbo q8_0 GGML 模型。
 pub fn whisper_model() -> PathBuf {
     models_dir().join("ggml-large-v3-turbo-q8_0.bin")

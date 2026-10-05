@@ -29,6 +29,8 @@ $items = @(
        Url = 'https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt'; Source = 'csukuangfj (Hugging Face)' },
     @{ Name = 'silero_vad.onnx'; Size = '0.6 MB'; Dest = (Join-Path $models 'silero_vad.onnx');
        Url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx'; Source = 'k2-fsa/sherpa-onnx (GitHub Releases)' },
+    @{ Name = '3dspeaker CAM++ 說話者模型'; Size = '28 MB'; Dest = (Join-Path $models '3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx');
+       Url = 'https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/main/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx'; Source = 'csukuangfj/speaker-embedding-models (Hugging Face);說話者辨識用' },
     @{ Name = 'Hy-MT2-1.8B-Q8_0.gguf'; Size = '1.91 GB'; Dest = (Join-Path $models 'Hy-MT2-1.8B-Q8_0.gguf');
        Url = 'https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf'; Source = 'tencent/Hy-MT2-1.8B-GGUF (Hugging Face, Apache-2.0)' }
 )

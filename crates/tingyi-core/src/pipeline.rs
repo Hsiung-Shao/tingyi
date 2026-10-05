@@ -31,7 +31,13 @@ use crate::metrics::{SentenceTiming, TimingSnapshot};
 use crate::mt::{TranslateRequest, Translator};
 use crate::postprocess::{postprocess, Glossary};
 use crate::sentence::{completeness, Completeness};
+use crate::speaker::{SpeakerConfig, SpeakerIdentifier};
+use crate::tuner::{SegControl, SegStat, SegmentationTuner};
 use crate::vad::{Segment, Segmenter, VadConfig};
+use std::sync::Mutex;
+
+/// 說話者辨識器的共享句柄(Tauri 改名命令用)。
+pub type SharedSpeakers = Arc<Mutex<Option<SpeakerIdentifier>>>;
 
 /// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
 static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
@@ -57,7 +63,17 @@ pub enum PipelineEvent {
         asr_ms: u32,
         /// 判定為中文或不在允許語言 → 不翻譯。
         will_translate: bool,
+        /// 說話者標籤(開啟說話者辨識且段落夠長時才有)。
+        speaker: Option<String>,
     },
+    /// 斷句參數變更(自適應或使用者調整)。
+    Segmentation {
+        min_silence_ms: u32,
+        max_speech_ms: u32,
+        reason: String,
+    },
+    /// 已知說話者清單(新增或改名時重送)。
+    Speakers { names: Vec<String> },
     /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
     TranscriptMerged { into: u64, from: u64, text: String },
     /// 講話中的即時預覽(暫定原文,不翻譯);空字串 = 清除。段落結束後由正式 `Transcript` 取代。
@@ -68,6 +84,7 @@ pub enum PipelineEvent {
         source: String,
         text: String,
         timing: TimingSnapshot,
+        speaker: Option<String>,
     },
     /// 翻譯失敗或逾時;前端以原文顯示。
     TranslationFailed { id: u64, error: String },
@@ -108,6 +125,11 @@ pub struct PipelineConfig {
     pub preview_interval: Duration,
     /// 語音累積到這麼長才開始預覽。
     pub preview_min: Duration,
+    /// 斷句控制面(偏移、自動開關、目前值);Tauri 持有同一個 Arc 即可即時調整。
+    pub seg_control: Arc<SegControl>,
+    /// 說話者辨識(模型存在時才生效)。
+    pub speaker_id: bool,
+    pub speaker: SpeakerConfig,
 }
 
 impl Default for PipelineConfig {
@@ -132,6 +154,9 @@ impl Default for PipelineConfig {
             preview: true,
             preview_interval: Duration::from_millis(1000),
             preview_min: Duration::from_millis(1200),
+            seg_control: Arc::new(SegControl::default()),
+            speaker_id: true,
+            speaker: SpeakerConfig::default(),
         }
     }
 }
@@ -141,6 +166,7 @@ struct Utterance {
     id: u64,
     text: String,
     lang: Lang,
+    speaker: Option<String>,
     timing: SentenceTiming,
     /// 這句(含已合併的)到達 MT 階段的時間,用來算等待逾時。
     arrived: Instant,
@@ -151,9 +177,31 @@ pub struct PipelineHandle {
     capture: Option<CaptureHandle>,
     worker: Option<std::thread::JoinHandle<()>>,
     mt_task: Option<tokio::task::JoinHandle<()>>,
+    speakers: SharedSpeakers,
+    events: mpsc::UnboundedSender<PipelineEvent>,
 }
 
 impl PipelineHandle {
+    /// 說話者改名;成功則重送 `Speakers` 事件。
+    pub fn rename_speaker(&self, from: &str, to: &str) -> bool {
+        let mut guard = self.speakers.lock().unwrap();
+        let Some(id) = guard.as_mut() else { return false };
+        let ok = id.rename(from, to);
+        if ok {
+            let _ = self.events.send(PipelineEvent::Speakers { names: id.speakers() });
+        }
+        ok
+    }
+
+    pub fn speakers(&self) -> Vec<String> {
+        self.speakers
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.speakers())
+            .unwrap_or_default()
+    }
+
     pub async fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(c) = self.capture.take() {
@@ -190,8 +238,24 @@ pub fn start(
     if let Some(d) = &cfg.record_dir {
         std::fs::create_dir_all(d).map_err(|e| anyhow!("建立錄音目錄 {}: {e}", d.display()))?;
     }
+    let speakers: SharedSpeakers = Arc::new(Mutex::new(None));
+    if cfg.speaker_id && cfg.speaker.model.exists() {
+        match SpeakerIdentifier::new(cfg.speaker.clone()) {
+            Ok(s) => *speakers.lock().unwrap() = Some(s),
+            Err(e) => {
+                let _ = events.send(PipelineEvent::Error {
+                    message: format!("說話者模型載入失敗,停用:{e:#}"),
+                });
+            }
+        }
+    }
     let _ = events.send(PipelineEvent::Status {
-        message: format!("模型載入完成:{}(預覽 {})", final_asr.name(), preview_asr.name()),
+        message: format!(
+            "模型載入完成:{}(預覽 {}){}",
+            final_asr.name(),
+            preview_asr.name(),
+            if speakers.lock().unwrap().is_some() { "、說話者辨識" } else { "" }
+        ),
     });
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
@@ -203,9 +267,12 @@ pub fn start(
         let events = events.clone();
         let stop = stop.clone();
         let cfg = cfg.clone();
+        let speakers = speakers.clone();
         std::thread::Builder::new()
             .name("tingyi-worker".into())
-            .spawn(move || worker_loop(cfg, segmenter, final_asr, preview_asr, audio_rx, utt_tx, events, stop))
+            .spawn(move || {
+                worker_loop(cfg, segmenter, final_asr, preview_asr, speakers, audio_rx, utt_tx, events, stop)
+            })
             .map_err(|e| anyhow!("spawn worker: {e}"))?
     };
 
@@ -220,6 +287,8 @@ pub fn start(
         capture: Some(capture),
         worker: Some(worker),
         mt_task: Some(mt_task),
+        speakers,
+        events,
     })
 }
 
@@ -229,14 +298,28 @@ fn worker_loop(
     mut segmenter: Segmenter,
     asr: Box<dyn Transcriber>,
     preview_asr: SenseVoice,
+    speakers: SharedSpeakers,
     audio_rx: crossbeam_channel::Receiver<AudioChunk>,
     utt_tx: mpsc::UnboundedSender<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
     stop: Arc<AtomicBool>,
 ) {
     let mut last_lang: Option<Lang> = None;
+    let mut tuner = SegmentationTuner::new();
+    if let Some(l) = cfg.lock_lang {
+        if let Some(p) = tuner.set_lang(l, &cfg.seg_control) {
+            segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
+            let _ = events.send(PipelineEvent::Segmentation {
+                min_silence_ms: p.min_silence_ms,
+                max_speech_ms: p.max_speech_ms,
+                reason: p.reason,
+            });
+        }
+    }
+    let mut known_speakers: usize = 0;
 
-    let handle_segment = |seg: Segment, last_lang: &mut Option<Lang>| {
+    // 回傳 (是否撞上限, 說話者, 文字字數, 是否未完)供 tuner 用
+    let mut handle_segment = |seg: Segment, last_lang: &mut Option<Lang>, tuner: &mut SegmentationTuner, segmenter: &mut Segmenter| {
         let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
         let audio_ms = seg.duration_ms();
         let level = rms_dbfs(&seg.samples);
@@ -260,6 +343,8 @@ fn worker_loop(
         } else {
             seg.samples.clone()
         };
+        let (_, max_speech_sec) = segmenter.current_params();
+        let hit_max = audio_ms as f32 >= max_speech_sec * 1000.0 * 0.95;
 
         match asr.transcribe(&pcm, cfg.lock_lang) {
             Ok(mut t) => {
@@ -280,7 +365,44 @@ fn worker_loop(
                 }
                 if t.lang != Lang::Unknown {
                     *last_lang = Some(t.lang);
+                    if let Some(p) = tuner.set_lang(t.lang, &cfg.seg_control) {
+                        segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
+                        let _ = events.send(PipelineEvent::Segmentation {
+                            min_silence_ms: p.min_silence_ms,
+                            max_speech_ms: p.max_speech_ms,
+                            reason: p.reason,
+                        });
+                    }
                 }
+
+                // 說話者
+                let speaker = {
+                    let mut guard = speakers.lock().unwrap();
+                    guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
+                };
+                if let Some(s) = speakers.lock().unwrap().as_ref() {
+                    let n = s.speakers().len();
+                    if n != known_speakers {
+                        known_speakers = n;
+                        let _ = events.send(PipelineEvent::Speakers { names: s.speakers() });
+                    }
+                }
+
+                // 斷句自適應:餵這段的觀察值
+                let chars = if t.lang.is_cjk() { t.text.chars().count() } else { t.text.split_whitespace().count() };
+                let incomplete = completeness(&t.text, t.lang) == Completeness::Incomplete;
+                if let Some(p) = tuner.observe(
+                    SegStat { audio_ms, chars, hit_max, incomplete },
+                    &cfg.seg_control,
+                ) {
+                    segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
+                    let _ = events.send(PipelineEvent::Segmentation {
+                        min_silence_ms: p.min_silence_ms,
+                        max_speech_ms: p.max_speech_ms,
+                        reason: p.reason,
+                    });
+                }
+
                 let will_translate = t.lang != Lang::Zh
                     && (cfg.allowed_langs.is_empty() || cfg.allowed_langs.contains(&t.lang));
                 let _ = events.send(PipelineEvent::Transcript {
@@ -289,12 +411,14 @@ fn worker_loop(
                     lang: t.lang,
                     asr_ms: t.asr_ms,
                     will_translate,
+                    speaker: speaker.clone(),
                 });
                 if will_translate {
                     let _ = utt_tx.send(Utterance {
                         id,
                         text: t.text,
                         lang: t.lang,
+                        speaker,
                         timing,
                         arrived: Instant::now(),
                     });
@@ -315,10 +439,19 @@ fn worker_loop(
     while !stop.load(Ordering::SeqCst) {
         match audio_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(chunk) => {
+                // 使用者改了偏移/自動開關 → 立刻重算參數
+                if let Some(p) = tuner.emit_if_changed(&cfg.seg_control) {
+                    segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
+                    let _ = events.send(PipelineEvent::Segmentation {
+                        min_silence_ms: p.min_silence_ms,
+                        max_speech_ms: p.max_speech_ms,
+                        reason: p.reason,
+                    });
+                }
                 let segs = segmenter.push(&chunk.samples);
                 let had_segment = !segs.is_empty();
                 for seg in segs {
-                    handle_segment(seg, &mut last_lang);
+                    handle_segment(seg, &mut last_lang, &mut tuner, &mut segmenter);
                 }
                 if had_segment && preview_shown {
                     // 正式 Transcript 事件會直接取代預覽(前端在 transcript 時清空 partial),
@@ -352,7 +485,7 @@ fn worker_loop(
         }
     }
     for seg in segmenter.flush() {
-        handle_segment(seg, &mut last_lang);
+        handle_segment(seg, &mut last_lang, &mut tuner, &mut segmenter);
     }
     tracing::info!("worker 結束");
 }
@@ -393,6 +526,9 @@ fn merge(cfg: &PipelineConfig, mut p: Utterance, u: Utterance, events: &mpsc::Un
     p.arrived = u.arrived;
     if p.lang == Lang::Unknown {
         p.lang = u.lang;
+    }
+    if p.speaker.is_none() {
+        p.speaker = u.speaker; // 合併句沿用第一段的說話者,第一段沒有才用後段的
     }
     let _ = events.send(PipelineEvent::TranscriptMerged {
         into: p.id,
@@ -509,6 +645,7 @@ async fn translate_one(
                 source: u.text,
                 text,
                 timing: u.timing.snapshot(),
+                speaker: u.speaker,
             });
         }
         Ok(Err(e)) => {

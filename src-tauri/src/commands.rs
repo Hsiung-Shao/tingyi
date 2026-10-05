@@ -32,6 +32,11 @@ pub struct Info {
     pub recommended_model: String,
     /// 可用的辨識引擎。
     pub asr_engines: Vec<AsrEngineInfo>,
+    pub speaker_model_ready: bool,
+    /// 目前斷句設定(偏移 ms、自動、生效的靜音門檻 ms)。
+    pub seg_offset_ms: i32,
+    pub seg_adaptive: bool,
+    pub seg_current_ms: u32,
 }
 
 #[derive(Serialize)]
@@ -104,6 +109,10 @@ pub fn get_info(state: State<'_, AppState>) -> Info {
         gpu: gpu_info,
         recommended_model,
         asr_engines,
+        speaker_model_ready: paths::speaker_model().exists(),
+        seg_offset_ms: state.seg_control.offset_ms.load(std::sync::atomic::Ordering::Relaxed),
+        seg_adaptive: state.seg_control.adaptive.load(std::sync::atomic::Ordering::Relaxed),
+        seg_current_ms: state.seg_control.current_ms.load(std::sync::atomic::Ordering::Relaxed),
         gpu_used_mib: gpu::nvidia_used_mib(),
         models,
         sensevoice_ready: paths::sensevoice_model().exists() && paths::sensevoice_tokens().exists(),
@@ -120,6 +129,8 @@ pub struct StartOptions {
     pub model: Option<String>,
     /// 辨識引擎:"sensevoice"(預設)或 "whisper-turbo"。
     pub asr_engine: Option<String>,
+    /// 說話者辨識(預設開;模型不存在時自動略過)。
+    pub speaker_id: Option<bool>,
     /// 鎖定來源語言 en/ja/ko;None = 自動(限 en/ja/ko)。
     pub lang: Option<String>,
     pub glossary: Option<Vec<GlossaryEntry>>,
@@ -229,6 +240,8 @@ pub async fn start_session(
     }
 
     // 2. 管線
+    cfg.seg_control = state.seg_control.clone();
+    cfg.speaker_id = opts.speaker_id.unwrap_or(true);
     cfg.lock_lang = opts.lang.as_deref().and_then(parse_lang);
     if cfg.lock_lang.is_some() {
         cfg.allowed_langs = HashSet::new();
@@ -302,6 +315,41 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
         let _ = app.emit("status", "已停止".to_string());
     }
     Ok(())
+}
+
+/// 斷句靈敏度:fast / normal / slow(−100 / 0 / +100 ms)與是否自動調整。執行中即時生效。
+#[tauri::command]
+pub fn set_segmentation(state: State<'_, AppState>, sensitivity: String, adaptive: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let offset = match sensitivity.as_str() {
+        "fast" => -100,
+        "slow" => 100,
+        _ => 0,
+    };
+    state.seg_control.offset_ms.store(offset, Ordering::Relaxed);
+    state.seg_control.adaptive.store(adaptive, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 說話者改名(執行中才有效)。
+#[tauri::command]
+pub fn rename_speaker(state: State<'_, AppState>, from: String, to: String) -> Result<bool, String> {
+    let guard = state.pipeline.lock().unwrap();
+    match guard.as_ref() {
+        Some(h) => Ok(h.rename_speaker(&from, &to)),
+        None => Err("未在執行中".into()),
+    }
+}
+
+#[tauri::command]
+pub fn list_speakers(state: State<'_, AppState>) -> Vec<String> {
+    state
+        .pipeline
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.speakers())
+        .unwrap_or_default()
 }
 
 /// 解鎖/鎖定懸浮字幕(鎖定 = 滑鼠穿透)。

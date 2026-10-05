@@ -109,6 +109,8 @@ enum Cmd {
         #[arg(long, default_value = "sensevoice")]
         engine: String,
     },
+    /// 說話者 embedding 驗證:印相似度矩陣與分群結果(不同檔應為不同人)
+    Speakers { files: Vec<PathBuf> },
 }
 
 /// 建立正式辨識引擎;whisper 時順便啟動 whisper-server(回傳的 process 要活到辨識結束)。
@@ -287,6 +289,47 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Cmd::Speakers { files } => {
+            use tingyi_core::speaker::{SpeakerConfig, SpeakerIdentifier};
+            let t0 = Instant::now();
+            let mut id = SpeakerIdentifier::new(SpeakerConfig::default())?;
+            println!("說話者模型載入 {} ms", t0.elapsed().as_millis());
+            let mut embs: Vec<(String, Vec<f32>)> = Vec::new();
+            for f in &files {
+                let w = sherpa_onnx::Wave::read(&f.to_string_lossy())
+                    .ok_or_else(|| anyhow!("讀不到 wav:{}", f.display()))?;
+                let mut s = w.samples().to_vec();
+                if w.sample_rate() != 16000 {
+                    let r = sherpa_onnx::LinearResampler::create(w.sample_rate(), 16000).ok_or_else(|| anyhow!("resampler"))?;
+                    s = r.resample(&s, true);
+                }
+                let t1 = Instant::now();
+                let e = id.embed(&s).ok_or_else(|| anyhow!("embed 失敗"))?;
+                let who = id.identify(&s, Instant::now());
+                println!(
+                    "{}: {} ms, dim {}, 分群 → {:?}",
+                    f.file_name().unwrap_or_default().to_string_lossy(),
+                    t1.elapsed().as_millis(),
+                    e.len(),
+                    who
+                );
+                embs.push((f.file_name().unwrap_or_default().to_string_lossy().to_string(), e));
+            }
+            println!("\n餘弦相似度矩陣:");
+            print!("{:>12}", "");
+            for (n, _) in &embs {
+                print!("{:>12}", n.chars().take(10).collect::<String>());
+            }
+            println!();
+            for (n, a) in &embs {
+                print!("{:>12}", n.chars().take(10).collect::<String>());
+                for (_, b) in &embs {
+                    print!("{:>12.3}", SpeakerIdentifier::cosine(a, b));
+                }
+                println!();
+            }
+            println!("已知說話者:{:?}", id.speakers());
+        }
         Cmd::Serve { model, port } => {
             let before = gpu::nvidia_used_mib();
             let mut spec = LlamaServerSpec::new(paths::gguf_model(&model), port);
@@ -402,9 +445,12 @@ async fn run_pipeline(
                     PipelineEvent::Segment { id, audio_ms, rms_dbfs, .. } => println!("[{ts:6.1}s] #{id} 段落 {audio_ms} ms({rms_dbfs:.1} dBFS)"),
                     PipelineEvent::TranscriptMerged { into, from, text } => println!("[{ts:6.1}s] #{from} 併入 #{into} → {text}"),
                     PipelineEvent::Partial { text, .. } => { if !text.is_empty() { println!("[{ts:6.1}s]    預覽:{text}"); } }
-                    PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate } => {
+                    PipelineEvent::Segmentation { min_silence_ms, max_speech_ms, reason } => println!("[{ts:6.1}s] 斷句參數:靜音 {min_silence_ms} ms、上限 {max_speech_ms} ms({reason})"),
+                    PipelineEvent::Speakers { names } => println!("[{ts:6.1}s] 說話者:{names:?}"),
+                    PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate, speaker } => {
                         asr_ms.push(*a);
-                        println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" });
+                        println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{}{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" },
+                            speaker.as_ref().map(|s| format!(" 〈{s}〉")).unwrap_or_default());
                         current_delta.clear();
                     }
                     PipelineEvent::TranslationDelta { .. } => {}

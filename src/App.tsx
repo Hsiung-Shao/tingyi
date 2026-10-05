@@ -2,7 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSubtitles } from "./lib/useSubtitles";
-import type { Info, OverlayMode, Sentence } from "./lib/types";
+import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
+
+const SPEAKER_COLORS = ["text-sky-300", "text-amber-300", "text-emerald-300", "text-pink-300", "text-violet-300", "text-orange-300"];
+export function speakerColor(name: string | null, speakers: string[]) {
+  if (!name) return "text-neutral-400";
+  const i = speakers.indexOf(name);
+  return SPEAKER_COLORS[(i < 0 ? 0 : i) % SPEAKER_COLORS.length];
+}
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -13,7 +20,7 @@ function pct(values: number[], p: number) {
 }
 
 export default function App() {
-  const { sentences, errors, partial } = useSubtitles();
+  const { sentences, errors, partial, speakers, segmentation } = useSubtitles();
   const [info, setInfo] = useState<Info | null>(null);
   const [status, setStatus] = useState("就緒");
   const [busy, setBusy] = useState(false);
@@ -24,6 +31,29 @@ export default function App() {
   const [lang, setLang] = useState<LangOpt>("auto");
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [unlocked, setUnlocked] = useState(false);
+  const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
+  const [adaptive, setAdaptive] = useState(true);
+  const [speakerId, setSpeakerId] = useState(true);
+  const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
+
+  const applySegmentation = async (s: Sensitivity, a: boolean) => {
+    setSensitivity(s);
+    setAdaptive(a);
+    await invoke("set_segmentation", { sensitivity: s, adaptive: a });
+  };
+
+  const commitRename = async () => {
+    if (!renaming) return;
+    const { from, to } = renaming;
+    setRenaming(null);
+    if (to.trim() && to.trim() !== from) {
+      try {
+        await invoke("rename_speaker", { from, to: to.trim() });
+      } catch (e) {
+        setStatus(`改名失敗:${String(e)}`);
+      }
+    }
+  };
   const [glossaryText, setGlossaryText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -97,6 +127,7 @@ export default function App() {
         opts: {
           model: translate ? model : null,
           asr_engine: asrEngine,
+          speaker_id: speakerId,
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
         },
@@ -235,6 +266,69 @@ export default function App() {
           </section>
 
           <section className="flex flex-col gap-2">
+            <label className="text-neutral-400">
+              斷句{segmentation ? `(靜音門檻 ${segmentation.min_silence_ms} ms,${segmentation.reason})` : ""}
+            </label>
+            <div className="flex gap-1">
+              {(["fast", "normal", "slow"] as Sensitivity[]).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => applySegmentation(s, adaptive)}
+                  className={`flex-1 rounded px-2 py-1 border ${sensitivity === s ? "bg-sky-700 border-sky-500" : "bg-neutral-900 border-neutral-700"}`}
+                >
+                  {s === "fast" ? "快" : s === "normal" ? "中" : "慢"}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-neutral-400">
+              <input type="checkbox" checked={adaptive} onChange={(e) => applySegmentation(sensitivity, e.target.checked)} />
+              依語速自動調整
+            </label>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <label className="text-neutral-400">說話者</label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={speakerId}
+                onChange={(e) => setSpeakerId(e.target.checked)}
+                disabled={running || !info?.speaker_model_ready}
+              />
+              辨識說話者{info && !info.speaker_model_ready ? "(模型未下載)" : ""}
+            </label>
+            {speakers.length > 0 && (
+              <div className="flex flex-wrap gap-1 text-xs">
+                {speakers.map((n) =>
+                  renaming?.from === n ? (
+                    <input
+                      key={n}
+                      autoFocus
+                      className="bg-neutral-900 border border-sky-500 rounded px-1 w-28"
+                      value={renaming.to}
+                      onChange={(e) => setRenaming({ from: n, to: e.target.value })}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void commitRename();
+                        if (e.key === "Escape") setRenaming(null);
+                      }}
+                    />
+                  ) : (
+                    <button
+                      key={n}
+                      title="點一下改名"
+                      onClick={() => setRenaming({ from: n, to: n })}
+                      className={`rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 ${speakerColor(n, speakers)}`}
+                    >
+                      {n}
+                    </button>
+                  ),
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="flex flex-col gap-2">
             <label className="text-neutral-400">懸浮字幕</label>
             <div className="flex gap-1">
               <button
@@ -289,7 +383,7 @@ export default function App() {
               </div>
             )}
             {sentences.map((s) => (
-              <SentenceRow key={s.id} s={s} />
+              <SentenceRow key={s.id} s={s} speakers={speakers} />
             ))}
             {partial && (
               <div className="rounded border border-dashed border-neutral-800 px-3 py-2 text-neutral-500 italic">
@@ -318,12 +412,13 @@ function Metric({ label, value, unit, warn }: { label: string; value: number | n
   );
 }
 
-function SentenceRow({ s }: { s: Sentence }) {
+function SentenceRow({ s, speakers }: { s: Sentence; speakers: string[] }) {
   const t = s.timing;
   return (
     <div className="rounded border border-neutral-800 bg-neutral-900/60 px-3 py-2">
       <div className="flex items-baseline gap-2 text-xs text-neutral-500">
         <span>#{s.id}</span>
+        {s.speaker && <span className={`font-semibold ${speakerColor(s.speaker, speakers)}`}>{s.speaker}</span>}
         <span className="uppercase">{s.lang}</span>
         <span>辨識 {s.asrMs} ms</span>
         {t && (

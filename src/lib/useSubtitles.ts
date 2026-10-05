@@ -8,6 +8,10 @@ interface State {
   errors: string[];
   /** 講話中的即時預覽原文(灰字);空字串 = 無 */
   partial: string;
+  /** 已知說話者(依出現順序) */
+  speakers: string[];
+  /** 目前斷句參數 */
+  segmentation: { min_silence_ms: number; max_speech_ms: number; reason: string } | null;
 }
 
 const MAX_SENTENCES = 500;
@@ -17,7 +21,21 @@ type Action = PipelineEvent | { type: "reset" };
 function reducer(state: State, ev: Action): State {
   switch (ev.type) {
     case "reset":
-      return { sentences: [], status: state.status, errors: [], partial: "" };
+      return { sentences: [], status: state.status, errors: [], partial: "", speakers: [], segmentation: null };
+    case "segmentation":
+      return { ...state, segmentation: { min_silence_ms: ev.min_silence_ms, max_speech_ms: ev.max_speech_ms, reason: ev.reason } };
+    case "speakers": {
+      // 改名時把舊名換成新名(舊名不在新清單、新名是新出現的)
+      const gone = state.speakers.filter((n) => !ev.names.includes(n));
+      const added = ev.names.filter((n) => !state.speakers.includes(n));
+      let sentences = state.sentences;
+      if (gone.length === 1 && added.length === 1) {
+        sentences = sentences.map((s) => (s.speaker === gone[0] ? { ...s, speaker: added[0] } : s));
+      } else if (gone.length === 1 && added.length === 0) {
+        // 合併到既有名字:無法得知目標,保留舊標籤
+      }
+      return { ...state, speakers: ev.names, sentences };
+    }
     case "partial": {
       // 重辨識偶爾會短暫吐出比上一次短很多的結果(抖動),這種就不更新,減少閃動
       if (ev.text !== "" && ev.text.length < state.partial.length * 0.6) return state;
@@ -45,6 +63,7 @@ function reducer(state: State, ev: Action): State {
         id: ev.id,
         source: ev.text,
         lang: ev.lang,
+        speaker: ev.speaker,
         translation: "",
         state: ev.will_translate ? "translating" : "no_translate",
         asrMs: ev.asr_ms,
@@ -71,6 +90,7 @@ function reducer(state: State, ev: Action): State {
           id: ev.id,
           source: ev.source,
           lang: "unknown",
+          speaker: ev.speaker,
           translation: ev.text,
           state: "done",
           asrMs: ev.timing.asr_ms ?? 0,
@@ -83,7 +103,7 @@ function reducer(state: State, ev: Action): State {
         ...state,
         sentences: state.sentences.map((s) =>
           s.id === ev.id
-            ? { ...s, source: ev.source, translation: ev.text, state: "done", timing: ev.timing }
+            ? { ...s, source: ev.source, translation: ev.text, state: "done", timing: ev.timing, speaker: ev.speaker ?? s.speaker }
             : s,
         ),
       };
@@ -99,7 +119,14 @@ function reducer(state: State, ev: Action): State {
 }
 
 export function useSubtitles() {
-  const [state, dispatch] = useReducer(reducer, { sentences: [], status: "", errors: [], partial: "" });
+  const [state, dispatch] = useReducer(reducer, {
+    sentences: [],
+    status: "",
+    errors: [],
+    partial: "",
+    speakers: [],
+    segmentation: null,
+  });
   useEffect(() => {
     const un = listen<PipelineEvent>("pipeline", (e) => dispatch(e.payload));
     // 後端每次「開始」都會發 session-start:清掉上一輪的句子,避免新舊編號互相覆蓋
