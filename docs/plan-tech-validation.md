@@ -1,3 +1,5 @@
+✅ 完成於 2026-10-06
+
 # 任務目標
 
 聽譯(tingyi)技術驗證週:在 Tauri 2 + Rust 跑通「系統音訊(WASAPI loopback)→ Silero VAD → SenseVoice-Small(CPU)→ Hy-MT2(llama-server sidecar,GPU)→ 懸浮字幕」完全本機主線,實測端到端延遲(目標句尾後 < 2 秒)、顯示記憶體(< 6 GB)、日文辨識品質與 1.8B / 7B 譯文品質差距,產出驗證報告並回填規格書。
@@ -31,8 +33,12 @@
   - 2026-10-06:`TINGYI_AUTOSTART=1` 自動開始 + TTS 六句 + `scripts/shot-windows.ps1` PrintWindow 截圖驗證;主視窗 10 句端到端 p50 95 / p95 114 ms;懸浮雙語字幕正常
   - 調整:懸浮視窗高度 180 → 230(三句時最上句被切)
 - [x] 6. 量測與報告:`docs/validation-report.md`(英文 live、三模型對照、顯示記憶體、結論與建議);最小測試基線(core 13 測試 + pnpm build);規格書已回填實測值與待決問題(Claude Docs rev 29);Obsidian 決策紀錄 1 篇 + 資料筆記 3 篇(vault_verify PASS);初始 commit ed79b20
-- [ ] 7. **真實影片實測(需使用者在場)**:播放英/日影片各約 3 分鐘跑 `tingyi-bench live --out bench-out/live-<lang>.jsonl`;日文 20 句人工抽樣正確率;系統靜音時 loopback 是否仍有訊號;結果回填 validation-report §2、§5、§6 與規格書
+- [x] 7. **真實影片實測(需使用者在場)**:播放英/日影片各約 3 分鐘跑 `tingyi-bench live --out bench-out/live-<lang>.jsonl`;系統靜音時 loopback 是否仍有訊號;結果回填 validation-report §2、§5、§6 與規格書(日文人工抽樣由使用者決定略過)
   - 本機無日文 TTS 語音,無法自動化;驗證週其餘項目已全部完成
+  - 2026-10-06 日文動畫 180 秒已量:端到端首字 p50 159 / p95 194 ms;發現切段(8 秒上限)才是體感延遲主因、歌唱段辨識全錯
+  - 2026-10-06 英文電影 180 秒已量:端到端首字 p50 128 / p95 233 ms;短碎片("By.")被單獨翻譯,合併規則要改
+  - 2026-10-06 靜音測試:英文輪 60–70 秒系統靜音,第 12、13 段仍辨識出對白 → 靜音不影響 loopback(本機裝置)
+  - 日文 11 段對白抽樣評分:使用者決定略過
 
 # 相關檔案
 
@@ -70,4 +76,4 @@
 - [x] `tingyi-bench mt` 三模型 30 句對照表(bench-out/mt-30.jsonl)
 - [x] 懸浮字幕實際顯示譯文;端到端首字 p50 95 ms
 - [x] `cargo test --workspace`(13 passed)與 `pnpm build` 通過
-- [ ] `/handoff-check` 全 PASS(第 7 項完成後)
+- [x] `/handoff-check` 全 PASS(2026-10-06,三輪;第 7 項完成後再驗一次)
