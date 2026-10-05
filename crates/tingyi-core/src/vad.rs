@@ -67,6 +67,8 @@ pub struct Segmenter {
     history: VecDeque<f32>,
     history_start: i64,
     history_cap: usize,
+    /// 目前正在講的這段語音的起點(樣本索引);None = 沒在講話。即時預覽用。
+    speech_start: Option<i64>,
 }
 
 impl Segmenter {
@@ -102,11 +104,13 @@ impl Segmenter {
             history: VecDeque::with_capacity(history_cap),
             history_start: 0,
             history_cap,
+            speech_start: None,
         })
     }
 
     /// 餵入樣本,回傳這次新切出的段落(可能 0 個或多個)。
     pub fn push(&mut self, samples: &[f32]) -> Vec<Segment> {
+        let before = self.fed;
         self.vad.accept_waveform(samples);
         self.fed += samples.len() as i64;
         self.history.extend(samples.iter().copied());
@@ -114,7 +118,29 @@ impl Segmenter {
             self.history.pop_front();
             self.history_start += 1;
         }
-        self.drain(Instant::now())
+        let segs = self.drain(Instant::now());
+        if !segs.is_empty() {
+            // 段落剛結束:下一句從這之後算
+            self.speech_start = None;
+        }
+        if self.speech_start.is_none() && self.vad.detected() {
+            // 語音剛開始:往回多抓 pad,避免吃掉第一個音節
+            self.speech_start = Some((before - self.pad_samples as i64).max(self.history_start));
+        }
+        segs
+    }
+
+    /// 目前講到一半的語音(從語音起點到最新樣本),供即時預覽辨識;沒在講話回 None。
+    pub fn current_speech(&self) -> Option<Vec<f32>> {
+        let start = self.speech_start?;
+        if !self.vad.detected() {
+            return None;
+        }
+        let a = (start - self.history_start).max(0) as usize;
+        if a >= self.history.len() {
+            return None;
+        }
+        Some(self.history.range(a..).copied().collect())
     }
 
     /// 是否正在講話中(供即時預覽判斷)。

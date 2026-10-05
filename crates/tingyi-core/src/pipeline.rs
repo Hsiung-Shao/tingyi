@@ -52,6 +52,8 @@ pub enum PipelineEvent {
     },
     /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
     TranscriptMerged { into: u64, from: u64, text: String },
+    /// 講話中的即時預覽(暫定原文,不翻譯);空字串 = 清除。段落結束後由正式 `Transcript` 取代。
+    Partial { text: String, lang: Lang },
     TranslationDelta { id: u64, delta: String },
     TranslationDone {
         id: u64,
@@ -89,6 +91,11 @@ pub struct PipelineConfig {
     pub normalize_audio: bool,
     /// 有設就把每段原始 16 kHz 樣本存成 wav(bench / 除錯用)。
     pub record_dir: Option<PathBuf>,
+    /// 講話中每隔 `preview_interval` 對目前語音重辨識一次,以灰字先顯示原文。
+    pub preview: bool,
+    pub preview_interval: Duration,
+    /// 語音累積到這麼長才開始預覽。
+    pub preview_min: Duration,
 }
 
 impl Default for PipelineConfig {
@@ -108,6 +115,9 @@ impl Default for PipelineConfig {
             mt_timeout: Duration::from_secs(15),
             normalize_audio: true,
             record_dir: None,
+            preview: true,
+            preview_interval: Duration::from_millis(1000),
+            preview_min: Duration::from_millis(1200),
         }
     }
 }
@@ -269,11 +279,46 @@ fn worker_loop(
         }
     };
 
+    let mut last_preview = Instant::now();
+    let mut preview_shown = false;
+    let min_preview_samples = (cfg.preview_min.as_millis() as usize) * TARGET_SAMPLE_RATE as usize / 1000;
+
     while !stop.load(Ordering::SeqCst) {
         match audio_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(chunk) => {
-                for seg in segmenter.push(&chunk.samples) {
+                let segs = segmenter.push(&chunk.samples);
+                let had_segment = !segs.is_empty();
+                for seg in segs {
                     handle_segment(seg, &mut last_lang);
+                }
+                if had_segment && preview_shown {
+                    // 正式結果已送出,清掉預覽
+                    let _ = events.send(PipelineEvent::Partial {
+                        text: String::new(),
+                        lang: last_lang.unwrap_or(Lang::Unknown),
+                    });
+                    preview_shown = false;
+                }
+                if cfg.preview && !had_segment && last_preview.elapsed() >= cfg.preview_interval {
+                    if let Some(cur) = segmenter.current_speech() {
+                        if cur.len() >= min_preview_samples {
+                            last_preview = Instant::now();
+                            let pcm = if cfg.normalize_audio {
+                                normalize_rms(&cur, -20.0, 8.0)
+                            } else {
+                                cur
+                            };
+                            if let Ok(t) = asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
+                                if !t.text.is_empty() {
+                                    preview_shown = true;
+                                    let _ = events.send(PipelineEvent::Partial {
+                                        text: t.text,
+                                        lang: t.lang,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,

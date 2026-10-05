@@ -6,6 +6,8 @@ interface State {
   sentences: Sentence[];
   status: string;
   errors: string[];
+  /** 講話中的即時預覽原文(灰字);空字串 = 無 */
+  partial: string;
 }
 
 const MAX_SENTENCES = 500;
@@ -15,7 +17,9 @@ type Action = PipelineEvent | { type: "reset" };
 function reducer(state: State, ev: Action): State {
   switch (ev.type) {
     case "reset":
-      return { sentences: [], status: state.status, errors: [] };
+      return { sentences: [], status: state.status, errors: [], partial: "" };
+    case "partial":
+      return { ...state, partial: ev.text };
     case "status":
       return { ...state, status: ev.message };
     case "error":
@@ -31,6 +35,7 @@ function reducer(state: State, ev: Action): State {
           .map((s) => (s.id === ev.into ? { ...s, source: ev.text, state: "translating" } : s)),
       };
     case "transcript": {
+      state = { ...state, partial: "" };
       // 合併(短句等待)會讓同一 id 再出現;以 id 覆蓋。
       const existing = state.sentences.findIndex((s) => s.id === ev.id);
       const s: Sentence = {
@@ -91,7 +96,7 @@ function reducer(state: State, ev: Action): State {
 }
 
 export function useSubtitles() {
-  const [state, dispatch] = useReducer(reducer, { sentences: [], status: "", errors: [] });
+  const [state, dispatch] = useReducer(reducer, { sentences: [], status: "", errors: [], partial: "" });
   useEffect(() => {
     const un = listen<PipelineEvent>("pipeline", (e) => dispatch(e.payload));
     // 後端每次「開始」都會發 session-start:清掉上一輪的句子,避免新舊編號互相覆蓋

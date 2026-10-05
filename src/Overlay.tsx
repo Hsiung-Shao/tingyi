@@ -8,7 +8,7 @@ const SHOW_COUNT = 2;
 const MIN_STAY_MS = 3000;
 
 export default function Overlay() {
-  const { sentences } = useSubtitles();
+  const { sentences, partial } = useSubtitles();
   const [mode, setMode] = useState<OverlayMode>("bilingual");
   const [interactive, setInteractive] = useState(false);
   const [, tick] = useState(0);
@@ -79,6 +79,11 @@ export default function Overlay() {
           </div>
         );
       })}
+      {partial && (
+        <div className="subtitle-text text-[22px] leading-tight text-neutral-400/90 italic text-center max-w-full truncate">
+          {partial}
+        </div>
+      )}
     </div>
   );
 }

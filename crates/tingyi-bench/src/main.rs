@@ -343,6 +343,7 @@ async fn run_pipeline(
                     PipelineEvent::Status { message } => println!("[{ts:6.1}s] {message}"),
                     PipelineEvent::Segment { id, audio_ms, rms_dbfs, .. } => println!("[{ts:6.1}s] #{id} 段落 {audio_ms} ms({rms_dbfs:.1} dBFS)"),
                     PipelineEvent::TranscriptMerged { into, from, text } => println!("[{ts:6.1}s] #{from} 併入 #{into} → {text}"),
+                    PipelineEvent::Partial { text, .. } => { if !text.is_empty() { println!("[{ts:6.1}s]    預覽:{text}"); } }
                     PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate } => {
                         asr_ms.push(*a);
                         println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" });

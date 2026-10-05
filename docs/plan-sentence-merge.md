@@ -4,11 +4,11 @@
 
 # Task
 
-- [ ] A. `sentence.rs`:`Completeness` 與 `completeness(text, lang)`(ja/ko/en 規則 + 極短碎片),單元測試含使用者截圖三句
-- [ ] B. `pipeline.rs::mt_loop`:依完整度決定等待(Complete 立刻 / Incomplete 2.5 s / Unknown 0.8 s),可連續合併,硬上限 12 s / 80 字;新事件 `TranscriptMerged`
-- [ ] C. 前端 reducer 處理 `transcript_merged`(移除被吸收句、更新原文)
-- [ ] E. `audio::normalize_rms` + 測試;worker 送辨識前套用(可關);`record_dir` 存段落 wav;bench `live --record`、`asr-file --normalize`
-- [ ] F. `get_info` 回傳 `recommended_model`,前端預設採用
+- [x] A. `sentence.rs`:`Completeness` 與 `completeness(text, lang)`(ja/ko/en 規則 + 極短碎片),單元測試含使用者截圖三句
+- [x] B. `pipeline.rs::mt_loop`:依完整度決定等待(Complete 立刻 / Incomplete 2.5 s / Unknown 0.8 s),可連續合併,硬上限 12 s / 80 字;新事件 `TranscriptMerged`
+- [x] C. 前端 reducer 處理 `transcript_merged`(移除被吸收句、更新原文)
+- [x] E. `audio::normalize_rms` + 測試;worker 送辨識前套用(可關);`record_dir` 存段落 wav;bench `live --record`、`asr-file --normalize`
+- [x] F. `get_info` 回傳 `recommended_model`,前端預設採用
 - [ ] 驗證:cargo test、pnpm build、使用者以同一影片實測、`live --record` + A/B 寫進報告、/handoff-check
 - [ ] D. 即時預覽(視實測結果決定)
 
@@ -29,8 +29,8 @@
 
 # 驗證方式
 
-- [ ] `cargo test -p tingyi-core` 含 sentence 與 normalize 測試
-- [ ] `pnpm build`
+- [x] `cargo test -p tingyi-core` 含 sentence 與 normalize 測試(20 passed)
+- [x] `pnpm build`
 - [ ] 使用者實測:截圖 #25–#27 類句子合併成一句;列表無殘留「…」;7B 預設
 - [ ] `tingyi-bench live --record` 存段落;`asr-file --normalize` A/B 結果寫進 validation-report
 - [ ] `/handoff-check` 全 PASS

@@ -13,7 +13,7 @@ function pct(values: number[], p: number) {
 }
 
 export default function App() {
-  const { sentences, errors } = useSubtitles();
+  const { sentences, errors, partial } = useSubtitles();
   const [info, setInfo] = useState<Info | null>(null);
   const [status, setStatus] = useState("就緒");
   const [busy, setBusy] = useState(false);
@@ -61,7 +61,7 @@ export default function App() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [sentences.length, sentences[sentences.length - 1]?.translation]);
+  }, [sentences.length, sentences[sentences.length - 1]?.translation, partial]);
 
   const stats = useMemo(() => {
     const done = sentences.filter((s) => s.timing);
@@ -273,6 +273,11 @@ export default function App() {
             {sentences.map((s) => (
               <SentenceRow key={s.id} s={s} />
             ))}
+            {partial && (
+              <div className="rounded border border-dashed border-neutral-800 px-3 py-2 text-neutral-500 italic">
+                講話中:{partial}
+              </div>
+            )}
           </div>
           {errors.length > 0 && (
             <div className="px-4 py-1 border-t border-rose-900 text-rose-300 text-xs truncate">{errors[errors.length - 1]}</div>
