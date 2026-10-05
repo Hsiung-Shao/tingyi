@@ -79,11 +79,10 @@ export default function Overlay() {
           </div>
         );
       })}
-      {partial && (
-        <div className="subtitle-text text-[22px] leading-tight text-neutral-400/90 italic text-center max-w-full truncate">
-          {partial}
-        </div>
-      )}
+      {/* 預覽列固定佔一行高度,有無文字都不讓上方字幕跳動 */}
+      <div className="subtitle-text h-[28px] text-[22px] leading-[28px] text-neutral-400/90 italic text-center max-w-full truncate">
+        {partial || " "}
+      </div>
     </div>
   );
 }

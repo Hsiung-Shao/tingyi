@@ -76,7 +76,10 @@ pub struct PipelineConfig {
     /// 使用者鎖定語言(覆蓋自動偵測)。
     pub lock_lang: Option<Lang>,
     pub glossary: Glossary,
+    /// 前文採「累加式」:舊句固定不動、只在尾端加新句,讓 llama-server 的提示快取命中;
+    /// 累計字元超過 `context_max_chars` 時整批清到剩最近 `context_sentences` 句(快取失效一次後重建)。
     pub context_sentences: usize,
+    pub context_max_chars: usize,
     /// 句子明顯沒說完時,最多等下一段多久。
     pub incomplete_wait: Duration,
     /// 看不出完整與否時的短暫等待。
@@ -108,8 +111,9 @@ impl Default for PipelineConfig {
             lock_lang: None,
             glossary: Glossary::default(),
             context_sentences: 6,
+            context_max_chars: 1600,
             incomplete_wait: Duration::from_millis(2500),
-            unknown_wait: Duration::from_millis(800),
+            unknown_wait: Duration::from_millis(500),
             merge_max_audio_ms: 12_000,
             merge_max_chars: 80,
             mt_timeout: Duration::from_secs(15),
@@ -241,6 +245,11 @@ fn worker_loop(
             Ok(mut t) => {
                 timing.asr_done = Some(Instant::now());
                 if t.text.is_empty() {
+                    // 段落沒有文字(雜音):把可能殘留的預覽清掉
+                    let _ = events.send(PipelineEvent::Partial {
+                        text: String::new(),
+                        lang: Lang::Unknown,
+                    });
                     return;
                 }
                 // 自動偵測信心低(Unknown)時沿用上一句語言。
@@ -292,11 +301,8 @@ fn worker_loop(
                     handle_segment(seg, &mut last_lang);
                 }
                 if had_segment && preview_shown {
-                    // 正式結果已送出,清掉預覽
-                    let _ = events.send(PipelineEvent::Partial {
-                        text: String::new(),
-                        lang: last_lang.unwrap_or(Lang::Unknown),
-                    });
+                    // 正式 Transcript 事件會直接取代預覽(前端在 transcript 時清空 partial),
+                    // 這裡不另送清空事件,避免「清空 → 補上」的閃動。
                     preview_shown = false;
                 }
                 if cfg.preview && !had_segment && last_preview.elapsed() >= cfg.preview_interval {
@@ -471,8 +477,12 @@ async fn translate_one(
             let hit_refs: Vec<_> = hits.iter().collect();
             let text = postprocess(&res.text, &hit_refs);
             context.push_back((u.text.clone(), text.clone()));
-            while context.len() > cfg.context_sentences {
-                context.pop_front();
+            // 累加式前文:平時只追加(提示前綴不變 → 快取命中);超過額度才一次裁到最近幾句。
+            let total: usize = context.iter().map(|(s, t)| s.chars().count() + t.chars().count()).sum();
+            if total > cfg.context_max_chars {
+                while context.len() > cfg.context_sentences {
+                    context.pop_front();
+                }
             }
             let _ = events.send(PipelineEvent::TranslationDone {
                 id,

@@ -18,8 +18,11 @@ function reducer(state: State, ev: Action): State {
   switch (ev.type) {
     case "reset":
       return { sentences: [], status: state.status, errors: [], partial: "" };
-    case "partial":
+    case "partial": {
+      // 重辨識偶爾會短暫吐出比上一次短很多的結果(抖動),這種就不更新,減少閃動
+      if (ev.text !== "" && ev.text.length < state.partial.length * 0.6) return state;
       return { ...state, partial: ev.text };
+    }
     case "status":
       return { ...state, status: ev.message };
     case "error":

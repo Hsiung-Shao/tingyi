@@ -10,7 +10,7 @@
 - [x] E. `audio::normalize_rms` + 測試;worker 送辨識前套用(可關);`record_dir` 存段落 wav;bench `live --record`、`asr-file --normalize`
 - [x] F. `get_info` 回傳 `recommended_model`,前端預設採用
 - [ ] 驗證:cargo test、pnpm build、使用者以同一影片實測、`live --record` + A/B 寫進報告、/handoff-check
-- [ ] D. 即時預覽(視實測結果決定)
+- [x] D. 即時預覽:Segmenter.current_speech + worker 每 1 s 預覽辨識 + Partial 事件 + 前端灰字(使用者回報斷句有改善後實作)
 
 # 相關檔案
 
@@ -31,6 +31,6 @@
 
 - [x] `cargo test -p tingyi-core` 含 sentence 與 normalize 測試(20 passed)
 - [x] `pnpm build`
-- [ ] 使用者實測:截圖 #25–#27 類句子合併成一句;列表無殘留「…」;7B 預設
+- [~] 使用者實測:斷句合併已回報改善;即時預覽與音量正規化效果待回報
 - [ ] `tingyi-bench live --record` 存段落;`asr-file --normalize` A/B 結果寫進 validation-report
 - [ ] `/handoff-check` 全 PASS
