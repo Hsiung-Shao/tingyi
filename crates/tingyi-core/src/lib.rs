@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod vad;
+pub mod sentence;
 pub mod asr;
 pub mod mt;
 pub mod postprocess;

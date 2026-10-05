@@ -1,37 +1,47 @@
-//! 管線:擷取 → VAD → ASR → MT,對外以事件串流回報。
+//! 管線:擷取 → VAD → ASR → 句子合併 → MT,對外以事件串流回報。
 //!
 //! 執行緒配置:
 //! - capture thread(WASAPI)→ crossbeam channel(AudioChunk)
-//! - worker thread:VAD 切段 + SenseVoice 辨識(皆同步、CPU)→ tokio mpsc(Transcript)
-//! - mt task(tokio):依序翻譯,處理短句合併與上下文
+//! - worker thread:VAD 切段 + 音量正規化 + SenseVoice 辨識(皆同步、CPU)→ tokio mpsc(Utterance)
+//! - mt task(tokio):依句子完整度決定等待/合併,再依序翻譯
 //!
 //! 所有對外事件經 `tokio::sync::mpsc::UnboundedSender<PipelineEvent>`。
 
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-/// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
-static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber};
 use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
+use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
 use crate::metrics::{SentenceTiming, TimingSnapshot};
 use crate::mt::{TranslateRequest, Translator};
 use crate::postprocess::{postprocess, Glossary};
-use crate::vad::{is_fragment, Segment, Segmenter, VadConfig};
+use crate::sentence::{completeness, Completeness};
+use crate::vad::{Segment, Segmenter, VadConfig};
+
+/// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
+static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineEvent {
     Status { message: String },
     /// VAD 切出一段。
-    Segment { id: u64, audio_ms: u32 },
-    /// 辨識完成(可能因 is_fragment 被暫存,等下一段合併)。
+    Segment {
+        id: u64,
+        audio_ms: u32,
+        /// 原始段落音量(dBFS),診斷音量與辨識品質的關係。
+        rms_dbfs: f32,
+        /// 若有錄音,存檔路徑。
+        wav: Option<String>,
+    },
+    /// 辨識完成(可能因句子未完被暫存,等下一段合併)。
     Transcript {
         id: u64,
         text: String,
@@ -40,6 +50,8 @@ pub enum PipelineEvent {
         /// 判定為中文或不在允許語言 → 不翻譯。
         will_translate: bool,
     },
+    /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
+    TranscriptMerged { into: u64, from: u64, text: String },
     TranslationDelta { id: u64, delta: String },
     TranslationDone {
         id: u64,
@@ -63,10 +75,20 @@ pub struct PipelineConfig {
     pub lock_lang: Option<Lang>,
     pub glossary: Glossary,
     pub context_sentences: usize,
-    /// 短句等待合併的最長時間。
-    pub merge_wait: Duration,
+    /// 句子明顯沒說完時,最多等下一段多久。
+    pub incomplete_wait: Duration,
+    /// 看不出完整與否時的短暫等待。
+    pub unknown_wait: Duration,
+    /// 合併後音訊長度上限,超過就強制翻。
+    pub merge_max_audio_ms: u32,
+    /// 合併後字數上限(CJK 字數;英文以詞數 × 2 近似)。
+    pub merge_max_chars: usize,
     /// 翻譯最長等待;超過視為失敗(前端顯示原文)。
     pub mt_timeout: Duration,
+    /// 送辨識前做音量正規化。
+    pub normalize_audio: bool,
+    /// 有設就把每段原始 16 kHz 樣本存成 wav(bench / 除錯用)。
+    pub record_dir: Option<PathBuf>,
 }
 
 impl Default for PipelineConfig {
@@ -79,8 +101,13 @@ impl Default for PipelineConfig {
             lock_lang: None,
             glossary: Glossary::default(),
             context_sentences: 6,
-            merge_wait: Duration::from_millis(1500),
+            incomplete_wait: Duration::from_millis(2500),
+            unknown_wait: Duration::from_millis(800),
+            merge_max_audio_ms: 12_000,
+            merge_max_chars: 80,
             mt_timeout: Duration::from_secs(15),
+            normalize_audio: true,
+            record_dir: None,
         }
     }
 }
@@ -91,6 +118,8 @@ struct Utterance {
     text: String,
     lang: Lang,
     timing: SentenceTiming,
+    /// 這句(含已合併的)到達 MT 階段的時間,用來算等待逾時。
+    arrived: Instant,
 }
 
 pub struct PipelineHandle {
@@ -126,6 +155,9 @@ pub fn start(
     // 先載模型,失敗就直接回錯,不啟動擷取。
     let asr = SenseVoice::new(&cfg.asr)?;
     let segmenter = Segmenter::new(&cfg.vad)?;
+    if let Some(d) = &cfg.record_dir {
+        std::fs::create_dir_all(d).map_err(|e| anyhow!("建立錄音目錄 {}: {e}", d.display()))?;
+    }
     let _ = events.send(PipelineEvent::Status {
         message: format!("模型載入完成:{}", asr.name()),
     });
@@ -168,16 +200,34 @@ fn worker_loop(
     events: mpsc::UnboundedSender<PipelineEvent>,
     stop: Arc<AtomicBool>,
 ) {
-    let mut next_id: u64 = 0; // 未使用,保留簽名;實際編號取自 NEXT_SENTENCE_ID
     let mut last_lang: Option<Lang> = None;
 
-    let handle_segment = |seg: Segment, _next_id: &mut u64, last_lang: &mut Option<Lang>| {
+    let handle_segment = |seg: Segment, last_lang: &mut Option<Lang>| {
         let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
         let audio_ms = seg.duration_ms();
-        let _ = events.send(PipelineEvent::Segment { id, audio_ms });
+        let level = rms_dbfs(&seg.samples);
+        let wav = cfg.record_dir.as_ref().map(|d| {
+            let p = d.join(format!("seg-{id:04}.wav"));
+            if !sherpa_onnx::write(&p.to_string_lossy(), &seg.samples, TARGET_SAMPLE_RATE) {
+                tracing::warn!("寫入 {} 失敗", p.display());
+            }
+            p.to_string_lossy().to_string()
+        });
+        let _ = events.send(PipelineEvent::Segment {
+            id,
+            audio_ms,
+            rms_dbfs: level,
+            wav,
+        });
         let mut timing = SentenceTiming::new(id, seg.end_at, audio_ms);
 
-        match asr.transcribe(&seg.samples, cfg.lock_lang) {
+        let pcm = if cfg.normalize_audio {
+            normalize_rms(&seg.samples, -20.0, 8.0)
+        } else {
+            seg.samples.clone()
+        };
+
+        match asr.transcribe(&pcm, cfg.lock_lang) {
             Ok(mut t) => {
                 timing.asr_done = Some(Instant::now());
                 if t.text.is_empty() {
@@ -207,6 +257,7 @@ fn worker_loop(
                         text: t.text,
                         lang: t.lang,
                         timing,
+                        arrived: Instant::now(),
                     });
                 }
             }
@@ -222,7 +273,7 @@ fn worker_loop(
         match audio_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(chunk) => {
                 for seg in segmenter.push(&chunk.samples) {
-                    handle_segment(seg, &mut next_id, &mut last_lang);
+                    handle_segment(seg, &mut last_lang);
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -230,9 +281,55 @@ fn worker_loop(
         }
     }
     for seg in segmenter.flush() {
-        handle_segment(seg, &mut next_id, &mut last_lang);
+        handle_segment(seg, &mut last_lang);
     }
     tracing::info!("worker 結束");
+}
+
+/// 合併後是否已達硬上限,必須翻。
+fn merge_limit_reached(cfg: &PipelineConfig, u: &Utterance) -> bool {
+    if u.timing.audio_ms >= cfg.merge_max_audio_ms {
+        return true;
+    }
+    let len = if u.lang.is_cjk() {
+        u.text.chars().count()
+    } else {
+        u.text.split_whitespace().count() * 2
+    };
+    len >= cfg.merge_max_chars
+}
+
+/// 這句該等多久:None = 立刻翻。
+fn wait_for(cfg: &PipelineConfig, u: &Utterance) -> Option<Duration> {
+    if merge_limit_reached(cfg, u) {
+        return None;
+    }
+    match completeness(&u.text, u.lang) {
+        Completeness::Complete => None,
+        Completeness::Incomplete => Some(cfg.incomplete_wait),
+        Completeness::Unknown => Some(cfg.unknown_wait),
+    }
+}
+
+fn merge(cfg: &PipelineConfig, mut p: Utterance, u: Utterance, events: &mpsc::UnboundedSender<PipelineEvent>) -> Utterance {
+    let sep = if p.lang.is_cjk() && u.lang.is_cjk() { "" } else { " " };
+    p.text = format!("{}{}{}", p.text, sep, u.text);
+    // 保留較早句的 timing 原點(延遲算最壞情況),音訊長度累加。
+    p.timing.audio_ms += u.timing.audio_ms;
+    if let (Some(a), Some(b)) = (p.timing.asr_done, u.timing.asr_done) {
+        p.timing.asr_done = Some(a.max(b));
+    }
+    p.arrived = u.arrived;
+    if p.lang == Lang::Unknown {
+        p.lang = u.lang;
+    }
+    let _ = events.send(PipelineEvent::TranscriptMerged {
+        into: p.id,
+        from: u.id,
+        text: p.text.clone(),
+    });
+    let _ = cfg;
+    p
 }
 
 async fn mt_loop(
@@ -250,15 +347,19 @@ async fn mt_loop(
     let mut pending: Option<Utterance> = None;
 
     loop {
-        // 有暫存短句時,最多等 merge_wait 看有沒有下一段可合併。
         let next = if let Some(p) = &pending {
-            let waited = p.timing.vad_end.elapsed();
-            let remain = cfg.merge_wait.saturating_sub(waited);
+            // 暫存句等待中:依完整度決定最多等多久(從它到達 MT 階段算起)。
+            let budget = wait_for(&cfg, p).unwrap_or(Duration::ZERO);
+            let remain = budget.saturating_sub(p.arrived.elapsed());
+            if remain.is_zero() {
+                let u = pending.take().unwrap();
+                translate_one(&cfg, &translator, &events, &mut context, u).await;
+                continue;
+            }
             match tokio::time::timeout(remain, rx.recv()).await {
                 Ok(Some(u)) => Some(u),
-                Ok(None) => None,            // channel 關閉
+                Ok(None) => None, // channel 關閉
                 Err(_) => {
-                    // 逾時:送出暫存句
                     let u = pending.take().unwrap();
                     translate_one(&cfg, &translator, &events, &mut context, u).await;
                     continue;
@@ -268,27 +369,24 @@ async fn mt_loop(
             rx.recv().await
         };
 
-        let Some(mut u) = next else {
+        let Some(u) = next else {
             if let Some(p) = pending.take() {
                 translate_one(&cfg, &translator, &events, &mut context, p).await;
             }
             break;
         };
 
-        if let Some(p) = pending.take() {
-            // 合併:保留較早句的 timing 原點(延遲算最壞情況)。
-            let sep = if p.lang.is_cjk() { "" } else { " " };
-            u.text = format!("{}{}{}", p.text, sep, u.text);
-            u.timing.vad_end = p.timing.vad_end;
-            u.timing.audio_ms += p.timing.audio_ms;
-            u.id = p.id;
-        }
+        let u = match pending.take() {
+            Some(p) => merge(&cfg, p, u, &events),
+            None => u,
+        };
 
-        if is_fragment(&u.text, u.lang.is_cjk()) {
+        // 合併後重新判斷:還沒說完就繼續等,說完或達上限就翻。
+        if wait_for(&cfg, &u).is_some() {
             pending = Some(u);
-            continue;
+        } else {
+            translate_one(&cfg, &translator, &events, &mut context, u).await;
         }
-        translate_one(&cfg, &translator, &events, &mut context, u).await;
     }
     tracing::info!("mt task 結束");
 }
@@ -309,11 +407,7 @@ async fn translate_one(
     };
     let id = u.id;
     let ev = events.clone();
-    let mut first: Option<Instant> = None;
     let mut on_delta = move |d: &str| {
-        if first.is_none() {
-            first = Some(Instant::now());
-        }
         let _ = ev.send(PipelineEvent::TranslationDelta {
             id,
             delta: d.to_string(),
@@ -327,7 +421,7 @@ async fn translate_one(
             u.timing.mt_done = Some(now);
             u.timing.mt_first_token = res
                 .first_token_ms
-                .and_then(|ms| u.timing.asr_done.map(|a| a + Duration::from_millis(ms as u64)))
+                .map(|ms| now - Duration::from_millis(res.total_ms.saturating_sub(ms) as u64))
                 .or(Some(now));
             let hit_refs: Vec<_> = hits.iter().collect();
             let text = postprocess(&res.text, &hit_refs);

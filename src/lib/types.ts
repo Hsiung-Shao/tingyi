@@ -14,7 +14,8 @@ export interface TimingSnapshot {
 
 export type PipelineEvent =
   | { type: "status"; message: string }
-  | { type: "segment"; id: number; audio_ms: number }
+  | { type: "segment"; id: number; audio_ms: number; rms_dbfs: number; wav: string | null }
+  | { type: "transcript_merged"; into: number; from: number; text: string }
   | {
       type: "transcript";
       id: number;
@@ -64,6 +65,8 @@ export interface Info {
   llama_server_ready: boolean;
   running: boolean;
   autostart: boolean;
+  /// 依顯示記憶體與已下載檔案建議的翻譯模型
+  recommended_model: string;
 }
 
 export type OverlayMode = "bilingual" | "translation";

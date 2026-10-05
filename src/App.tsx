@@ -29,6 +29,15 @@ export default function App() {
   // get_info 只是狀態列資訊,失敗(例如後端尚未就緒)不影響操作,10 秒後會再查,故不報錯。
   const refreshInfo = () => invoke<Info>("get_info").then(setInfo).catch(() => {});
   const autostarted = useRef(false);
+  const modelDefaulted = useRef(false);
+
+  useEffect(() => {
+    // 首次取得資訊時,以後端依顯示記憶體建議的模型當預設;之後使用者可自行更改
+    if (info?.recommended_model && !modelDefaulted.current) {
+      modelDefaulted.current = true;
+      setModel(info.recommended_model);
+    }
+  }, [info?.recommended_model]);
 
   useEffect(() => {
     // 開發用自動開始(TINGYI_AUTOSTART=1):只在 autostart 旗標首次為 true 時觸發一次;

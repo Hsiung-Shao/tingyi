@@ -79,6 +79,12 @@ enum Cmd {
         lang: Option<String>,
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 把每段原始 16 kHz 音訊存成 wav 到此目錄(離線 A/B 用)
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// 關閉送辨識前的音量正規化
+        #[arg(long)]
+        no_normalize: bool,
     },
     Serve {
         #[arg(long, default_value = "Hy-MT2-1.8B-Q8_0")]
@@ -93,6 +99,9 @@ enum Cmd {
         lang: Option<String>,
         #[arg(long, default_value_t = 4)]
         threads: i32,
+        /// 送辨識前做音量正規化(與不帶旗標比較,做 A/B)
+        #[arg(long)]
+        normalize: bool,
     },
 }
 
@@ -132,7 +141,7 @@ async fn main() -> Result<()> {
             out,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
-            run_pipeline(seconds, lock, threads, None, out).await?;
+            run_pipeline(seconds, lock, threads, None, out, None, true).await?;
         }
         Cmd::Mt {
             sentences,
@@ -148,6 +157,8 @@ async fn main() -> Result<()> {
             attach,
             lang,
             out,
+            record,
+            no_normalize,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
             let before = gpu::nvidia_used_mib();
@@ -180,12 +191,12 @@ async fn main() -> Result<()> {
                     &mut noop,
                 )
                 .await;
-            run_pipeline(seconds, lock, 4, Some(translator), out).await?;
+            run_pipeline(seconds, lock, 4, Some(translator), out, record, !no_normalize).await?;
             if let Some(mut s) = server {
                 println!("關閉 llama-server:{}", if s.shutdown() { "已結束" } else { "未確認" });
             }
         }
-        Cmd::AsrFile { files, lang, threads } => {
+        Cmd::AsrFile { files, lang, threads, normalize } => {
             use tingyi_core::asr::{SenseVoice, SenseVoiceConfig, Transcriber};
             let lock = lang.as_deref().map(parse_lang).transpose()?;
             let t0 = Instant::now();
@@ -204,6 +215,11 @@ async fn main() -> Result<()> {
                     samples = r.resample(&samples, true);
                 }
                 let audio_ms = samples.len() * 1000 / 16000;
+                let level = tingyi_core::audio::rms_dbfs(&samples);
+                if normalize {
+                    samples = tingyi_core::audio::normalize_rms(&samples, -20.0, 8.0);
+                }
+                print!("[{level:6.1} dBFS{}] ", if normalize { " →正規化" } else { "" });
                 let t = asr.transcribe(&samples, lock)?;
                 println!(
                     "{}: 音訊 {audio_ms} ms,辨識 {} ms(RTF {:.3})[{}] {}\n   raw: {}",
@@ -283,9 +299,13 @@ async fn run_pipeline(
     threads: i32,
     translator: Option<Arc<dyn Translator>>,
     out: Option<PathBuf>,
+    record: Option<PathBuf>,
+    normalize: bool,
 ) -> Result<()> {
     let mut cfg = PipelineConfig::default();
     cfg.lock_lang = lock;
+    cfg.record_dir = record;
+    cfg.normalize_audio = normalize;
     cfg.asr.num_threads = threads;
     if lock.is_some() {
         cfg.allowed_langs = HashSet::new();
@@ -321,7 +341,8 @@ async fn run_pipeline(
                 }
                 match &ev {
                     PipelineEvent::Status { message } => println!("[{ts:6.1}s] {message}"),
-                    PipelineEvent::Segment { id, audio_ms } => println!("[{ts:6.1}s] #{id} 段落 {audio_ms} ms"),
+                    PipelineEvent::Segment { id, audio_ms, rms_dbfs, .. } => println!("[{ts:6.1}s] #{id} 段落 {audio_ms} ms({rms_dbfs:.1} dBFS)"),
+                    PipelineEvent::TranscriptMerged { into, from, text } => println!("[{ts:6.1}s] #{from} 併入 #{into} → {text}"),
                     PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate } => {
                         asr_ms.push(*a);
                         println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" });

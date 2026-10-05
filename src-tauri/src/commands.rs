@@ -27,6 +27,20 @@ pub struct Info {
     pub running: bool,
     /// 開發用:環境變數 `TINGYI_AUTOSTART=1` 時前端載入後自動按「開始」。
     pub autostart: bool,
+    /// 依顯示記憶體與已下載檔案建議的翻譯模型。
+    pub recommended_model: String,
+}
+
+/// 總顯示記憶體 ≥ 8 GB 且 7B 檔存在 → 7B Q4;≥ 4 GB → 1.8B Q8;否則 1.8B Q4。
+/// 使用者實測(2026-10-06):7B Q4 精準度明顯較好,首字僅多約 50 ms。
+fn recommend_model(total_mib: Option<u32>) -> String {
+    let present = |n: &str| paths::gguf_model(n).exists();
+    match total_mib {
+        Some(t) if t >= 8000 && present("Hy-MT2-7B-Q4_K_M") => "Hy-MT2-7B-Q4_K_M".into(),
+        Some(t) if t >= 4000 && present("Hy-MT2-1.8B-Q8_0") => "Hy-MT2-1.8B-Q8_0".into(),
+        _ if present("Hy-MT2-1.8B-Q4_K_M") => "Hy-MT2-1.8B-Q4_K_M".into(),
+        _ => "Hy-MT2-1.8B-Q8_0".into(),
+    }
 }
 
 #[derive(Serialize)]
@@ -52,10 +66,13 @@ pub fn get_info(state: State<'_, AppState>) -> Info {
             }
         })
         .collect();
+    let gpu_info = gpu::nvidia_info();
+    let recommended_model = recommend_model(gpu_info.as_ref().map(|g| g.1));
     Info {
         data_dir: paths::data_dir().display().to_string(),
         device: tingyi_core::audio::capture::default_render_device_name().ok(),
-        gpu: gpu::nvidia_info(),
+        gpu: gpu_info,
+        recommended_model,
         gpu_used_mib: gpu::nvidia_used_mib(),
         models,
         sensevoice_ready: paths::sensevoice_model().exists() && paths::sensevoice_tokens().exists(),

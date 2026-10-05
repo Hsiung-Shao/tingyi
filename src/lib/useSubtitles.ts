@@ -22,6 +22,14 @@ function reducer(state: State, ev: Action): State {
       return { ...state, errors: [...state.errors.slice(-19), ev.message] };
     case "segment":
       return state;
+    case "transcript_merged":
+      // from 被併入 into:移除 from,更新 into 的原文(仍在等待翻譯)
+      return {
+        ...state,
+        sentences: state.sentences
+          .filter((s) => s.id !== ev.from)
+          .map((s) => (s.id === ev.into ? { ...s, source: ev.text, state: "translating" } : s)),
+      };
     case "transcript": {
       // 合併(短句等待)會讓同一 id 再出現;以 id 覆蓋。
       const existing = state.sentences.findIndex((s) => s.id === ev.id);
