@@ -1,0 +1,90 @@
+import { useEffect, useReducer } from "react";
+import { listen } from "@tauri-apps/api/event";
+import type { PipelineEvent, Sentence } from "./types";
+
+interface State {
+  sentences: Sentence[];
+  status: string;
+  errors: string[];
+}
+
+const MAX_SENTENCES = 500;
+
+function reducer(state: State, ev: PipelineEvent): State {
+  switch (ev.type) {
+    case "status":
+      return { ...state, status: ev.message };
+    case "error":
+      return { ...state, errors: [...state.errors.slice(-19), ev.message] };
+    case "segment":
+      return state;
+    case "transcript": {
+      // 合併(短句等待)會讓同一 id 再出現;以 id 覆蓋。
+      const existing = state.sentences.findIndex((s) => s.id === ev.id);
+      const s: Sentence = {
+        id: ev.id,
+        source: ev.text,
+        lang: ev.lang,
+        translation: "",
+        state: ev.will_translate ? "translating" : "no_translate",
+        asrMs: ev.asr_ms,
+        at: Date.now(),
+      };
+      const sentences =
+        existing >= 0
+          ? state.sentences.map((x, i) => (i === existing ? s : x))
+          : [...state.sentences, s].slice(-MAX_SENTENCES);
+      return { ...state, sentences };
+    }
+    case "translation_delta":
+      return {
+        ...state,
+        sentences: state.sentences.map((s) =>
+          s.id === ev.id ? { ...s, translation: s.translation + ev.delta, state: "translating" } : s,
+        ),
+      };
+    case "translation_done": {
+      const idx = state.sentences.findIndex((s) => s.id === ev.id);
+      if (idx < 0) {
+        // 合併後 id 可能是較早那句;補一筆
+        const s: Sentence = {
+          id: ev.id,
+          source: ev.source,
+          lang: "unknown",
+          translation: ev.text,
+          state: "done",
+          asrMs: ev.timing.asr_ms ?? 0,
+          timing: ev.timing,
+          at: Date.now(),
+        };
+        return { ...state, sentences: [...state.sentences, s].slice(-MAX_SENTENCES) };
+      }
+      return {
+        ...state,
+        sentences: state.sentences.map((s) =>
+          s.id === ev.id
+            ? { ...s, source: ev.source, translation: ev.text, state: "done", timing: ev.timing }
+            : s,
+        ),
+      };
+    }
+    case "translation_failed":
+      return {
+        ...state,
+        sentences: state.sentences.map((s) =>
+          s.id === ev.id ? { ...s, state: "failed", error: ev.error } : s,
+        ),
+      };
+  }
+}
+
+export function useSubtitles() {
+  const [state, dispatch] = useReducer(reducer, { sentences: [], status: "", errors: [] });
+  useEffect(() => {
+    const un = listen<PipelineEvent>("pipeline", (e) => dispatch(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  return state;
+}

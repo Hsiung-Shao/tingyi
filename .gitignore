@@ -1,0 +1,31 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Node
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Rust
+/target/
+
+# Tauri
+/src-tauri/gen/schemas
+
+# Sidecar 執行檔與模型(大檔,由 scripts/download-models.ps1 下載)
+/src-tauri/binaries/*
+!/src-tauri/binaries/.gitkeep
+/data/
+
+# 量測輸出
+/bench-out/

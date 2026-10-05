@@ -1,0 +1,19 @@
+[package]
+name = "tingyi-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "聽譯量測 CLI:vad / asr / mt / live 各階段延遲與品質量測"
+
+[dependencies]
+tingyi-core = { path = "../tingyi-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+sherpa-onnx = "1.13"

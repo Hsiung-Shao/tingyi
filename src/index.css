@@ -1,0 +1,49 @@
+/* 只掃 src 與兩個 html,避免 Tailwind 掃進 data/(7.5 GB 模型)與 target/ */
+@import "tailwindcss" source(none);
+@source "../src";
+@source "../index.html";
+@source "../overlay.html";
+
+:root {
+  font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #0f1115;
+  color: #e6e6e6;
+}
+
+/* 懸浮字幕視窗:完全透明背景 */
+body.overlay-body {
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+.subtitle-text {
+  text-shadow:
+    0 0 4px #000,
+    0 0 4px #000,
+    1px 1px 0 #000,
+    -1px -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 1px 0 #000,
+    2px 2px 3px rgba(0, 0, 0, 0.9);
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fade-in-up 180ms ease-out;
+}

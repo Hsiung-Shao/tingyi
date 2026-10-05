@@ -1,0 +1,23 @@
+[package]
+name = "tingyi-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "聽譯核心:系統音訊擷取、VAD、SenseVoice 辨識、Hy-MT2 翻譯管線"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+crossbeam-channel = "0.5"
+wasapi = "0.25"
+rubato = "0.16"
+sherpa-onnx = "1.13"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+futures-util = "0.3"
+regex = "1"
+
+[dev-dependencies]
