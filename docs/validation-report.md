@@ -108,6 +108,23 @@
 | 顯示記憶體 < 6 GB | ✅ 1.8B Q4 1.4 GB、1.8B Q8 2.2 GB、7B Q4 5.1 GB |
 | 規格書「1.25-bit 1 GB 以下」選項 | 官方 GGUF repo 無 1.25-bit;以 1.8B Q4_K_M(1.4 GB)取代 |
 
+## 6b. Whisper large-v3-turbo 引擎(2026-10-06 加入)
+
+whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja + vcvars64,arch 120),`ggml-large-v3-turbo-q8_0.bin`,whisper-server sidecar(port 8179)。官方 test_wavs 對照:
+
+| 檔案 | SenseVoice-Small(CPU) | Whisper turbo q8(CUDA) |
+|---|---|---|
+| en.wav 7.2 s | 102 ms;「…50 pieces of **code**」「chieftain」 | 210 ms;「…50 pieces of **gold**」「chief then」✅ |
+| ja.wav 7.2 s | 99 ms;「持っていき**ない**」 | 177 ms;「持っていけない」✅,標點自然 |
+| ko.wav 4.6 s | 67 ms;無分詞空白 | 126 ms;無分詞空白(Whisper 對韓文也常不分詞) |
+| zh / yue | 正確 | 正確(粵語輸出繁體) |
+
+- 顯示記憶體 +1,186–1,214 MiB;載入 0.7–1.4 s;每段 130–210 ms(SenseVoice 60–100 ms)。
+- 準確度明顯較好,速度仍遠低於目標;即時預覽維持用 SenseVoice(每秒一次)。
+- 陷阱:multipart 送 `detect_language=true` 會讓 whisper-server **只偵測語言、回空文字**;`language=auto` 本身就會自動偵測並辨識。
+- 陷阱:CMake 的 Visual Studio 產生器需要 CUDA 的 VS 整合(本機沒裝)→ 改 Ninja + vcvars64;本機 CUDA 13.1 目錄只有 stub,實際 nvcc 在 12.8(支援 sm_120)。
+- 待使用者以直播影片實測:快語速日文的錯誤率是否明顯下降。
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。

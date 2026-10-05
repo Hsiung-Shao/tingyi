@@ -230,16 +230,15 @@ impl Transcriber for WhisperServer {
         let t0 = Instant::now();
         let lang = self.lang_param(lang_hint);
         let wav = pcm_to_wav16(pcm, TARGET_SAMPLE_RATE as u32);
-        let mut fields: Vec<(&str, String)> = vec![
+        // 注意:不可送 detect_language=true,那會讓 whisper-server 只偵測語言、回空文字;
+        // language=auto 本身就會自動偵測並辨識。
+        let fields: Vec<(&str, String)> = vec![
             ("language", lang.clone()),
             ("response_format", "json".into()),
             ("no_timestamps", "true".into()),
             ("temperature", "0.0".into()),
             ("no_speech_thold", "0.6".into()),
         ];
-        if lang == "auto" {
-            fields.push(("detect_language", "true".into()));
-        }
         let boundary = "----tingyi-boundary-7d1e9c0f";
         let body = build_multipart(boundary, &fields, "file", "seg.wav", "audio/wav", &wav);
         let url = format!("{}/inference", self.cfg.base_url.trim_end_matches('/'));
@@ -262,10 +261,10 @@ impl Transcriber for WhisperServer {
         }
         let detected = lang_hint.or(self.cfg.language).unwrap_or_else(|| {
             match parsed.language.as_deref() {
-                Some("en") => Lang::En,
-                Some("ja") => Lang::Ja,
-                Some("ko") => Lang::Ko,
-                Some("zh") | Some("yue") => Lang::Zh,
+                Some("en") | Some("english") => Lang::En,
+                Some("ja") | Some("japanese") => Lang::Ja,
+                Some("ko") | Some("korean") => Lang::Ko,
+                Some("zh") | Some("yue") | Some("chinese") | Some("cantonese") => Lang::Zh,
                 _ => detect_lang(&text),
             }
         });
@@ -347,21 +346,21 @@ pub fn strip_tags(raw: &str) -> String {
     collapse_cjk_spaces(&joined)
 }
 
+/// 中日文字元(不含諺文:韓文本來就以空白分詞,空白要保留)。
 fn is_cjk_char(c: char) -> bool {
     matches!(c as u32,
         0x3000..=0x30FF   // CJK 標點、平假名、片假名
         | 0x31F0..=0x31FF
         | 0x3400..=0x4DBF
         | 0x4E00..=0x9FFF // 漢字
-        | 0xAC00..=0xD7AF // 諺文
         | 0xFF00..=0xFFEF // 全形字元
     )
 }
 
-/// 移除 CJK 字元之間的空白。
+/// 移除中日文字元之間的空白(韓文保留)。
 ///
 /// SenseVoice 對語速快的日文常輸出「クレン ゲーム に 行っ た」這種以空白斷開的 token,
-/// 翻譯模型吃到會明顯變差;拉丁字母之間的空白(英文單字)保留。
+/// 翻譯模型吃到會明顯變差;拉丁字母之間的空白(英文單字)與韓文分詞空白保留。
 pub fn collapse_cjk_spaces(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -432,7 +431,7 @@ mod tests {
         assert_eq!(collapse_cjk_spaces("2000 円 ぐらい で 2 個"), "2000円ぐらいで2個");
         assert_eq!(collapse_cjk_spaces("hello there world"), "hello there world");
         assert_eq!(collapse_cjk_spaces("Twitter で 見た"), "Twitterで見た");
-        assert_eq!(collapse_cjk_spaces("안녕 하세요 OK then"), "안녕하세요OK then");
+        assert_eq!(collapse_cjk_spaces("안녕 하세요 OK then"), "안녕 하세요 OK then"); // 韓文空白保留
         assert_eq!(strip_tags("<|ja|> 今日 は いい 天気"), "今日はいい天気");
     }
 
