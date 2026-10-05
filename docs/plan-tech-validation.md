@@ -71,8 +71,8 @@
 
 - [x] `pnpm tauri dev` 可啟動;`cargo build --workspace` 成功
 - [x] llama-server `/health` 回 ok,`nvidia-smi` 記到顯示記憶體(1.8B Q8 +2.2 GB)
-- [x] VAD 切段:TTS 六句切成 11 段,靜音不出段(真實影片含音樂待第 7 項)
-- [x] `tingyi-bench asr-file` 五語 test_wavs 全對;真實影片 20 句抽樣待第 7 項
+- [x] VAD 切段:TTS 六句切成 11 段,靜音不出段;真實影片含主題曲段已在第 7 項實測(歌唱段會被當語音切出,需 BGM 偵測)
+- [x] `tingyi-bench asr-file` 五語 test_wavs 全對;真實影片人工抽樣由使用者決定略過(第 7 項)
 - [x] `tingyi-bench mt` 三模型 30 句對照表(bench-out/mt-30.jsonl)
 - [x] 懸浮字幕實際顯示譯文;端到端首字 p50 95 ms
 - [x] `cargo test --workspace`(13 passed)與 `pnpm build` 通過
