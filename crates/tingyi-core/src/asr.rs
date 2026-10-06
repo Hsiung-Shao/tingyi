@@ -225,6 +225,111 @@ struct WhisperResponse {
     language: Option<String>,
 }
 
+/// `verbose_json` 回應(回修用):segments 帶秒數時間戳。
+#[derive(serde::Deserialize)]
+struct WhisperVerboseResponse {
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    segments: Vec<WhisperSegmentJson>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhisperSegmentJson {
+    #[serde(default)]
+    start: f32,
+    #[serde(default)]
+    end: f32,
+    #[serde(default)]
+    text: String,
+}
+
+/// 有時間戳的一段(秒,相對送入音訊的起點)。
+#[derive(Debug, Clone)]
+pub struct TimedSegment {
+    pub start_s: f32,
+    pub end_s: f32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimedTranscript {
+    pub segments: Vec<TimedSegment>,
+    pub lang: Lang,
+    pub asr_ms: u32,
+}
+
+/// Whisper 對雜音/靜音常幻聽出的固定句:整句 trim 後比對(不分大小寫、可少句尾「。」)。
+pub fn is_hallucination(text: &str) -> bool {
+    let t = text.trim();
+    WHISPER_HALLUCINATIONS
+        .iter()
+        .any(|h| t.eq_ignore_ascii_case(h) || t == h.trim_end_matches('。'))
+}
+
+fn parse_whisper_lang(s: Option<&str>, text: &str) -> Lang {
+    match s {
+        Some("en") | Some("english") => Lang::En,
+        Some("ja") | Some("japanese") => Lang::Ja,
+        Some("ko") | Some("korean") => Lang::Ko,
+        Some("zh") | Some("yue") | Some("chinese") | Some("cantonese") => Lang::Zh,
+        _ => detect_lang(text),
+    }
+}
+
+fn parse_verbose(parsed: WhisperVerboseResponse, asr_ms: u32, lang_hint: Option<Lang>) -> TimedTranscript {
+    let segments: Vec<TimedSegment> = parsed
+        .segments
+        .into_iter()
+        .map(|s| TimedSegment {
+            start_s: s.start,
+            end_s: s.end,
+            text: strip_tags(&s.text.replace(['\r', '\n'], " ")),
+        })
+        .filter(|s| !s.text.is_empty() && !is_hallucination(&s.text))
+        .collect();
+    let all: String = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    let lang = lang_hint.unwrap_or_else(|| parse_whisper_lang(parsed.language.as_deref(), &all));
+    TimedTranscript { segments, lang, asr_ms }
+}
+
+impl WhisperServer {
+    /// 有時間戳的整段辨識(回修用):`verbose_json`、關 token 時間戳與語言機率(省時間)、
+    /// 壓掉非語音 token、`prompt` 帶上一視窗末句當前文提示。
+    pub fn transcribe_timestamped(&self, pcm: &[f32], lang_hint: Option<Lang>, prompt: Option<&str>) -> Result<TimedTranscript> {
+        let t0 = Instant::now();
+        let lang = self.lang_param(lang_hint);
+        let wav = pcm_to_wav16(pcm, TARGET_SAMPLE_RATE as u32);
+        let mut fields: Vec<(&str, String)> = vec![
+            ("language", lang),
+            ("response_format", "verbose_json".into()),
+            ("no_timestamps", "false".into()),
+            ("token_timestamps", "false".into()),
+            ("no_language_probabilities", "true".into()),
+            ("suppress_non_speech", "true".into()),
+            ("temperature", "0.0".into()),
+            ("no_speech_thold", "0.6".into()),
+        ];
+        if let Some(p) = prompt.map(str::trim).filter(|p| !p.is_empty()) {
+            let p: String = p.chars().take(100).collect();
+            fields.push(("prompt", p));
+        }
+        let boundary = "----tingyi-boundary-7d1e9c0f";
+        let body = build_multipart(boundary, &fields, "file", "win.wav", "audio/wav", &wav);
+        let url = format!("{}/inference", self.cfg.base_url.trim_end_matches('/'));
+        let resp = self
+            .agent
+            .post(&url)
+            .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+            .send_bytes(&body)
+            .map_err(|e| anyhow!("whisper-server /inference(verbose): {e}"))?;
+        let parsed: WhisperVerboseResponse = resp
+            .into_json()
+            .map_err(|e| anyhow!("whisper-server verbose_json 解析失敗: {e}"))?;
+        Ok(parse_verbose(parsed, t0.elapsed().as_millis() as u32, lang_hint.or(self.cfg.language)))
+    }
+}
+
 impl Transcriber for WhisperServer {
     fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
         let t0 = Instant::now();
@@ -257,21 +362,12 @@ impl Transcriber for WhisperServer {
         // 有時間戳模式會以換行分段;併成一行再做後處理
         let joined = raw.replace(['\r', '\n'], " ");
         let mut text = strip_tags(&joined);
-        if WHISPER_HALLUCINATIONS
-            .iter()
-            .any(|h| text.trim().eq_ignore_ascii_case(h) || text.trim() == h.trim_end_matches('。'))
-        {
+        if is_hallucination(&text) {
             text.clear();
         }
-        let detected = lang_hint.or(self.cfg.language).unwrap_or_else(|| {
-            match parsed.language.as_deref() {
-                Some("en") | Some("english") => Lang::En,
-                Some("ja") | Some("japanese") => Lang::Ja,
-                Some("ko") | Some("korean") => Lang::Ko,
-                Some("zh") | Some("yue") | Some("chinese") | Some("cantonese") => Lang::Zh,
-                _ => detect_lang(&text),
-            }
-        });
+        let detected = lang_hint
+            .or(self.cfg.language)
+            .unwrap_or_else(|| parse_whisper_lang(parsed.language.as_deref(), &text));
         Ok(Transcript {
             text,
             lang: detected,
@@ -466,5 +562,22 @@ mod tests {
         assert_eq!(detect_lang("..."), Lang::Unknown);
         // 日文夾英文仍判日文
         assert_eq!(detect_lang("Twitterで見たんだけど"), Lang::Ja);
+    }
+
+    #[test]
+    fn parse_verbose_json_segments() {
+        let j = r#"{"task":"transcribe","language":"japanese","duration":4.0,"text":"a b",
+            "segments":[{"id":0,"seek":0,"start":0.0,"end":1.5,"text":" 嘘でしょ?"},
+                        {"id":1,"seek":0,"start":1.6,"end":3.9,"text":" ご視聴ありがとうございました"},
+                        {"id":2,"seek":0,"start":3.9,"end":4.0,"text":"   "}]}"#;
+        let parsed: WhisperVerboseResponse = serde_json::from_str(j).unwrap();
+        let t = parse_verbose(parsed, 12, None);
+        assert_eq!(t.lang, Lang::Ja);
+        assert_eq!(t.segments.len(), 1, "幻聽與空白段要被濾掉");
+        assert_eq!(t.segments[0].text, "嘘でしょ?");
+        assert!((t.segments[0].end_s - 1.5).abs() < 1e-6);
+        assert!(is_hallucination("Thanks for watching"));
+        assert!(is_hallucination("ご視聴ありがとうございました。"));
+        assert!(!is_hallucination("ありがとうございました"));
     }
 }

@@ -139,6 +139,13 @@ pub struct PipelineStats {
     /// 音訊 channel 目前積壓的 chunk 數(worker 每次迴圈更新)。
     pub audio_backlog: AtomicU64,
     pub audio_backlog_max: AtomicU64,
+    /// 回修:視窗數、耗時、原文修正句數、補回句數、回修翻譋完成數。
+    pub refine_count: AtomicU64,
+    pub refine_total_ms: AtomicU64,
+    pub refine_last_ms: AtomicU64,
+    pub revised_sources: AtomicU64,
+    pub recovered: AtomicU64,
+    pub refine_mt_done: AtomicU64,
     pub speaking: AtomicBool,
     /// 講話狀態最後一次翻轉的時間(算「已靜音多久」用)。
     speech_changed: Mutex<Option<Instant>>,
@@ -202,6 +209,17 @@ impl PipelineStats {
         }
     }
 
+    pub fn record_refine(&self, ms: u32) {
+        self.refine_count.fetch_add(1, Ordering::Relaxed);
+        self.refine_total_ms.fetch_add(ms as u64, Ordering::Relaxed);
+        self.refine_last_ms.store(ms as u64, Ordering::Relaxed);
+    }
+
+    /// 快路徑翻譋佇列長度(送出 − 完成)。
+    pub fn mt_queue(&self) -> u64 {
+        self.mt_sent.load(Ordering::Relaxed).saturating_sub(self.mt_done.load(Ordering::Relaxed))
+    }
+
     pub fn set_backlog(&self, n: usize) {
         self.audio_backlog.store(n as u64, Ordering::Relaxed);
         self.audio_backlog_max.fetch_max(n as u64, Ordering::Relaxed);
@@ -220,7 +238,7 @@ impl PipelineStats {
             speaker_count: g(&self.speaker_count),
             speaker_avg_ms: avg(g(&self.speaker_total_ms), g(&self.speaker_count)),
             speaker_last_ms: g(&self.speaker_last_ms) as u32,
-            mt_queue: g(&self.mt_sent).saturating_sub(g(&self.mt_done)) as u32,
+            mt_queue: self.mt_queue() as u32,
             mt_done: g(&self.mt_done),
             mt_first_avg_ms: avg(g(&self.mt_first_total_ms), g(&self.mt_done)),
             mt_total_avg_ms: avg(g(&self.mt_total_ms), g(&self.mt_done)),
@@ -229,6 +247,12 @@ impl PipelineStats {
             audio_backlog: g(&self.audio_backlog) as u32,
             audio_backlog_max: g(&self.audio_backlog_max) as u32,
             speaking: self.speaking.load(Ordering::Relaxed),
+            refine_count: g(&self.refine_count),
+            refine_avg_ms: avg(g(&self.refine_total_ms), g(&self.refine_count)),
+            refine_last_ms: g(&self.refine_last_ms) as u32,
+            revised_sources: g(&self.revised_sources),
+            recovered: g(&self.recovered),
+            refine_mt_done: g(&self.refine_mt_done),
             e2e_p50: Stats::from_samples(e2e_recent.clone()).p50,
             e2e_recent,
         }
@@ -254,6 +278,12 @@ pub struct StatsSnapshot {
     pub audio_backlog: u32,
     pub audio_backlog_max: u32,
     pub speaking: bool,
+    pub refine_count: u64,
+    pub refine_avg_ms: u32,
+    pub refine_last_ms: u32,
+    pub revised_sources: u64,
+    pub recovered: u64,
+    pub refine_mt_done: u64,
     pub e2e_p50: u32,
     pub e2e_recent: Vec<u32>,
 }

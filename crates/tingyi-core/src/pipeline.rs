@@ -20,7 +20,10 @@ use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
 use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
+use crate::audio::ring::samples_to_ms;
+use crate::audio::wav_sink::WavSink;
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
+use crate::refine::{RefineConfig, RefineJob, RefineMsg};
 use crate::metrics::{PipelineStats, SentenceTiming, TimingSnapshot};
 use crate::mt::{TranslateRequest, Translator};
 use crate::postprocess::{postprocess, Glossary};
@@ -33,7 +36,7 @@ use crate::vad::{Segment, Segmenter, VadConfig};
 pub type SharedSpeakers = Arc<Mutex<Option<SpeakerIdentifier>>>;
 
 /// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
-static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 段落正式辨識用的引擎;即時預覽一律用 SenseVoice。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,9 @@ pub enum PipelineEvent {
         will_translate: bool,
         /// 說話者標籤(開啟說話者辨識且段落夠長時才有)。
         speaker: Option<String>,
+        /// 這段在整條串流中的位置(毫秒,原點 = 擷取開始)。
+        start_ms: u64,
+        end_ms: u64,
     },
     /// 斷句參數變更(自適應或使用者調整)。
     Segmentation {
@@ -78,7 +84,22 @@ pub enum PipelineEvent {
     /// 系統自動把 `from` 併入 `into`(聲紋太像);前端把舊標籤換成新標籤。
     SpeakerMerged { from: String, into: String },
     /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
-    TranscriptMerged { into: u64, from: u64, text: String },
+    TranscriptMerged { into: u64, from: u64, text: String, start_ms: u64, end_ms: u64 },
+    /// 回修:用更長的連續音訊重新辨識後,這句原文有變。
+    SourceRevised { id: u64, text: String },
+    /// 回修:帶前後文重翻後的譯文,取代快譯。
+    TranslationRevised { id: u64, text: String },
+    /// 回修:VAD 漏掉的語音被補回成新句;插在 `after` 之後(None = 視窗第一句之前)。
+    Recovered {
+        id: u64,
+        after: Option<u64>,
+        text: String,
+        lang: Lang,
+        speaker: Option<String>,
+        start_ms: u64,
+        end_ms: u64,
+        will_translate: bool,
+    },
     /// 講話中的即時預覽(暫定原文,不翻譯);空字串 = 清除。段落結束後由正式 `Transcript` 取代。
     /// `speaker` 為只比對不學習的暫定說話者。
     Partial { text: String, lang: Lang, speaker: Option<String> },
@@ -138,6 +159,10 @@ pub struct PipelineConfig {
     /// 說話者辨識(模型存在時才生效)。
     pub speaker_id: bool,
     pub speaker: SpeakerConfig,
+    /// 回修(慢路徑)。
+    pub refine: RefineConfig,
+    /// 有設就把整條連續 16 kHz 音訊寫成一個 wav(bench 離線對照用)。
+    pub record_all: Option<PathBuf>,
 }
 
 impl Default for PipelineConfig {
@@ -155,7 +180,8 @@ impl Default for PipelineConfig {
             incomplete_wait: Duration::from_millis(2500),
             unknown_wait: Duration::from_millis(500),
             unknown_silence: Duration::from_millis(250),
-            incomplete_silence: Duration::from_millis(1200),
+            // 2026-10-06 使用者決定:有回修補償後快路徑更積極,未完句靜音 0.6 s 就翻(原 1.2 s)
+            incomplete_silence: Duration::from_millis(600),
             merge_max_audio_ms: 12_000,
             merge_max_chars: 80,
             mt_timeout: Duration::from_secs(15),
@@ -167,6 +193,8 @@ impl Default for PipelineConfig {
             seg_control: Arc::new(SegControl::default()),
             speaker_id: true,
             speaker: SpeakerConfig::default(),
+            refine: RefineConfig::default(),
+            record_all: None,
         }
     }
 }
@@ -177,6 +205,9 @@ struct Utterance {
     text: String,
     lang: Lang,
     speaker: Option<String>,
+    /// 在整條串流中的樣本區間(回修對齊用)。
+    start_sample: i64,
+    end_sample: i64,
     timing: SentenceTiming,
     /// 這句(含已合併的)到達 MT 階段的時間,用來算等待逾時。
     arrived: Instant,
@@ -194,6 +225,8 @@ pub struct PipelineHandle {
     vad_thread: Option<std::thread::JoinHandle<()>>,
     asr_thread: Option<std::thread::JoinHandle<()>>,
     mt_task: Option<tokio::task::JoinHandle<()>>,
+    refine_thread: Option<std::thread::JoinHandle<()>>,
+    refine_mt_task: Option<tokio::task::JoinHandle<()>>,
     speakers: SharedSpeakers,
     events: mpsc::UnboundedSender<PipelineEvent>,
     stats: Arc<PipelineStats>,
@@ -237,6 +270,13 @@ impl PipelineHandle {
             let _ = tokio::task::spawn_blocking(move || w.join()).await;
         }
         if let Some(t) = self.mt_task.take() {
+            let _ = t.await;
+        }
+        // refine thread 看到 stop 旗標(或 channel 斷線)結束並 drop job_tx → refine_mt 自然結束
+        if let Some(w) = self.refine_thread.take() {
+            let _ = tokio::task::spawn_blocking(move || w.join()).await;
+        }
+        if let Some(t) = self.refine_mt_task.take() {
             let _ = t.await;
         }
     }
@@ -290,6 +330,22 @@ pub fn start(
     let (utt_tx, utt_rx) = mpsc::unbounded_channel::<Utterance>();
     let stats = Arc::new(PipelineStats::default());
 
+    // 回修:只有 Whisper 引擎有時間戳
+    let refine_on = match (&cfg.refine.enabled, &cfg.asr_engine) {
+        (true, AsrEngine::Whisper { .. }) => true,
+        (true, AsrEngine::SenseVoice) => {
+            let _ = events.send(PipelineEvent::Status { message: "回修僅支援 Whisper 引擎,已停用".into() });
+            false
+        }
+        _ => false,
+    };
+    let (refine_tx, refine_rx) = crossbeam_channel::unbounded::<RefineMsg>();
+    let refine_tx: Option<crossbeam_channel::Sender<RefineMsg>> = if refine_on { Some(refine_tx) } else { None };
+    let wav_sink = match &cfg.record_all {
+        Some(p) => Some(WavSink::create(p)?),
+        None => None,
+    };
+
     let capture = start_loopback(cfg.capture.clone(), audio_tx)?;
 
     let vad_thread = {
@@ -298,9 +354,10 @@ pub fn start(
         let cfg = cfg.clone();
         let speakers = speakers.clone();
         let stats = stats.clone();
+        let refine_tx = refine_tx.clone();
         std::thread::Builder::new()
             .name("tingyi-vad".into())
-            .spawn(move || vad_loop(cfg, segmenter, preview_asr, speakers, stats, audio_rx, seg_tx, obs_rx, events, stop))
+            .spawn(move || vad_loop(cfg, segmenter, preview_asr, speakers, stats, audio_rx, seg_tx, obs_rx, events, stop, refine_tx, wav_sink))
             .map_err(|e| anyhow!("spawn vad thread: {e}"))?
     };
 
@@ -309,9 +366,10 @@ pub fn start(
         let cfg = cfg.clone();
         let speakers = speakers.clone();
         let stats = stats.clone();
+        let refine_tx = refine_tx.clone();
         std::thread::Builder::new()
             .name("tingyi-asr".into())
-            .spawn(move || asr_loop(cfg, final_asr, speakers, stats, seg_rx, obs_tx, utt_tx, events))
+            .spawn(move || asr_loop(cfg, final_asr, speakers, stats, seg_rx, obs_tx, utt_tx, events, refine_tx))
             .map_err(|e| anyhow!("spawn asr thread: {e}"))?
     };
 
@@ -319,7 +377,45 @@ pub fn start(
         let events = events.clone();
         let cfg = cfg.clone();
         let stats = stats.clone();
-        tokio::spawn(mt_loop(cfg, translator, utt_rx, events, stats))
+        let refine_tx = refine_tx.clone();
+        tokio::spawn(mt_loop(cfg, translator.clone(), utt_rx, events, stats, refine_tx))
+    };
+
+    let (refine_thread, refine_mt_task) = if refine_on {
+        let whisper_url = match (&cfg.refine.whisper_url, &cfg.asr_engine) {
+            (Some(u), _) => u.clone(),
+            (None, AsrEngine::Whisper { base_url }) => base_url.clone(),
+            (None, AsrEngine::SenseVoice) => unreachable!(),
+        };
+        let refine_asr = WhisperServer::new(WhisperServerConfig {
+            base_url: whisper_url,
+            language: cfg.lock_lang,
+            timeout: Duration::from_secs(30),
+        });
+        let (job_tx, job_rx) = mpsc::unbounded_channel::<RefineJob>();
+        let (job_tx, refine_mt_task) = match &translator {
+            Some(tr) => {
+                let events = events.clone();
+                let cfg2 = cfg.clone();
+                let stats2 = stats.clone();
+                let ledger_tx = refine_tx.clone().expect("refine_tx");
+                (Some(job_tx), Some(tokio::spawn(crate::refine::refine_mt_loop(cfg2, tr.clone(), job_rx, ledger_tx, events, stats2))))
+            }
+            None => (None, None),
+        };
+        let events = events.clone();
+        let stop = stop.clone();
+        let cfg2 = cfg.clone();
+        let speakers = speakers.clone();
+        let stats2 = stats.clone();
+        let th = std::thread::Builder::new()
+            .name("tingyi-refine".into())
+            .spawn(move || crate::refine::refine_loop(cfg2, refine_asr, speakers, stats2, refine_rx, job_tx, events, stop))
+            .map_err(|e| anyhow!("spawn refine thread: {e}"))?;
+        (Some(th), refine_mt_task)
+    } else {
+        drop(refine_rx);
+        (None, None)
     };
 
     Ok(PipelineHandle {
@@ -328,6 +424,8 @@ pub fn start(
         vad_thread: Some(vad_thread),
         asr_thread: Some(asr_thread),
         mt_task: Some(mt_task),
+        refine_thread,
+        refine_mt_task,
         speakers,
         events,
         stats,
@@ -356,6 +454,8 @@ fn vad_loop(
     obs_rx: crossbeam_channel::Receiver<SegObservation>,
     events: mpsc::UnboundedSender<PipelineEvent>,
     stop: Arc<AtomicBool>,
+    refine_tx: Option<crossbeam_channel::Sender<RefineMsg>>,
+    mut wav_sink: Option<WavSink>,
 ) {
     let mut tuner = SegmentationTuner::new();
     let mut last_lang: Option<Lang> = cfg.lock_lang;
@@ -387,6 +487,16 @@ fn vad_loop(
                 }
 
                 stats.set_backlog(audio_rx.len());
+                // 回修環形緩衝與整段錄音:與 Segmenter 吃同一批樣本,時鐘一致
+                if let Some(tx) = &refine_tx {
+                    let _ = tx.send(RefineMsg::Audio(chunk.samples.clone()));
+                }
+                if let Some(w) = wav_sink.as_mut() {
+                    if let Err(e) = w.write(&chunk.samples) {
+                        tracing::warn!("整段錄音寫入失敗:{e:#}");
+                        wav_sink = None;
+                    }
+                }
                 let segs = segmenter.push(&chunk.samples);
                 stats.set_speaking(segmenter.speaking());
                 let had_segment = !segs.is_empty();
@@ -437,6 +547,11 @@ fn vad_loop(
     for seg in segmenter.flush() {
         let _ = seg_tx.send(seg);
     }
+    if let Some(w) = wav_sink.take() {
+        if let Err(e) = w.finish() {
+            tracing::warn!("整段錄音收尾失敗:{e:#}");
+        }
+    }
     tracing::info!("vad thread 結束");
 }
 
@@ -451,6 +566,7 @@ fn asr_loop(
     obs_tx: crossbeam_channel::Sender<SegObservation>,
     utt_tx: mpsc::UnboundedSender<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
+    refine_tx: Option<crossbeam_channel::Sender<RefineMsg>>,
 ) {
     let mut last_lang: Option<Lang> = None;
     let mut known_speakers: usize = 0;
@@ -458,6 +574,8 @@ fn asr_loop(
     while let Ok(seg) = seg_rx.recv() {
         let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
         let audio_ms = seg.duration_ms();
+        let start_sample = seg.start_sample;
+        let end_sample = seg.start_sample + seg.samples.len() as i64;
         let level = rms_dbfs(&seg.samples);
         let wav = cfg.record_dir.as_ref().map(|d| {
             let p = d.join(format!("seg-{id:04}.wav"));
@@ -532,7 +650,21 @@ fn asr_loop(
             asr_ms: t.asr_ms,
             will_translate,
             speaker: speaker.clone(),
+            start_ms: samples_to_ms(start_sample),
+            end_ms: samples_to_ms(end_sample),
         });
+        // 先進回修帳本,再進 MT(之後的 Merged / Translated 才找得到這句)
+        if let Some(tx) = &refine_tx {
+            let _ = tx.send(RefineMsg::Sentence {
+                id,
+                start: start_sample,
+                end: end_sample,
+                text: t.text.clone(),
+                lang: t.lang,
+                speaker: speaker.clone(),
+                will_translate,
+            });
+        }
         if will_translate {
             PipelineStats::add(&stats.mt_sent, 1);
             let _ = utt_tx.send(Utterance {
@@ -540,6 +672,8 @@ fn asr_loop(
                 text: t.text,
                 lang: t.lang,
                 speaker,
+                start_sample,
+                end_sample,
                 timing,
                 arrived: Instant::now(),
             });
@@ -573,9 +707,17 @@ fn wait_policy(cfg: &PipelineConfig, u: &Utterance) -> Option<(Duration, Duratio
     }
 }
 
-fn merge(cfg: &PipelineConfig, mut p: Utterance, u: Utterance, events: &mpsc::UnboundedSender<PipelineEvent>) -> Utterance {
+fn merge(
+    cfg: &PipelineConfig,
+    mut p: Utterance,
+    u: Utterance,
+    events: &mpsc::UnboundedSender<PipelineEvent>,
+    refine_tx: &Option<crossbeam_channel::Sender<RefineMsg>>,
+) -> Utterance {
     let sep = if p.lang.is_cjk() && u.lang.is_cjk() { "" } else { " " };
     p.text = format!("{}{}{}", p.text, sep, u.text);
+    p.start_sample = p.start_sample.min(u.start_sample);
+    p.end_sample = p.end_sample.max(u.end_sample);
     // 保留較早句的 timing 原點(延遲算最壞情況),音訊長度累加。
     p.timing.audio_ms += u.timing.audio_ms;
     if let (Some(a), Some(b)) = (p.timing.asr_done, u.timing.asr_done) {
@@ -592,7 +734,18 @@ fn merge(cfg: &PipelineConfig, mut p: Utterance, u: Utterance, events: &mpsc::Un
         into: p.id,
         from: u.id,
         text: p.text.clone(),
+        start_ms: samples_to_ms(p.start_sample),
+        end_ms: samples_to_ms(p.end_sample),
     });
+    if let Some(tx) = refine_tx {
+        let _ = tx.send(RefineMsg::Merged {
+            into: p.id,
+            from: u.id,
+            text: p.text.clone(),
+            start: p.start_sample,
+            end: p.end_sample,
+        });
+    }
     let _ = cfg;
     p
 }
@@ -603,6 +756,7 @@ async fn mt_loop(
     mut rx: mpsc::UnboundedReceiver<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
     stats: Arc<PipelineStats>,
+    refine_tx: Option<crossbeam_channel::Sender<RefineMsg>>,
 ) {
     let Some(translator) = translator else {
         // 無翻譯器:把 utterance 吃掉即可。
@@ -622,7 +776,7 @@ async fn mt_loop(
             let quiet = Duration::from_millis(stats.silence_ms());
             if waited >= budget || quiet >= silence {
                 let u = pending.take().unwrap();
-                translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
+                translate_one(&cfg, &translator, &events, &mut context, u, &stats, &refine_tx).await;
                 continue;
             }
             // 每 100 ms 看一次靜音狀態
@@ -638,7 +792,7 @@ async fn mt_loop(
 
         let Some(u) = next else {
             if let Some(p) = pending.take() {
-                translate_one(&cfg, &translator, &events, &mut context, p, &stats).await;
+                translate_one(&cfg, &translator, &events, &mut context, p, &stats, &refine_tx).await;
             }
             break;
         };
@@ -647,7 +801,7 @@ async fn mt_loop(
             Some(p) => {
                 PipelineStats::add(&stats.merges, 1);
                 PipelineStats::add(&stats.mt_done, 1); // 被併入的那句不會單獨翻
-                merge(&cfg, p, u, &events)
+                merge(&cfg, p, u, &events, &refine_tx)
             }
             None => u,
         };
@@ -656,7 +810,7 @@ async fn mt_loop(
         if wait_policy(&cfg, &u).is_some() {
             pending = Some(u);
         } else {
-            translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
+            translate_one(&cfg, &translator, &events, &mut context, u, &stats, &refine_tx).await;
         }
     }
     tracing::info!("mt task 結束");
@@ -669,6 +823,7 @@ async fn translate_one(
     context: &mut VecDeque<(String, String)>,
     mut u: Utterance,
     stats: &PipelineStats,
+    refine_tx: &Option<crossbeam_channel::Sender<RefineMsg>>,
 ) {
     let hits: Vec<_> = cfg.glossary.hits(&u.text).into_iter().cloned().collect();
     let req = TranslateRequest {
@@ -676,6 +831,9 @@ async fn translate_one(
         src_lang: u.lang,
         context: context.iter().cloned().collect(),
         glossary: hits.clone(),
+        lookahead: Vec::new(),
+        // 有回修時固定用 slot 0,回修用 slot 1,前綴快取互不干擾
+        slot: if refine_tx.is_some() { Some(0) } else { None },
     };
     let id = u.id;
     let ev = events.clone();
@@ -707,6 +865,9 @@ async fn translate_one(
                     context.pop_front();
                 }
             }
+            if let Some(tx) = refine_tx {
+                let _ = tx.send(RefineMsg::Translated { id, text: text.clone() });
+            }
             let _ = events.send(PipelineEvent::TranslationDone {
                 id,
                 source: u.text,
@@ -717,6 +878,9 @@ async fn translate_one(
         }
         Ok(Err(e)) => {
             PipelineStats::add(&stats.mt_done, 1);
+            if let Some(tx) = refine_tx {
+                let _ = tx.send(RefineMsg::Failed { id });
+            }
             let _ = events.send(PipelineEvent::TranslationFailed {
                 id,
                 error: format!("{e:#}"),
@@ -724,6 +888,9 @@ async fn translate_one(
         }
         Err(_) => {
             PipelineStats::add(&stats.mt_done, 1);
+            if let Some(tx) = refine_tx {
+                let _ = tx.send(RefineMsg::Failed { id });
+            }
             let _ = events.send(PipelineEvent::TranslationFailed {
                 id,
                 error: format!("翻譯逾時(> {:?})", cfg.mt_timeout),

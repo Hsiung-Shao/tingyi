@@ -61,8 +61,51 @@ function reducer(state: State, ev: Action): State {
         ...state,
         sentences: state.sentences
           .filter((s) => s.id !== ev.from)
-          .map((s) => (s.id === ev.into ? { ...s, source: ev.text, state: "translating" } : s)),
+          .map((s) => (s.id === ev.into ? { ...s, source: ev.text, state: "translating", startMs: ev.start_ms, endMs: ev.end_ms } : s)),
       };
+    case "source_revised":
+      return {
+        ...state,
+        sentences: state.sentences.map((s) =>
+          s.id === ev.id ? { ...s, prevSource: s.prevSource ?? s.source, source: ev.text, revised: true } : s,
+        ),
+      };
+    case "translation_revised":
+      // 找不到 id 就不動(與 translation_done 不同,回修不補句)
+      return {
+        ...state,
+        sentences: state.sentences.map((s) =>
+          s.id === ev.id
+            ? { ...s, prevTranslation: s.prevTranslation ?? (s.translation || undefined), translation: ev.text, state: "done", revised: true }
+            : s,
+        ),
+      };
+    case "recovered": {
+      if (state.sentences.some((s) => s.id === ev.id)) return state;
+      const s: Sentence = {
+        id: ev.id,
+        source: ev.text,
+        lang: ev.lang,
+        speaker: ev.speaker,
+        translation: "",
+        state: ev.will_translate ? "translating" : "no_translate",
+        asrMs: 0,
+        at: Date.now(),
+        startMs: ev.start_ms,
+        endMs: ev.end_ms,
+        recovered: true,
+      };
+      let idx: number;
+      if (ev.after === null) {
+        const first = state.sentences.findIndex((x) => (x.startMs ?? Infinity) >= ev.start_ms);
+        idx = first < 0 ? state.sentences.length : first;
+      } else {
+        const a = state.sentences.findIndex((x) => x.id === ev.after);
+        idx = a < 0 ? state.sentences.length : a + 1;
+      }
+      const sentences = [...state.sentences.slice(0, idx), s, ...state.sentences.slice(idx)].slice(-MAX_SENTENCES);
+      return { ...state, sentences };
+    }
     case "transcript": {
       state = { ...state, partial: "", partialSpeaker: null };
       // 合併(短句等待)會讓同一 id 再出現;以 id 覆蓋。
@@ -76,6 +119,8 @@ function reducer(state: State, ev: Action): State {
         state: ev.will_translate ? "translating" : "no_translate",
         asrMs: ev.asr_ms,
         at: Date.now(),
+        startMs: ev.start_ms,
+        endMs: ev.end_ms,
       };
       const sentences =
         existing >= 0

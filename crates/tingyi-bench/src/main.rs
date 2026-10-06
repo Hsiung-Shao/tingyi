@@ -88,6 +88,15 @@ enum Cmd {
         /// 正式辨識引擎:sensevoice(預設)或 whisper(自動啟動 whisper-server 於 port+1)
         #[arg(long, default_value = "sensevoice")]
         asr: String,
+        /// 把整條連續 16 kHz 音訊寫成一個 wav(回修對照用)
+        #[arg(long)]
+        record_all: Option<PathBuf>,
+        /// 關閉回修(慢路徑)
+        #[arg(long)]
+        no_refine: bool,
+        /// 回修用獨立 whisper-server 的網址(預設與快路徑共用)
+        #[arg(long)]
+        refine_server: Option<String>,
     },
     Serve {
         #[arg(long, default_value = "Hy-MT2-1.8B-Q8_0")]
@@ -191,7 +200,7 @@ async fn main() -> Result<()> {
             out,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
-            run_pipeline(seconds, lock, threads, None, out, None, true, tingyi_core::pipeline::AsrEngine::SenseVoice).await?;
+            run_pipeline(seconds, lock, threads, None, out, None, true, tingyi_core::pipeline::AsrEngine::SenseVoice, None, tingyi_core::refine::RefineConfig { enabled: false, ..Default::default() }).await?;
         }
         Cmd::Mt {
             sentences,
@@ -210,8 +219,12 @@ async fn main() -> Result<()> {
             record,
             no_normalize,
             asr,
+            record_all,
+            no_refine,
+            refine_server,
         } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
+            let refine_on = !no_refine && asr == "whisper";
             // whisper 引擎:先啟動 whisper-server(活到量測結束)
             let mut whisper_proc = None;
             let mut asr_engine = tingyi_core::pipeline::AsrEngine::SenseVoice;
@@ -225,6 +238,9 @@ async fn main() -> Result<()> {
             let mut server = None;
             if !attach {
                 let mut spec = LlamaServerSpec::new(paths::gguf_model(&model), port);
+                if refine_on {
+                    spec = spec.with_refine();
+                }
                 spec.log_file = Some(paths::data_dir().join("llama-server.log"));
                 let mut p = LlamaServerProcess::spawn(spec)?;
                 let t = p.wait_ready_blocking(Duration::from_secs(120))?;
@@ -245,12 +261,14 @@ async fn main() -> Result<()> {
                     TranslateRequest {
                         text: "Hello.".into(),
                         src_lang: Lang::En,
+                        slot: if refine_on { Some(0) } else { None },
                         ..Default::default()
                     },
                     &mut noop,
                 )
                 .await;
-            run_pipeline(seconds, lock, 4, Some(translator), out, record, !no_normalize, asr_engine).await?;
+            let refine = tingyi_core::refine::RefineConfig { enabled: refine_on, whisper_url: refine_server, ..Default::default() };
+            run_pipeline(seconds, lock, 4, Some(translator), out, record, !no_normalize, asr_engine, record_all, refine).await?;
             if let Some(mut s) = server {
                 println!("關閉 llama-server:{}", if s.shutdown() { "已結束" } else { "未確認" });
             }
@@ -400,10 +418,14 @@ async fn run_pipeline(
     record: Option<PathBuf>,
     normalize: bool,
     asr_engine: tingyi_core::pipeline::AsrEngine,
+    record_all: Option<PathBuf>,
+    refine: tingyi_core::refine::RefineConfig,
 ) -> Result<()> {
     let mut cfg = PipelineConfig::default();
     cfg.lock_lang = lock;
     cfg.record_dir = record;
+    cfg.record_all = record_all;
+    cfg.refine = refine;
     cfg.normalize_audio = normalize;
     cfg.asr_engine = asr_engine;
     cfg.asr.num_threads = threads;
@@ -425,6 +447,7 @@ async fn run_pipeline(
     let mut gpu_tick = tokio::time::interval(Duration::from_secs(10));
     let t0 = Instant::now();
     let mut current_delta = String::new();
+    let mut recovered_chars: usize = 0;
 
     loop {
         tokio::select! {
@@ -442,12 +465,18 @@ async fn run_pipeline(
                 match &ev {
                     PipelineEvent::Status { message } => println!("[{ts:6.1}s] {message}"),
                     PipelineEvent::Segment { id, audio_ms, rms_dbfs, .. } => println!("[{ts:6.1}s] #{id} 段落 {audio_ms} ms({rms_dbfs:.1} dBFS)"),
-                    PipelineEvent::TranscriptMerged { into, from, text } => println!("[{ts:6.1}s] #{from} 併入 #{into} → {text}"),
+                    PipelineEvent::TranscriptMerged { into, from, text, .. } => println!("[{ts:6.1}s] #{from} 併入 #{into} → {text}"),
+                    PipelineEvent::SourceRevised { id, text } => println!("[{ts:6.1}s] #{id} 修原文 → {text}"),
+                    PipelineEvent::TranslationRevised { id, text } => println!("[{ts:6.1}s] #{id} 修譯文 → {text}"),
+                    PipelineEvent::Recovered { id, after, text, lang, start_ms, end_ms, .. } => {
+                        recovered_chars += if lang.is_cjk() { text.chars().count() } else { text.split_whitespace().count() };
+                        println!("[{ts:6.1}s] #{id} 補回({:.1}–{:.1}s,接在 #{after:?} 後)[{}] {text}", *start_ms as f32 / 1000.0, *end_ms as f32 / 1000.0, lang.code());
+                    }
                     PipelineEvent::Partial { text, .. } => { if !text.is_empty() { println!("[{ts:6.1}s]    預覽:{text}"); } }
                     PipelineEvent::Segmentation { min_silence_ms, max_speech_ms, reason } => println!("[{ts:6.1}s] 斷句參數:靜音 {min_silence_ms} ms、上限 {max_speech_ms} ms({reason})"),
                     PipelineEvent::Speakers { names } => println!("[{ts:6.1}s] 說話者:{names:?}"),
                     PipelineEvent::SpeakerMerged { from, into } => println!("[{ts:6.1}s] 說話者合併:{from} → {into}"),
-                    PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate, speaker } => {
+                    PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate, speaker, .. } => {
                         asr_ms.push(*a);
                         println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{}{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" },
                             speaker.as_ref().map(|s| format!(" 〈{s}〉")).unwrap_or_default());
@@ -476,6 +505,12 @@ async fn run_pipeline(
         "管線:段落 {} · 辨識均值 {} ms · 預覽 {} 次均值 {} ms · 說話者均值 {} ms · 譯文首字均值 {} ms · 合併 {} · 音訊積壓峰值 {}",
         ps.segments, ps.asr_avg_ms, ps.preview_count, ps.preview_avg_ms, ps.speaker_avg_ms, ps.mt_first_avg_ms, ps.merges, ps.audio_backlog_max
     );
+    if ps.refine_count > 0 || ps.recovered > 0 {
+        println!(
+            "回修:視窗 {} · 均值 {} ms · 修原文 {} 句 · 補回 {} 句 / {} 字 · 重翻 {} 句",
+            ps.refine_count, ps.refine_avg_ms, ps.revised_sources, ps.recovered, recovered_chars, ps.refine_mt_done
+        );
+    }
     let asr = tingyi_core::metrics::Stats::from_samples(asr_ms);
     println!("辨識 n={} p50={} p95={} max={} ms", asr.n, asr.p50, asr.p95, asr.max);
     if !snaps.is_empty() {
@@ -554,6 +589,7 @@ async fn run_mt(
                 src_lang: *lang,
                 context: ctx.iter().rev().take(context_n).rev().cloned().collect(),
                 glossary: vec![],
+                ..Default::default()
             };
             let mut noop = |_: &str| {};
             match tr.translate(req, &mut noop).await {

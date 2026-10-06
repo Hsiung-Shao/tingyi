@@ -28,6 +28,10 @@ pub struct TranslateRequest {
     /// 最近幾句的(原文, 譯文),舊 → 新。
     pub context: Vec<(String, String)>,
     pub glossary: Vec<GlossaryEntry>,
+    /// 這句之後的幾句原文(回修用,只供理解語境)。快路徑永遠空 → 提示位元組不變。
+    pub lookahead: Vec<String>,
+    /// llama-server slot(`id_slot`);None 由伺服器挑。回修用 1、快路徑用 0,互不洗掉快取。
+    pub slot: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -179,12 +183,24 @@ pub trait Translator: Send + Sync {
 pub fn build_prompt(req: &TranslateRequest) -> String {
     const TARGET: &str = "繁体中文(台湾用语)";
     let mut p = String::new();
+    let has_bg = !req.context.is_empty() || !req.lookahead.is_empty();
+    if has_bg {
+        p.push_str("【背景信息】\n");
+    }
     if !req.context.is_empty() {
-        p.push_str("【背景信息】\n以下是同一段影片中前面几句的原文与译文,请保持称谓、语气与用词一致:\n");
+        p.push_str("以下是同一段影片中前面几句的原文与译文,请保持称谓、语气与用词一致:\n");
         for (s, t) in &req.context {
             p.push_str(s);
             p.push_str(" => ");
             p.push_str(t);
+            p.push('\n');
+        }
+        p.push('\n');
+    }
+    if !req.lookahead.is_empty() {
+        p.push_str("以下是这句之后的几句原文(尚未翻译),仅供理解语境,不要翻译它们:\n");
+        for s in &req.lookahead {
+            p.push_str(s);
             p.push('\n');
         }
         p.push('\n');
@@ -196,7 +212,7 @@ pub fn build_prompt(req: &TranslateRequest) -> String {
         }
         p.push('\n');
     }
-    if req.context.is_empty() {
+    if !has_bg {
         p.push_str(&format!(
             "将以下文本翻译为{TARGET},这是影片字幕,请用台湾口语、简洁自然,注意只需要输出翻译后的结果,不要额外解释:\n\n{}",
             req.text
@@ -302,6 +318,8 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_slot: Option<u32>,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
@@ -320,6 +338,8 @@ struct StreamOptions {
 struct CompletionRequest<'a> {
     prompt: &'a str,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_slot: Option<u32>,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
@@ -392,10 +412,13 @@ impl Translator for LlamaServerTranslator {
             let base = self.cfg.base_url.trim_end_matches('/');
             let msgs = build_messages(&req, self.cfg.style);
             let raw_prompt = build_raw_prompt(&req, self.cfg.style);
+            // 雲端 OpenAI 相容端點不認 id_slot(只有本機 llama-server 用)
+            let id_slot = if self.cfg.api_key.is_some() { None } else { req.slot };
             let mut rb = if raw {
                 self.client.post(format!("{base}/completion")).json(&CompletionRequest {
                     prompt: &raw_prompt,
                     stream: true,
+                    id_slot,
                     temperature: self.cfg.temperature,
                     top_p: self.cfg.top_p,
                     n_predict: self.cfg.max_tokens,
@@ -409,6 +432,7 @@ impl Translator for LlamaServerTranslator {
                         .map(|(role, content)| ChatMessage { role, content })
                         .collect(),
                     stream: true,
+                    id_slot,
                     temperature: self.cfg.temperature,
                     top_p: self.cfg.top_p,
                     max_tokens: self.cfg.max_tokens,
@@ -523,12 +547,51 @@ mod tests {
                 source: "Exile".into(),
                 target: "流亡者".into(),
             }],
+            ..Default::default()
         };
         let p = build_prompt(&r);
         assert!(p.starts_with("【背景信息】"));
         assert!(p.contains("Welcome. => 歡迎。"));
         assert!(p.contains("Exile 翻译成 流亡者"));
         assert!(p.contains("【待翻译文本】\nExile, run!"));
+    }
+
+    #[test]
+    fn prompt_with_lookahead() {
+        let r = TranslateRequest {
+            text: "B".into(),
+            src_lang: Lang::Ja,
+            context: vec![("A".into(), "甲".into())],
+            lookahead: vec!["C".into(), "D".into()],
+            ..Default::default()
+        };
+        let p = build_prompt(&r);
+        assert!(p.starts_with("【背景信息】\n以下是同一段影片中前面几句"));
+        let ctx = p.find("A => 甲").unwrap();
+        let la = p.find("不要翻译它们:\nC\nD\n").unwrap();
+        let body = p.find("【待翻译文本】\nB").unwrap();
+        assert!(ctx < la && la < body);
+    }
+
+    #[test]
+    fn prompt_lookahead_without_context() {
+        let r = TranslateRequest {
+            text: "B".into(),
+            src_lang: Lang::Ja,
+            lookahead: vec!["C".into()],
+            ..Default::default()
+        };
+        let p = build_prompt(&r);
+        assert!(p.starts_with("【背景信息】\n以下是这句之后"));
+        assert!(p.contains("【待翻译文本】\nB"));
+    }
+
+    #[test]
+    fn id_slot_serialized_only_when_set() {
+        let a = serde_json::to_string(&CompletionRequest { prompt: "x", stream: true, id_slot: None, temperature: 0.0, top_p: None, n_predict: 1, cache_prompt: true }).unwrap();
+        assert!(!a.contains("id_slot"));
+        let b = serde_json::to_string(&CompletionRequest { prompt: "x", stream: true, id_slot: Some(1), temperature: 0.0, top_p: None, n_predict: 1, cache_prompt: true }).unwrap();
+        assert!(b.contains("\"id_slot\":1"));
     }
 
     #[test]

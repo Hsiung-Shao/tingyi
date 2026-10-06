@@ -63,13 +63,14 @@ export default function PerfPanel({ running }: { running: boolean }) {
             <Card label="顯示記憶體" value={sys?.gpu ? `${sys.gpu.mem_used_mib} / ${sys.gpu.mem_total_mib} MiB` : "—"}
               sub={sys?.gpu ? `${((sys.gpu.mem_used_mib / sys.gpu.mem_total_mib) * 100).toFixed(0)} %` : ""} />
           </div>
-          <div className="grid grid-cols-6 gap-2">
+          <div className="grid grid-cols-7 gap-2">
             <Card label="音訊積壓" value={p ? `${p.audio_backlog} chunk` : "—"} sub={p ? `峰值 ${p.audio_backlog_max}${p.speaking ? " · 講話中" : ""}` : ""} warn={!!p && p.audio_backlog > 20} />
             <Card label="翻譯佇列" value={p ? `${p.mt_queue}` : "—"} sub={p ? `完成 ${p.mt_done} · 合併 ${p.merges}` : ""} warn={!!p && p.mt_queue > 2} />
             <Card label="辨識均值" value={p ? `${p.asr_avg_ms} ms` : "—"} sub={p ? `最近 ${p.asr_last_ms} ms · ${p.segments} 段` : ""} />
             <Card label="預覽均值" value={p ? `${p.preview_avg_ms} ms` : "—"} sub={p ? `${p.preview_count} 次` : ""} />
             <Card label="說話者均值" value={p ? `${p.speaker_avg_ms} ms` : "—"} sub={p ? `最近 ${p.speaker_last_ms} ms` : ""} />
             <Card label="譯文首字均值" value={p ? `${p.mt_first_avg_ms} ms` : "—"} sub={p ? `完成均值 ${p.mt_total_avg_ms} ms` : ""} />
+            <Card label="回修" value={p ? `${p.refine_count} 窗` : "—"} sub={p ? `修 ${p.revised_sources} · 補 ${p.recovered} · 重翻 ${p.refine_mt_done} · ${p.refine_avg_ms} ms` : ""} />
           </div>
           <div className="flex items-center gap-3">
             <div className="text-neutral-500 shrink-0">端到端首字(最近 {p?.e2e_recent.length ?? 0} 句,p50 {p?.e2e_p50 ?? "—"} ms)</div>

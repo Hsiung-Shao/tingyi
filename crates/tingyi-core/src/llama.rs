@@ -47,6 +47,14 @@ impl LlamaServerSpec {
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
+
+    /// 回修模式:兩個 slot(快路徑 0、回修 1),ctx 加大到 6144 讓每個 slot 仍有 3072 token
+    /// 放得下 1600 字前文 + 指令 + 輸出(`-np` 會把 KV 平分)。
+    pub fn with_refine(mut self) -> Self {
+        self.parallel = 2;
+        self.ctx_size = 6144;
+        self
+    }
 }
 
 pub struct LlamaServerProcess {

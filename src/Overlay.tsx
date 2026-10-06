@@ -24,7 +24,9 @@ export default function Overlay() {
 
   // 只顯示最近一句(優先顯示已有譯文的那句:新句還在等譯文時,保留上一句譯文不要閃成空白)。
   const visible = useMemo(() => {
-    const recent = sentences.slice(-SHOW_COUNT - 1);
+    // 補回句屬於歷史修正,不插進即時字幕;被回修的當前句則會自動更新
+    const live = sentences.filter((s) => !s.recovered);
+    const recent = live.slice(-SHOW_COUNT - 1);
     if (recent.length > SHOW_COUNT) {
       const newest = recent[recent.length - 1];
       const hasText = newest.translation.length > 0 || newest.state === "no_translate";

@@ -29,6 +29,7 @@ export default function App() {
   const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
   const [adaptive, setAdaptive] = useState(true);
   const [speakerId, setSpeakerId] = useState(true);
+  const [refine, setRefine] = useState(true);
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
 
   const applySegmentation = async (s: Sensitivity, a: boolean) => {
@@ -131,6 +132,7 @@ export default function App() {
           model: translate ? model : null,
           asr_engine: asrEngine,
           speaker_id: speakerId,
+          refine: refine && asrEngine === "whisper-turbo",
           clear_history: clearHistory ?? true,
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
@@ -310,6 +312,19 @@ export default function App() {
           </section>
 
           <section className="flex flex-col gap-2">
+            <label className="text-neutral-400">回修</label>
+            <label className="flex items-center gap-2" title="幾秒後用更長的連續音訊重新辨識、補回漏掉的句子,並帶前後文重翻;歷史列表以「修」「補」標示">
+              <input
+                type="checkbox"
+                checked={refine && asrEngine === "whisper-turbo"}
+                onChange={(e) => setRefine(e.target.checked)}
+                disabled={running || asrEngine !== "whisper-turbo"}
+              />
+              慢路徑回修原文與譯文{asrEngine !== "whisper-turbo" ? "(僅 Whisper 引擎)" : ""}
+            </label>
+          </section>
+
+          <section className="flex flex-col gap-2">
             <label className="text-neutral-400">說話者</label>
             <label className="flex items-center gap-2">
               <input
@@ -443,9 +458,22 @@ function SentenceRow({ s, speakers }: { s: Sentence; speakers: string[] }) {
     <div className="rounded border border-neutral-800 bg-neutral-900/60 px-3 py-2">
       <div className="flex items-baseline gap-2 text-xs text-neutral-500">
         <span>#{s.id}</span>
+        {s.revised && (
+          <span
+            className="rounded px-1 bg-amber-900/60 text-amber-300 cursor-help"
+            title={`回修前\n原文:${s.prevSource ?? s.source}\n快譯:${s.prevTranslation ?? "(無)"}`}
+          >
+            修
+          </span>
+        )}
+        {s.recovered && (
+          <span className="rounded px-1 bg-sky-900/60 text-sky-300 cursor-help" title="回修補回:即時切段漏掉的語音">
+            補
+          </span>
+        )}
         {s.speaker && <span className={`font-semibold ${speakerColor(s.speaker, speakers)}`}>{s.speaker}</span>}
         <span className="uppercase">{s.lang}</span>
-        <span>辨識 {s.asrMs} ms</span>
+        {s.asrMs > 0 && <span>辨識 {s.asrMs} ms</span>}
         {t && (
           <span>
             · 譯文首字 {t.mt_first_ms ?? "—"} ms · 端到端 {t.e2e_first_ms ?? "—"} ms

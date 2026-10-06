@@ -138,6 +138,8 @@ pub struct StartOptions {
     pub glossary: Option<Vec<GlossaryEntry>>,
     pub port: Option<u16>,
     pub asr_threads: Option<i32>,
+    /// 回修(慢路徑):幾秒後用更長的音訊重新辨識並重翻;僅 Whisper 引擎生效(預設開)。
+    pub refine: Option<bool>,
 }
 
 fn parse_lang(s: &str) -> Option<Lang> {
@@ -167,11 +169,17 @@ pub async fn start_session(
         let _ = app.emit("session-start", ());
     }
 
+    // 回修只在 Whisper 引擎下生效;決定 llama-server 要不要開兩個 slot
+    let refine_on = opts.refine.unwrap_or(true) && opts.asr_engine.as_deref() == Some("whisper-turbo");
+
     // 1. 翻譯模型(可選)
     let mut translator: Option<Arc<dyn Translator>> = None;
     if let Some(model) = opts.model.as_deref().filter(|m| !m.is_empty()) {
         emit_status(&format!("啟動 llama-server({model})…"));
         let mut spec = LlamaServerSpec::new(paths::gguf_model(model), port);
+        if refine_on {
+            spec = spec.with_refine();
+        }
         spec.log_file = Some(paths::data_dir().join("llama-server.log"));
         let before = gpu::nvidia_used_mib();
         let proc_ = tokio::task::spawn_blocking(move || -> anyhow::Result<LlamaServerProcess> {
@@ -203,6 +211,7 @@ pub async fn start_session(
                 tingyi_core::mt::TranslateRequest {
                     text: "Hello.".into(),
                     src_lang: Lang::En,
+                    slot: if refine_on { Some(0) } else { None },
                     ..Default::default()
                 },
                 &mut noop,
@@ -252,6 +261,7 @@ pub async fn start_session(
     // 2. 管線
     cfg.seg_control = state.seg_control.clone();
     cfg.speaker_id = opts.speaker_id.unwrap_or(true);
+    cfg.refine.enabled = refine_on;
     cfg.lock_lang = opts.lang.as_deref().and_then(parse_lang);
     if cfg.lock_lang.is_some() {
         cfg.allowed_langs = HashSet::new();

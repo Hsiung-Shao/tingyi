@@ -15,7 +15,20 @@ export interface TimingSnapshot {
 export type PipelineEvent =
   | { type: "status"; message: string }
   | { type: "segment"; id: number; audio_ms: number; rms_dbfs: number; wav: string | null }
-  | { type: "transcript_merged"; into: number; from: number; text: string }
+  | { type: "transcript_merged"; into: number; from: number; text: string; start_ms: number; end_ms: number }
+  | { type: "source_revised"; id: number; text: string }
+  | { type: "translation_revised"; id: number; text: string }
+  | {
+      type: "recovered";
+      id: number;
+      after: number | null;
+      text: string;
+      lang: Lang;
+      speaker: string | null;
+      start_ms: number;
+      end_ms: number;
+      will_translate: boolean;
+    }
   | { type: "partial"; text: string; lang: Lang; speaker: string | null }
   | {
       type: "transcript";
@@ -25,6 +38,8 @@ export type PipelineEvent =
       asr_ms: number;
       will_translate: boolean;
       speaker: string | null;
+      start_ms: number;
+      end_ms: number;
     }
   | { type: "segmentation"; min_silence_ms: number; max_speech_ms: number; reason: string }
   | { type: "speakers"; names: string[] }
@@ -52,6 +67,16 @@ export interface Sentence {
   timing?: TimingSnapshot;
   error?: string;
   at: number; // Date.now()
+  /** 在整條串流中的位置(毫秒),回修插入補回句時排序用 */
+  startMs?: number;
+  endMs?: number;
+  /** 回修改過原文或譯文 */
+  revised?: boolean;
+  /** 回修補回的句子(VAD 漏掉的語音) */
+  recovered?: boolean;
+  /** 被回修取代前的原文 / 快譯(懸停對照用) */
+  prevSource?: string;
+  prevTranslation?: string;
 }
 
 export interface ModelInfo {
@@ -121,6 +146,12 @@ export interface StatsSnapshot {
   audio_backlog: number;
   audio_backlog_max: number;
   speaking: boolean;
+  refine_count: number;
+  refine_avg_ms: number;
+  refine_last_ms: number;
+  revised_sources: number;
+  recovered: number;
+  refine_mt_done: number;
   e2e_p50: number;
   e2e_recent: number[];
 }
