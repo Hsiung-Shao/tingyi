@@ -8,8 +8,11 @@ const SPEAKER_COLORS = [
   "text-orange-300",
 ];
 
+export const MULTI_SPEAKER = "多人";
+
 export function speakerColor(name: string | null, speakers: string[]) {
   if (!name) return "text-neutral-400";
+  if (name === MULTI_SPEAKER) return "text-neutral-300";
   const i = speakers.indexOf(name);
   return SPEAKER_COLORS[(i < 0 ? 0 : i) % SPEAKER_COLORS.length];
 }
