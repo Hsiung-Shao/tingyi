@@ -1,4 +1,4 @@
-# 計畫:特化翻譯模型對照(SakuraLLM 日→中)
+# 計畫:翻譯模型對照(Sakura、Seed-X、LMT-60、TranslateGemma)
 
 - 建立日期:2026-10-06
 - 狀態:進行中
@@ -25,7 +25,10 @@
 - [x] app 與 bench 建翻譯器改走 `LlamaServerConfig::for_model`。
 - [x] 30 句對照(`docs/bench/sentences-30.tsv`):Hy-MT2-7B-Q4_K_M vs Sakura-7B vs Sakura-1.5B,比首字 / 完成 / 顯示記憶體 / 日文品質(`bench-out/mt-sakura-*.jsonl`)。
 - [x] 結果寫進 `docs/validation-report.md §6e`。
-- [ ] 使用者決定:是否採用 Sakura 當日文模型、1.5B 或 7B、以及依語言切模型的方式。
+- [x] 使用者看過 Sakura 結果後要求再看其他模型 → 下載 Seed-X-PPO-7B、LMT-60 4B/8B、TranslateGemma 4B/12B。
+- [x] `mt.rs` 加 SeedX / Lmt / TranslateGemma 範本與 `/completion` 原始端點;`llama.rs` 原始端點模型用 `--no-jinja`。
+- [x] 五個候選 30 句對照,結果與結論寫進 `docs/validation-report.md §6f`。
+- [ ] 使用者決定:維持 Hy-MT2 7B 預設?是否把 TranslateGemma-4B 列為省資源選項?
 - [ ] `/handoff-check`。
 
 ## 已知限制

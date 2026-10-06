@@ -171,7 +171,27 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - Hy-MT2-7B 文句通順但遊戲術語常譯錯(「ビルド確認」→「檢查建築結構」、「耐性」→「耐久度」)。
 - 英文 15 句 Sakura 完全不能用(有整句原文照抄),Sakura 僅能當日文專用。
 
-結論:日文用 Sakura 明顯優於 Hy-MT2;若要省資源,Sakura-1.5B 是最佳性價比。採用的代價是「依語言切模型」,英文仍需 Hy-MT2,兩個 llama-server 同時載入顯示記憶體至少 +2.9 GB(1.5B)或 +4.2 GB(7B);或改為只在日文回合啟動 Sakura。由使用者決定。
+使用者看過後認為 Sakura 效果沒有明顯好到值得為它多載一個模型,要求再看其他候選。
+
+## 6f. 通用翻譯模型對照:Seed-X、LMT-60、TranslateGemma(2026-10-06 加入)
+
+同一組 30 句、`--context 0`、各模型模型卡建議的 greedy 取樣;程式面新增三種提示範本(Seed-X 與 TranslateGemma 走 llama-server 原始 `/completion`,見 `mt.rs` 模組說明),原始端點模型啟動加 `--no-jinja`(TranslateGemma 的官方範本在 llama-server 會解析失敗)。結果檔 `bench-out/mt-cand-{a,b,c}.jsonl`。
+
+| 模型 | 首字 p50 / p95 | 完成 p50 / p95 | 顯示記憶體增量 | 判定 |
+|---|---|---|---|---|
+| Hy-MT2-7B-Q4_K_M(現行) | 45 / 59 ms | 253 / 350 ms | 5089 MiB | 口語與遊戲語境最穩,基準 |
+| TranslateGemma-4B-it Q4_K_M | 50 / 57 ms | 180 / 255 ms | 2811 MiB | 品質接近 7B、資源省 45%,語氣偏書面(「您」「程式錯誤」);遊戲俚語偶爾誤譯 |
+| LMT-60-4B Q4_K_M | 35 / 51 ms | 135 / 233 ms | 2492 MiB | 最快最省,但直譯多、錯譯多(resistances→電阻、Chat→聊天),greedy 下一句退化成重複「不，不，不…」 |
+| LMT-60-8B Q4_K_M | 45 / 56 ms | 194 / 275 ms | 5194 MiB | 比 4B 穩但仍直譯(one-shot→拍了一張、ワンパン→漢堡),不如 Hy-MT2 7B |
+| Seed-X-PPO-7B Q4_K_M | 51 / 57 ms | 224 / 1960 ms | 4870 MiB | **不可用**:GGUF 英文斷詞錯(`Trans/late␠/the␠`,空白黏字尾),英文輸入整句幻想;官方 tokenizer 也沒有 `<zh>` 特殊 token |
+| TranslateGemma-12B-it Q4_K_M | 500 / 657 ms | 3895 / 5836 ms | 2906 MiB | **不可行**:7.3 GB 權重大半留在主記憶體(Vulkan 只配到 2.9 GB),每秒 5 token |
+
+結論:
+- 沒有候選在品質上明顯勝過 Hy-MT2 7B;Hy-MT2 7B 維持預設。
+- 想省顯示記憶體時,TranslateGemma-4B 是唯一品質沒有明顯掉的選項(2.8 GB vs 5.1 GB,完成時間還快 30%),代價是語氣較正式。可列為「省資源」選項供使用者切換。
+- Sakura-7B 仍是日文直播俚語最準的,但只會日文;若日後做「依語言切模型」再考慮。
+- Seed-X 要能用得自己從 safetensors 重新轉 GGUF 驗證斷詞;12B 級模型在 12 GB 卡上與 Whisper 共存不可行。
+
 
 
 ## 7. 驗證週發現的陷阱
