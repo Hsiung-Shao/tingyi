@@ -148,7 +148,8 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 | GPU 使用率 | 平均 27%、峰值 97% |
 | 顯示記憶體 | 平均 8.3 GB、峰值 8.9 GB(基底 2.6 + 7B 5.1 + Whisper 1.2) |
 
-減負措施:預覽平均 > 150 ms 時間隔拉到 1.5 倍;音訊積壓 > 5 chunk 時暫停預覽。後續候選:預覽用 2 threads、說話者小窗只在 ≥ 3 s 段落做、更小翻譯模型(Qwen3-0.6B、TranslateGemma、MADLAD-400)用 30 句對照評估。
+第二份診斷(執行中匯出,`diag-1791250478.json`,32 段):Whisper 辨識均值 181 ms、說話者 29 ms、預覽 82 ms × 78 次、譯文首字 65 ms / 完成 233 ms;端到端首字 p50 736 ms、p95 2.8 s(其中約 500 ms 是「看不出完整與否」的固定等待);音訊積壓峰值 15 chunk(辨識期間 VAD 被擋)。
+減負與延遲措施:預覽平均 > 150 ms 時間隔拉到 1.5 倍、音訊積壓 > 5 chunk 時暫停預覽;正式辨識與說話者搬到獨立執行緒(VAD 不再被 Whisper 擋住);合併等待改看講者是否已停(Unknown 句靜音 ≥ 250 ms、Incomplete 句靜音 ≥ 1.2 s 即翻)。後續候選:預覽用 2 threads、說話者小窗只在 ≥ 3 s 段落做、更小翻譯模型(Qwen3-0.6B、TranslateGemma、MADLAD-400)用 30 句對照評估。
 
 ## 7. 驗證週發現的陷阱
 
