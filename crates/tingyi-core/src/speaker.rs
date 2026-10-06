@@ -31,9 +31,11 @@ impl Default for SpeakerConfig {
     fn default() -> Self {
         Self {
             model: crate::paths::speaker_model(),
-            threshold: 0.50,
-            new_below: 0.40,
-            merge_above: 0.62,
+            // 2026-10-06 實測(英文對談 4 人、單人英文):同一人 ≥ 0.61(乾淨 ≥ 0.76),
+            // 不同人多在 0.1–0.5、交接段偶爾 0.63。
+            threshold: 0.60,
+            new_below: 0.50,
+            merge_above: 0.75,
             min_audio_ms: 1000,
             max_per_speaker: 20,
             num_threads: 1,
@@ -105,8 +107,8 @@ impl SpeakerIdentifier {
             for j in (i + 1)..names.len() {
                 let (a, b) = (&names[i], &names[j]);
                 let (Some(ea), Some(eb)) = (self.store.get(a), self.store.get(b)) else { continue };
-                if ea.len() < 2 || eb.len() < 2 {
-                    continue; // 各至少兩段再判斷
+                if ea.len() < 3 || eb.len() < 3 {
+                    continue; // 各至少三段再判斷,避免剛出現的人被誤併
                 }
                 let sim = Self::cosine(&Self::centroid(ea), &Self::centroid(eb));
                 if sim >= self.cfg.merge_above {
@@ -163,14 +165,11 @@ impl SpeakerIdentifier {
                 best = Some((name.clone(), s));
             }
         }
+        let last_name = self.last.as_ref().map(|(n, _)| n.clone());
         let name = match best {
             Some((n, s)) if s >= self.cfg.threshold => n,
-            // 遲滯區:不夠像但也不夠不像 → 歸到最像的那位,不新建
-            Some((n, s)) if s >= self.cfg.new_below => n,
-            // 短段、剛有人講過、分數不太低 → 沿用上一位
-            Some((_, s)) if audio_ms < 1500 && recent && s >= self.cfg.new_below - 0.1 => {
-                self.last.as_ref().map(|(n, _)| n.clone()).unwrap_or_else(|| self.new_speaker())
-            }
+            // 遲滯區:只有「最像的就是剛講完的那位」才沿用(同一人語氣變化),否則視為新人
+            Some((n, s)) if s >= self.cfg.new_below && recent && last_name.as_deref() == Some(n.as_str()) => n,
             _ => self.new_speaker(),
         };
         self.add_embedding(&name, emb);
