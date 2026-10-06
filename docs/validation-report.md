@@ -136,6 +136,20 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 預覽階段以「只比對不學習」的 peek 先給暫定說話者,名字與灰字一起最早出現;正式辨識再確認。
 - 真正的同時講話分離(兩人聲音疊在一起各出一行字)需聲源分離模型,未做。
 
+## 6d. 效能監測(2026-10-06 加入)與第一份診斷
+
+面板:sysinfo + nvidia-smi 每 2 s 取樣(保留 5 分鐘)、管線原子計數、端到端折線、匯出 JSON。第一份診斷(`bench-out/diag-1791250114.json`,Whisper + 7B Q4 + 說話者辨識,14 筆):
+
+| 項目 | 數字 |
+|---|---|
+| 主程式 CPU | 平均 71%、峰值 106%(單核基準,16 核約 4–7%)→ 主要是每秒預覽辨識、說話者小窗、VAD |
+| llama-server | CPU 4%、RSS 5.8 GB |
+| whisper-server | CPU 4%、RSS 0.5 GB |
+| GPU 使用率 | 平均 27%、峰值 97% |
+| 顯示記憶體 | 平均 8.3 GB、峰值 8.9 GB(基底 2.6 + 7B 5.1 + Whisper 1.2) |
+
+減負措施:預覽平均 > 150 ms 時間隔拉到 1.5 倍;音訊積壓 > 5 chunk 時暫停預覽。後續候選:預覽用 2 threads、說話者小窗只在 ≥ 3 s 段落做、更小翻譯模型(Qwen3-0.6B、TranslateGemma、MADLAD-400)用 30 句對照評估。
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。
