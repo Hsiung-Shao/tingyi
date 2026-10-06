@@ -14,7 +14,7 @@ function pct(values: number[], p: number) {
 }
 
 export default function App() {
-  const { sentences, errors, partial, speakers, segmentation } = useSubtitles();
+  const { sentences, errors, partial, partialSpeaker, speakers, segmentation } = useSubtitles();
   const [info, setInfo] = useState<Info | null>(null);
   const [status, setStatus] = useState("就緒");
   const [busy, setBusy] = useState(false);
@@ -409,7 +409,8 @@ export default function App() {
             ))}
             {partial && (
               <div className="rounded border border-dashed border-neutral-800 px-3 py-2 text-neutral-500 italic">
-                講話中:{partial}
+                講話中:{partialSpeaker && <span className={`not-italic ${speakerColor(partialSpeaker, speakers)}`}>{partialSpeaker} </span>}
+                {partial}
               </div>
             )}
           </div>

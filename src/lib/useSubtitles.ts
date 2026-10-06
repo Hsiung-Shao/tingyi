@@ -8,6 +8,8 @@ interface State {
   errors: string[];
   /** 講話中的即時預覽原文(灰字);空字串 = 無 */
   partial: string;
+  /** 預覽階段暫定的說話者 */
+  partialSpeaker: string | null;
   /** 已知說話者(依出現順序) */
   speakers: string[];
   /** 目前斷句參數 */
@@ -21,7 +23,7 @@ type Action = PipelineEvent | { type: "reset" };
 function reducer(state: State, ev: Action): State {
   switch (ev.type) {
     case "reset":
-      return { sentences: [], status: state.status, errors: [], partial: "", speakers: [], segmentation: null };
+      return { sentences: [], status: state.status, errors: [], partial: "", partialSpeaker: null, speakers: [], segmentation: null };
     case "segmentation":
       return { ...state, segmentation: { min_silence_ms: ev.min_silence_ms, max_speech_ms: ev.max_speech_ms, reason: ev.reason } };
     case "speaker_merged":
@@ -45,7 +47,7 @@ function reducer(state: State, ev: Action): State {
     case "partial": {
       // 重辨識偶爾會短暫吐出比上一次短很多的結果(抖動),這種就不更新,減少閃動
       if (ev.text !== "" && ev.text.length < state.partial.length * 0.6) return state;
-      return { ...state, partial: ev.text };
+      return { ...state, partial: ev.text, partialSpeaker: ev.text ? ev.speaker ?? state.partialSpeaker : null };
     }
     case "status":
       return { ...state, status: ev.message };
@@ -62,7 +64,7 @@ function reducer(state: State, ev: Action): State {
           .map((s) => (s.id === ev.into ? { ...s, source: ev.text, state: "translating" } : s)),
       };
     case "transcript": {
-      state = { ...state, partial: "" };
+      state = { ...state, partial: "", partialSpeaker: null };
       // 合併(短句等待)會讓同一 id 再出現;以 id 覆蓋。
       const existing = state.sentences.findIndex((s) => s.id === ev.id);
       const s: Sentence = {
@@ -130,6 +132,7 @@ export function useSubtitles() {
     status: "",
     errors: [],
     partial: "",
+    partialSpeaker: null,
     speakers: [],
     segmentation: null,
   });

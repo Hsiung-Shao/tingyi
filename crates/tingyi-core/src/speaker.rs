@@ -213,6 +213,24 @@ impl SpeakerIdentifier {
         Some(name)
     }
 
+    /// 只比對、不學習:講話中的即時預覽用,回傳最像的已知說話者(需 ≥ 門檻),否則 None。
+    pub fn peek(&self, pcm: &[f32]) -> Option<String> {
+        if self.store.is_empty() || pcm.len() < (self.cfg.min_audio_ms as usize) * TARGET_SAMPLE_RATE as usize / 1000 {
+            return None;
+        }
+        let emb = self.embed(pcm)?;
+        let mut best: Option<(&String, f32)> = None;
+        for (name, embs) in &self.store {
+            let max_s = embs.iter().map(|e| Self::cosine(e, &emb)).fold(f32::MIN, f32::max);
+            let cen_s = Self::cosine(&Self::centroid(embs), &emb);
+            let s = max_s.max(cen_s);
+            if best.map(|(_, b)| s > b).unwrap_or(true) {
+                best = Some((name, s));
+            }
+        }
+        best.filter(|(_, s)| *s >= self.cfg.threshold).map(|(n, _)| n.clone())
+    }
+
     /// 把段落切成 `window_ms` 的小窗各算聲紋;若命中兩位以上不同的已知說話者 → 多人。
     fn windows_hit_multiple(&self, pcm: &[f32]) -> bool {
         if self.store.len() < 2 {

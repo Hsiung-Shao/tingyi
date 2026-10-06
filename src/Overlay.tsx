@@ -9,7 +9,7 @@ import type { OverlayMode } from "./lib/types";
 const SHOW_COUNT = 1;
 
 export default function Overlay() {
-  const { sentences, partial, speakers } = useSubtitles();
+  const { sentences, partial, partialSpeaker, speakers } = useSubtitles();
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [interactive, setInteractive] = useState(false);
 
@@ -80,6 +80,9 @@ export default function Overlay() {
       })}
       {/* 預覽列固定佔一行高度,有無文字都不讓上方字幕跳動 */}
       <div className="subtitle-text h-[28px] text-[22px] leading-[28px] text-neutral-400/90 italic text-center max-w-full truncate">
+        {partial && partialSpeaker && speakers.length > 1 && (
+          <span className={`not-italic ${speakerColor(partialSpeaker, speakers)}`}>{partialSpeaker}:</span>
+        )}
         {partial || " "}
       </div>
     </div>

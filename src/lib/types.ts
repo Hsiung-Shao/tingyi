@@ -16,7 +16,7 @@ export type PipelineEvent =
   | { type: "status"; message: string }
   | { type: "segment"; id: number; audio_ms: number; rms_dbfs: number; wav: string | null }
   | { type: "transcript_merged"; into: number; from: number; text: string }
-  | { type: "partial"; text: string; lang: Lang }
+  | { type: "partial"; text: string; lang: Lang; speaker: string | null }
   | {
       type: "transcript";
       id: number;

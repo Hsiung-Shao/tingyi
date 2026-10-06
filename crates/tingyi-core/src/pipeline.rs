@@ -79,7 +79,8 @@ pub enum PipelineEvent {
     /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
     TranscriptMerged { into: u64, from: u64, text: String },
     /// 講話中的即時預覽(暫定原文,不翻譯);空字串 = 清除。段落結束後由正式 `Transcript` 取代。
-    Partial { text: String, lang: Lang },
+    /// `speaker` 為只比對不學習的暫定說話者。
+    Partial { text: String, lang: Lang, speaker: Option<String> },
     TranslationDelta { id: u64, delta: String },
     TranslationDone {
         id: u64,
@@ -356,6 +357,7 @@ fn worker_loop(
                     let _ = events.send(PipelineEvent::Partial {
                         text: String::new(),
                         lang: Lang::Unknown,
+                        speaker: None,
                     });
                     return;
                 }
@@ -475,9 +477,12 @@ fn worker_loop(
                             if let Ok(t) = preview_asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
                                 if !t.text.is_empty() {
                                     preview_shown = true;
+                                    // 先比對說話者(不學習),讓名字和灰字一起最早出現
+                                    let speaker = speakers.lock().unwrap().as_ref().and_then(|s| s.peek(&pcm));
                                     let _ = events.send(PipelineEvent::Partial {
                                         text: t.text,
                                         lang: t.lang,
+                                        speaker,
                                     });
                                 }
                             }
