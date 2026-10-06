@@ -259,7 +259,6 @@ impl WhisperServerProcess {
             .arg(spec.threads.to_string())
             .arg("-l")
             .arg(&spec.language)
-            .arg("-nt")
             .args(&spec.extra_args)
             .current_dir(spec.exe.parent().unwrap_or(Path::new(".")))
             .stdin(Stdio::null());

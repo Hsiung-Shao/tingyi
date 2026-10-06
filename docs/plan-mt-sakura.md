@@ -29,6 +29,8 @@
 - [x] `mt.rs` 加 SeedX / Lmt / TranslateGemma 範本與 `/completion` 原始端點;`llama.rs` 原始端點模型用 `--no-jinja`。
 - [x] 五個候選 30 句對照,結果與結論寫進 `docs/validation-report.md §6f`。
 - [ ] 使用者決定:維持 Hy-MT2 7B 預設?是否把 TranslateGemma-4B 列為省資源選項?
+- [x] 日文直播跳句診斷:錄 5 分鐘對照 → Whisper 無時間戳模式提早收尾是主因,已改為有時間戳(`asr.rs`、`llama.rs`),見報告 §6g。
+- [ ] 跳句後續:原始音訊 + VAD 機率錄製以查 64 秒空窗;4 s 上限硬切與 Incomplete 等待的取捨;懸浮字幕被蓋掉的顯示策略。
 - [ ] `/handoff-check`。
 
 ## 已知限制

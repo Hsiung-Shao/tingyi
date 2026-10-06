@@ -235,7 +235,9 @@ impl Transcriber for WhisperServer {
         let fields: Vec<(&str, String)> = vec![
             ("language", lang.clone()),
             ("response_format", "json".into()),
-            ("no_timestamps", "true".into()),
+            // 不可開 no_timestamps:無時間戳模式遇到句中停頓會提早收尾,
+            // 4 秒的段落只剩前面一兩個詞(2026-10-06 日文直播錄音實測)。
+            ("no_timestamps", "false".into()),
             ("temperature", "0.0".into()),
             ("no_speech_thold", "0.6".into()),
         ];
@@ -252,7 +254,9 @@ impl Transcriber for WhisperServer {
             .into_json()
             .map_err(|e| anyhow!("whisper-server 回應不是 JSON: {e}"))?;
         let raw = parsed.text;
-        let mut text = strip_tags(&raw);
+        // 有時間戳模式會以換行分段;併成一行再做後處理
+        let joined = raw.replace(['\r', '\n'], " ");
+        let mut text = strip_tags(&joined);
         if WHISPER_HALLUCINATIONS
             .iter()
             .any(|h| text.trim().eq_ignore_ascii_case(h) || text.trim() == h.trim_end_matches('。'))
