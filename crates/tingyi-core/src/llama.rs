@@ -24,6 +24,14 @@ pub struct LlamaServerSpec {
 
 impl LlamaServerSpec {
     pub fn new(model: PathBuf, port: u16) -> Self {
+        // 走原始 /completion 的模型(Seed-X、TranslateGemma)不需要 chat 範本;
+        // TranslateGemma 的範本在 llama-server 開 --jinja 時甚至會解析失敗而啟動不了。
+        let name = model.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let extra_args = if crate::mt::PromptStyle::for_model(name).raw_completion() {
+            vec!["--no-jinja".into()]
+        } else {
+            vec!["--jinja".into()]
+        };
         Self {
             exe: crate::paths::llama_server_exe(),
             model,
@@ -31,7 +39,7 @@ impl LlamaServerSpec {
             gpu_layers: "all".into(),
             ctx_size: 4096,
             parallel: 1,
-            extra_args: vec!["--jinja".into()],
+            extra_args,
             log_file: None,
         }
     }
