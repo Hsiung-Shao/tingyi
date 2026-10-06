@@ -140,11 +140,33 @@ pub struct PipelineStats {
     pub audio_backlog: AtomicU64,
     pub audio_backlog_max: AtomicU64,
     pub speaking: AtomicBool,
+    /// 講話狀態最後一次翻轉的時間(算「已靜音多久」用)。
+    speech_changed: Mutex<Option<Instant>>,
     /// 最近 60 句端到端首字毫秒(環形)。
     e2e_recent: Mutex<VecDeque<u32>>,
 }
 
 impl PipelineStats {
+    /// worker 每個 chunk 更新;只在狀態翻轉時記時間。
+    pub fn set_speaking(&self, speaking: bool) {
+        let prev = self.speaking.swap(speaking, Ordering::Relaxed);
+        if prev != speaking {
+            *self.speech_changed.lock().unwrap() = Some(Instant::now());
+        }
+    }
+
+    /// 目前已連續靜音多少毫秒;講話中回 0。
+    pub fn silence_ms(&self) -> u64 {
+        if self.speaking.load(Ordering::Relaxed) {
+            return 0;
+        }
+        self.speech_changed
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(u64::MAX / 2)
+    }
+
     pub fn add(counter: &AtomicU64, v: u64) {
         counter.fetch_add(v, Ordering::Relaxed);
     }

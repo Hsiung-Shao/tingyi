@@ -212,6 +212,9 @@ pub async fn start_session(
         translator = Some(Arc::new(tr));
     }
 
+    // 取樣器隨回合啟動,匯出診斷時才有資料
+    ensure_sampler(&state);
+
     // 1b. Whisper 辨識引擎(可選)
     let mut cfg = PipelineConfig::default();
     if opts.asr_engine.as_deref() == Some("whisper-turbo") {

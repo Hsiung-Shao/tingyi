@@ -1,9 +1,11 @@
-//! 管線:擷取 → VAD → ASR → 句子合併 → MT,對外以事件串流回報。
+//! 管線:擷取 → VAD(+預覽)→ 正式辨識(+說話者)→ 句子合併 → MT,對外以事件串流回報。
 //!
 //! 執行緒配置:
 //! - capture thread(WASAPI)→ crossbeam channel(AudioChunk)
-//! - worker thread:VAD 切段 + 音量正規化 + SenseVoice 辨識(皆同步、CPU)→ tokio mpsc(Utterance)
-//! - mt task(tokio):依句子完整度決定等待/合併,再依序翻譯
+//! - vad thread:VAD 切段、即時預覽、套用斷句參數 → crossbeam channel(Segment)
+//! - asr thread:音量正規化、正式辨識、說話者、斷句觀察值回饋 → tokio mpsc(Utterance)
+//!   (辨識與說話者搬離 vad thread,Whisper 的 150–200 ms 不會卡住 VAD 與預覽)
+//! - mt task(tokio):依句子完整度與「講者是否已停」決定等待/合併,再依序翻譯
 //!
 //! 所有對外事件經 `tokio::sync::mpsc::UnboundedSender<PipelineEvent>`。
 
@@ -12,19 +14,11 @@ use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
-
-/// 段落正式辨識用的引擎;即時預覽一律用 SenseVoice。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AsrEngine {
-    SenseVoice,
-    /// 需要已啟動的 whisper-server(見 `llama::WhisperServerProcess`)。
-    Whisper { base_url: String },
-}
 use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
 use crate::metrics::{PipelineStats, SentenceTiming, TimingSnapshot};
@@ -34,13 +28,20 @@ use crate::sentence::{completeness, Completeness};
 use crate::speaker::{SpeakerConfig, SpeakerIdentifier};
 use crate::tuner::{SegControl, SegStat, SegmentationTuner};
 use crate::vad::{Segment, Segmenter, VadConfig};
-use std::sync::Mutex;
 
 /// 說話者辨識器的共享句柄(Tauri 改名命令用)。
 pub type SharedSpeakers = Arc<Mutex<Option<SpeakerIdentifier>>>;
 
 /// 句子編號跨回合遞增:停止再開始時不會與上一輪的編號重複(前端以編號覆蓋同句)。
 static NEXT_SENTENCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// 段落正式辨識用的引擎;即時預覽一律用 SenseVoice。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsrEngine {
+    SenseVoice,
+    /// 需要已啟動的 whisper-server(見 `llama::WhisperServerProcess`)。
+    Whisper { base_url: String },
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -111,8 +112,12 @@ pub struct PipelineConfig {
     pub context_max_chars: usize,
     /// 句子明顯沒說完時,最多等下一段多久。
     pub incomplete_wait: Duration,
-    /// 看不出完整與否時的短暫等待。
+    /// 看不出完整與否時的最長等待。
     pub unknown_wait: Duration,
+    /// 講者已連續靜音這麼久 → 看不出完整與否的句子直接翻(不再等)。
+    pub unknown_silence: Duration,
+    /// 講者已連續靜音這麼久 → 明顯未完的句子也直接翻(對方大概不會接著講了)。
+    pub incomplete_silence: Duration,
     /// 合併後音訊長度上限,超過就強制翻。
     pub merge_max_audio_ms: u32,
     /// 合併後字數上限(CJK 字數;英文以詞數 × 2 近似)。
@@ -149,6 +154,8 @@ impl Default for PipelineConfig {
             context_max_chars: 1600,
             incomplete_wait: Duration::from_millis(2500),
             unknown_wait: Duration::from_millis(500),
+            unknown_silence: Duration::from_millis(250),
+            incomplete_silence: Duration::from_millis(1200),
             merge_max_audio_ms: 12_000,
             merge_max_chars: 80,
             mt_timeout: Duration::from_secs(15),
@@ -164,7 +171,7 @@ impl Default for PipelineConfig {
     }
 }
 
-/// 從 worker 送到 MT task 的一句。
+/// 從 asr thread 送到 MT task 的一句。
 struct Utterance {
     id: u64,
     text: String,
@@ -175,10 +182,17 @@ struct Utterance {
     arrived: Instant,
 }
 
+/// asr thread 回饋給 vad thread 的斷句觀察值。
+struct SegObservation {
+    lang: Lang,
+    stat: SegStat,
+}
+
 pub struct PipelineHandle {
     stop: Arc<AtomicBool>,
     capture: Option<CaptureHandle>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    vad_thread: Option<std::thread::JoinHandle<()>>,
+    asr_thread: Option<std::thread::JoinHandle<()>>,
     mt_task: Option<tokio::task::JoinHandle<()>>,
     speakers: SharedSpeakers,
     events: mpsc::UnboundedSender<PipelineEvent>,
@@ -214,9 +228,12 @@ impl PipelineHandle {
     pub async fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(c) = self.capture.take() {
-            c.stop(); // 關掉擷取 → channel 斷 → worker 結束
+            c.stop(); // 關掉擷取 → channel 斷 → vad thread 結束 → seg channel 斷 → asr thread 結束
         }
-        if let Some(w) = self.worker.take() {
+        if let Some(w) = self.vad_thread.take() {
+            let _ = tokio::task::spawn_blocking(move || w.join()).await;
+        }
+        if let Some(w) = self.asr_thread.take() {
             let _ = tokio::task::spawn_blocking(move || w.join()).await;
         }
         if let Some(t) = self.mt_task.take() {
@@ -268,23 +285,34 @@ pub fn start(
     });
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
+    let (seg_tx, seg_rx) = crossbeam_channel::bounded::<Segment>(64);
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<SegObservation>();
     let (utt_tx, utt_rx) = mpsc::unbounded_channel::<Utterance>();
     let stats = Arc::new(PipelineStats::default());
 
     let capture = start_loopback(cfg.capture.clone(), audio_tx)?;
 
-    let worker = {
+    let vad_thread = {
         let events = events.clone();
         let stop = stop.clone();
         let cfg = cfg.clone();
         let speakers = speakers.clone();
         let stats = stats.clone();
         std::thread::Builder::new()
-            .name("tingyi-worker".into())
-            .spawn(move || {
-                worker_loop(cfg, segmenter, final_asr, preview_asr, speakers, stats, audio_rx, utt_tx, events, stop)
-            })
-            .map_err(|e| anyhow!("spawn worker: {e}"))?
+            .name("tingyi-vad".into())
+            .spawn(move || vad_loop(cfg, segmenter, preview_asr, speakers, stats, audio_rx, seg_tx, obs_rx, events, stop))
+            .map_err(|e| anyhow!("spawn vad thread: {e}"))?
+    };
+
+    let asr_thread = {
+        let events = events.clone();
+        let cfg = cfg.clone();
+        let speakers = speakers.clone();
+        let stats = stats.clone();
+        std::thread::Builder::new()
+            .name("tingyi-asr".into())
+            .spawn(move || asr_loop(cfg, final_asr, speakers, stats, seg_rx, obs_tx, utt_tx, events))
+            .map_err(|e| anyhow!("spawn asr thread: {e}"))?
     };
 
     let mt_task = {
@@ -297,7 +325,8 @@ pub fn start(
     Ok(PipelineHandle {
         stop,
         capture: Some(capture),
-        worker: Some(worker),
+        vad_thread: Some(vad_thread),
+        asr_thread: Some(asr_thread),
         mt_task: Some(mt_task),
         speakers,
         events,
@@ -305,157 +334,36 @@ pub fn start(
     })
 }
 
+fn send_segmentation(events: &mpsc::UnboundedSender<PipelineEvent>, segmenter: &mut Segmenter, p: crate::tuner::SegParams) {
+    segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
+    let _ = events.send(PipelineEvent::Segmentation {
+        min_silence_ms: p.min_silence_ms,
+        max_speech_ms: p.max_speech_ms,
+        reason: p.reason,
+    });
+}
+
+/// VAD + 即時預覽 + 斷句參數套用。不做正式辨識,所以 Whisper / 說話者的耗時不會擋住切段。
 #[allow(clippy::too_many_arguments)]
-fn worker_loop(
+fn vad_loop(
     cfg: PipelineConfig,
     mut segmenter: Segmenter,
-    asr: Box<dyn Transcriber>,
     preview_asr: SenseVoice,
     speakers: SharedSpeakers,
     stats: Arc<PipelineStats>,
     audio_rx: crossbeam_channel::Receiver<AudioChunk>,
-    utt_tx: mpsc::UnboundedSender<Utterance>,
+    seg_tx: crossbeam_channel::Sender<Segment>,
+    obs_rx: crossbeam_channel::Receiver<SegObservation>,
     events: mpsc::UnboundedSender<PipelineEvent>,
     stop: Arc<AtomicBool>,
 ) {
-    let mut last_lang: Option<Lang> = None;
     let mut tuner = SegmentationTuner::new();
+    let mut last_lang: Option<Lang> = cfg.lock_lang;
     if let Some(l) = cfg.lock_lang {
         if let Some(p) = tuner.set_lang(l, &cfg.seg_control) {
-            segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
-            let _ = events.send(PipelineEvent::Segmentation {
-                min_silence_ms: p.min_silence_ms,
-                max_speech_ms: p.max_speech_ms,
-                reason: p.reason,
-            });
+            send_segmentation(&events, &mut segmenter, p);
         }
     }
-    let mut known_speakers: usize = 0;
-
-    // 回傳 (是否撞上限, 說話者, 文字字數, 是否未完)供 tuner 用
-    let mut handle_segment = |seg: Segment, last_lang: &mut Option<Lang>, tuner: &mut SegmentationTuner, segmenter: &mut Segmenter| {
-        let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
-        let audio_ms = seg.duration_ms();
-        let level = rms_dbfs(&seg.samples);
-        let wav = cfg.record_dir.as_ref().map(|d| {
-            let p = d.join(format!("seg-{id:04}.wav"));
-            if !sherpa_onnx::write(&p.to_string_lossy(), &seg.samples, TARGET_SAMPLE_RATE) {
-                tracing::warn!("寫入 {} 失敗", p.display());
-            }
-            p.to_string_lossy().to_string()
-        });
-        let _ = events.send(PipelineEvent::Segment {
-            id,
-            audio_ms,
-            rms_dbfs: level,
-            wav,
-        });
-        let mut timing = SentenceTiming::new(id, seg.end_at, audio_ms);
-
-        let pcm = if cfg.normalize_audio {
-            normalize_rms(&seg.samples, -20.0, 8.0)
-        } else {
-            seg.samples.clone()
-        };
-        let (_, max_speech_sec) = segmenter.current_params();
-        let hit_max = audio_ms as f32 >= max_speech_sec * 1000.0 * 0.95;
-
-        match asr.transcribe(&pcm, cfg.lock_lang) {
-            Ok(mut t) => {
-                timing.asr_done = Some(Instant::now());
-                stats.record_asr(t.asr_ms);
-                if t.text.is_empty() {
-                    // 段落沒有文字(雜音):把可能殘留的預覽清掉
-                    let _ = events.send(PipelineEvent::Partial {
-                        text: String::new(),
-                        lang: Lang::Unknown,
-                        speaker: None,
-                    });
-                    return;
-                }
-                // 自動偵測信心低(Unknown)時沿用上一句語言。
-                if t.lang == Lang::Unknown {
-                    if let Some(l) = *last_lang {
-                        t.lang = l;
-                    }
-                }
-                if t.lang != Lang::Unknown {
-                    *last_lang = Some(t.lang);
-                    if let Some(p) = tuner.set_lang(t.lang, &cfg.seg_control) {
-                        segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
-                        let _ = events.send(PipelineEvent::Segmentation {
-                            min_silence_ms: p.min_silence_ms,
-                            max_speech_ms: p.max_speech_ms,
-                            reason: p.reason,
-                        });
-                    }
-                }
-
-                // 說話者
-                let sp_t0 = Instant::now();
-                let speaker = {
-                    let mut guard = speakers.lock().unwrap();
-                    guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
-                };
-                if speakers.lock().unwrap().is_some() {
-                    stats.record_speaker(sp_t0.elapsed().as_millis() as u32);
-                }
-                if let Some(s) = speakers.lock().unwrap().as_mut() {
-                    for (from, into) in s.take_merges() {
-                        let _ = events.send(PipelineEvent::SpeakerMerged { from, into });
-                    }
-                    let n = s.speakers().len();
-                    if n != known_speakers {
-                        known_speakers = n;
-                        let _ = events.send(PipelineEvent::Speakers { names: s.speakers() });
-                    }
-                }
-
-                // 斷句自適應:餵這段的觀察值
-                let chars = if t.lang.is_cjk() { t.text.chars().count() } else { t.text.split_whitespace().count() };
-                let incomplete = completeness(&t.text, t.lang) == Completeness::Incomplete;
-                if let Some(p) = tuner.observe(
-                    SegStat { audio_ms, chars, hit_max, incomplete },
-                    &cfg.seg_control,
-                ) {
-                    segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
-                    let _ = events.send(PipelineEvent::Segmentation {
-                        min_silence_ms: p.min_silence_ms,
-                        max_speech_ms: p.max_speech_ms,
-                        reason: p.reason,
-                    });
-                }
-
-                let will_translate = t.lang != Lang::Zh
-                    && (cfg.allowed_langs.is_empty() || cfg.allowed_langs.contains(&t.lang));
-                let _ = events.send(PipelineEvent::Transcript {
-                    id,
-                    text: t.text.clone(),
-                    lang: t.lang,
-                    asr_ms: t.asr_ms,
-                    will_translate,
-                    speaker: speaker.clone(),
-                });
-                if will_translate {
-                    PipelineStats::add(&stats.mt_sent, 1);
-                    let _ = utt_tx.send(Utterance {
-                        id,
-                        text: t.text,
-                        lang: t.lang,
-                        speaker,
-                        timing,
-                        arrived: Instant::now(),
-                    });
-                }
-            }
-            Err(e) => {
-                let _ = events.send(PipelineEvent::Error {
-                    message: format!("辨識失敗:{e:#}"),
-                });
-            }
-        }
-    };
-
     let mut last_preview = Instant::now();
     let mut preview_shown = false;
     let min_preview_samples = (cfg.preview_min.as_millis() as usize) * TARGET_SAMPLE_RATE as usize / 1000;
@@ -463,28 +371,36 @@ fn worker_loop(
     while !stop.load(Ordering::SeqCst) {
         match audio_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(chunk) => {
+                // asr thread 回饋的觀察值 → tuner
+                while let Ok(o) = obs_rx.try_recv() {
+                    last_lang = Some(o.lang);
+                    if let Some(p) = tuner.set_lang(o.lang, &cfg.seg_control) {
+                        send_segmentation(&events, &mut segmenter, p);
+                    }
+                    if let Some(p) = tuner.observe(o.stat, &cfg.seg_control) {
+                        send_segmentation(&events, &mut segmenter, p);
+                    }
+                }
                 // 使用者改了偏移/自動開關 → 立刻重算參數
                 if let Some(p) = tuner.emit_if_changed(&cfg.seg_control) {
-                    segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
-                    let _ = events.send(PipelineEvent::Segmentation {
-                        min_silence_ms: p.min_silence_ms,
-                        max_speech_ms: p.max_speech_ms,
-                        reason: p.reason,
-                    });
+                    send_segmentation(&events, &mut segmenter, p);
                 }
+
                 stats.set_backlog(audio_rx.len());
                 let segs = segmenter.push(&chunk.samples);
-                stats.speaking.store(segmenter.speaking(), Ordering::Relaxed);
+                stats.set_speaking(segmenter.speaking());
                 let had_segment = !segs.is_empty();
                 for seg in segs {
-                    handle_segment(seg, &mut last_lang, &mut tuner, &mut segmenter);
+                    if seg_tx.send(seg).is_err() {
+                        return;
+                    }
                 }
                 if had_segment && preview_shown {
-                    // 正式 Transcript 事件會直接取代預覽(前端在 transcript 時清空 partial),
-                    // 這裡不另送清空事件,避免「清空 → 補上」的閃動。
+                    // 正式 Transcript 事件會直接取代預覽,不另送清空事件(避免閃動)
                     preview_shown = false;
                 }
-                // 減負:預覽平均超過 150 ms → 間隔拉到 1.5 倍;音訊積壓 > 5 chunk → 暫停預覽讓正式辨識優先
+
+                // 減負:預覽平均超過 150 ms → 間隔拉到 1.5 倍;音訊積壓 > 5 chunk → 暫停預覽
                 let preview_avg = {
                     let n = stats.preview_count.load(Ordering::Relaxed);
                     if n == 0 { 0 } else { stats.preview_total_ms.load(Ordering::Relaxed) / n }
@@ -496,11 +412,7 @@ fn worker_loop(
                         if cur.len() >= min_preview_samples {
                             last_preview = Instant::now();
                             let pv_t0 = Instant::now();
-                            let pcm = if cfg.normalize_audio {
-                                normalize_rms(&cur, -20.0, 8.0)
-                            } else {
-                                cur
-                            };
+                            let pcm = if cfg.normalize_audio { normalize_rms(&cur, -20.0, 8.0) } else { cur };
                             if let Ok(t) = preview_asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
                                 if !t.text.is_empty() {
                                     preview_shown = true;
@@ -523,9 +435,117 @@ fn worker_loop(
         }
     }
     for seg in segmenter.flush() {
-        handle_segment(seg, &mut last_lang, &mut tuner, &mut segmenter);
+        let _ = seg_tx.send(seg);
     }
-    tracing::info!("worker 結束");
+    tracing::info!("vad thread 結束");
+}
+
+/// 正式辨識 + 說話者 + 斷句觀察值回饋。
+#[allow(clippy::too_many_arguments)]
+fn asr_loop(
+    cfg: PipelineConfig,
+    asr: Box<dyn Transcriber>,
+    speakers: SharedSpeakers,
+    stats: Arc<PipelineStats>,
+    seg_rx: crossbeam_channel::Receiver<Segment>,
+    obs_tx: crossbeam_channel::Sender<SegObservation>,
+    utt_tx: mpsc::UnboundedSender<Utterance>,
+    events: mpsc::UnboundedSender<PipelineEvent>,
+) {
+    let mut last_lang: Option<Lang> = None;
+    let mut known_speakers: usize = 0;
+
+    while let Ok(seg) = seg_rx.recv() {
+        let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
+        let audio_ms = seg.duration_ms();
+        let level = rms_dbfs(&seg.samples);
+        let wav = cfg.record_dir.as_ref().map(|d| {
+            let p = d.join(format!("seg-{id:04}.wav"));
+            if !sherpa_onnx::write(&p.to_string_lossy(), &seg.samples, TARGET_SAMPLE_RATE) {
+                tracing::warn!("寫入 {} 失敗", p.display());
+            }
+            p.to_string_lossy().to_string()
+        });
+        let _ = events.send(PipelineEvent::Segment { id, audio_ms, rms_dbfs: level, wav });
+        let mut timing = SentenceTiming::new(id, seg.end_at, audio_ms);
+
+        let pcm = if cfg.normalize_audio { normalize_rms(&seg.samples, -20.0, 8.0) } else { seg.samples.clone() };
+        let max_speech_ms = cfg.seg_control.current_max_speech_ms.load(Ordering::Relaxed).max(1000);
+        let hit_max = audio_ms as f32 >= max_speech_ms as f32 * 0.95;
+
+        let mut t = match asr.transcribe(&pcm, cfg.lock_lang) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = events.send(PipelineEvent::Error { message: format!("辨識失敗:{e:#}") });
+                continue;
+            }
+        };
+        timing.asr_done = Some(Instant::now());
+        stats.record_asr(t.asr_ms);
+        if t.text.is_empty() {
+            // 段落沒有文字(雜音):把可能殘留的預覽清掉
+            let _ = events.send(PipelineEvent::Partial { text: String::new(), lang: Lang::Unknown, speaker: None });
+            continue;
+        }
+        // 自動偵測信心低(Unknown)時沿用上一句語言。
+        if t.lang == Lang::Unknown {
+            if let Some(l) = last_lang {
+                t.lang = l;
+            }
+        }
+        if t.lang != Lang::Unknown {
+            last_lang = Some(t.lang);
+        }
+
+        // 說話者
+        let sp_t0 = Instant::now();
+        let speaker = {
+            let mut guard = speakers.lock().unwrap();
+            guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
+        };
+        if let Some(s) = speakers.lock().unwrap().as_mut() {
+            stats.record_speaker(sp_t0.elapsed().as_millis() as u32);
+            for (from, into) in s.take_merges() {
+                let _ = events.send(PipelineEvent::SpeakerMerged { from, into });
+            }
+            let n = s.speakers().len();
+            if n != known_speakers {
+                known_speakers = n;
+                let _ = events.send(PipelineEvent::Speakers { names: s.speakers() });
+            }
+        }
+
+        // 斷句自適應:觀察值回饋給 vad thread
+        let chars = if t.lang.is_cjk() { t.text.chars().count() } else { t.text.split_whitespace().count() };
+        let incomplete = completeness(&t.text, t.lang) == Completeness::Incomplete;
+        let _ = obs_tx.send(SegObservation {
+            lang: t.lang,
+            stat: SegStat { audio_ms, chars, hit_max, incomplete },
+        });
+
+        let will_translate = t.lang != Lang::Zh
+            && (cfg.allowed_langs.is_empty() || cfg.allowed_langs.contains(&t.lang));
+        let _ = events.send(PipelineEvent::Transcript {
+            id,
+            text: t.text.clone(),
+            lang: t.lang,
+            asr_ms: t.asr_ms,
+            will_translate,
+            speaker: speaker.clone(),
+        });
+        if will_translate {
+            PipelineStats::add(&stats.mt_sent, 1);
+            let _ = utt_tx.send(Utterance {
+                id,
+                text: t.text,
+                lang: t.lang,
+                speaker,
+                timing,
+                arrived: Instant::now(),
+            });
+        }
+    }
+    tracing::info!("asr thread 結束");
 }
 
 /// 合併後是否已達硬上限,必須翻。
@@ -541,15 +561,15 @@ fn merge_limit_reached(cfg: &PipelineConfig, u: &Utterance) -> bool {
     len >= cfg.merge_max_chars
 }
 
-/// 這句該等多久:None = 立刻翻。
-fn wait_for(cfg: &PipelineConfig, u: &Utterance) -> Option<Duration> {
+/// 這句的等待策略:None = 立刻翻;Some((最長等待, 靜音多久就翻))。
+fn wait_policy(cfg: &PipelineConfig, u: &Utterance) -> Option<(Duration, Duration)> {
     if merge_limit_reached(cfg, u) {
         return None;
     }
     match completeness(&u.text, u.lang) {
         Completeness::Complete => None,
-        Completeness::Incomplete => Some(cfg.incomplete_wait),
-        Completeness::Unknown => Some(cfg.unknown_wait),
+        Completeness::Incomplete => Some((cfg.incomplete_wait, cfg.incomplete_silence)),
+        Completeness::Unknown => Some((cfg.unknown_wait, cfg.unknown_silence)),
     }
 }
 
@@ -596,22 +616,21 @@ async fn mt_loop(
 
     loop {
         let next = if let Some(p) = &pending {
-            // 暫存句等待中:依完整度決定最多等多久(從它到達 MT 階段算起)。
-            let budget = wait_for(&cfg, p).unwrap_or(Duration::ZERO);
-            let remain = budget.saturating_sub(p.arrived.elapsed());
-            if remain.is_zero() {
+            // 暫存句等待中:最長等 budget;但講者已靜音 ≥ silence 就不等了(對方大概說完了)。
+            let (budget, silence) = wait_policy(&cfg, p).unwrap_or((Duration::ZERO, Duration::ZERO));
+            let waited = p.arrived.elapsed();
+            let quiet = Duration::from_millis(stats.silence_ms());
+            if waited >= budget || quiet >= silence {
                 let u = pending.take().unwrap();
                 translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
                 continue;
             }
-            match tokio::time::timeout(remain, rx.recv()).await {
+            // 每 100 ms 看一次靜音狀態
+            let slice = (budget - waited).min(Duration::from_millis(100));
+            match tokio::time::timeout(slice, rx.recv()).await {
                 Ok(Some(u)) => Some(u),
                 Ok(None) => None, // channel 關閉
-                Err(_) => {
-                    let u = pending.take().unwrap();
-                    translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
-                    continue;
-                }
+                Err(_) => continue,
             }
         } else {
             rx.recv().await
@@ -634,7 +653,7 @@ async fn mt_loop(
         };
 
         // 合併後重新判斷:還沒說完就繼續等,說完或達上限就翻。
-        if wait_for(&cfg, &u).is_some() {
+        if wait_policy(&cfg, &u).is_some() {
             pending = Some(u);
         } else {
             translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
@@ -692,7 +711,7 @@ async fn translate_one(
                 id,
                 source: u.text,
                 text,
-                timing: u.timing.snapshot(),
+                timing: snap,
                 speaker: u.speaker,
             });
         }
