@@ -22,6 +22,8 @@ pub fn run() {
             commands::get_info,
             commands::start_session,
             commands::stop_session,
+            commands::get_metrics,
+            commands::export_diagnostics,
             commands::set_segmentation,
             commands::rename_speaker,
             commands::list_speakers,

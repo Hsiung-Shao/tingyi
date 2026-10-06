@@ -468,9 +468,15 @@ async fn run_pipeline(
             }
         }
     }
+    let stats_snapshot = handle.stats().snapshot();
     handle.stop().await;
 
     println!("\n===== 統計 =====");
+    let ps = stats_snapshot;
+    println!(
+        "管線:段落 {} · 辨識均值 {} ms · 預覽 {} 次均值 {} ms · 說話者均值 {} ms · 譯文首字均值 {} ms · 合併 {} · 音訊積壓峰值 {}",
+        ps.segments, ps.asr_avg_ms, ps.preview_count, ps.preview_avg_ms, ps.speaker_avg_ms, ps.mt_first_avg_ms, ps.merges, ps.audio_backlog_max
+    );
     let asr = tingyi_core::metrics::Stats::from_samples(asr_ms);
     println!("辨識 n={} p50={} p95={} max={} ms", asr.n, asr.p50, asr.p95, asr.max);
     if !snaps.is_empty() {

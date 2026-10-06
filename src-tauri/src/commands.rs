@@ -321,6 +321,95 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct Metrics {
+    pub system: Option<tingyi_core::sysmon::SysSample>,
+    pub pipeline: Option<tingyi_core::metrics::StatsSnapshot>,
+    pub running: bool,
+}
+
+fn ensure_sampler(state: &AppState) {
+    let mut s = state.sampler.lock().unwrap();
+    if s.is_none() {
+        *s = Some(tingyi_core::sysmon::Sampler::start(
+            Duration::from_secs(2),
+            150,
+            state.watched.clone(),
+        ));
+    }
+}
+
+/// 效能指標:系統 / 子程序資源 + 管線計數。前端每 2 s 拉一次;第一次呼叫才啟動取樣器。
+#[tauri::command]
+pub fn get_metrics(state: State<'_, AppState>) -> Metrics {
+    ensure_sampler(&state);
+    // 同步子程序 pid 清單
+    {
+        let mut w = state.watched.lock().unwrap();
+        w.clear();
+        if let Some(p) = state.server.lock().unwrap().as_ref() {
+            w.push(("llama-server".into(), p.pid()));
+        }
+        if let Some(p) = state.whisper.lock().unwrap().as_ref() {
+            w.push(("whisper-server".into(), p.pid()));
+        }
+    }
+    let system = state.sampler.lock().unwrap().as_ref().and_then(|s| s.latest());
+    let pipeline = state
+        .pipeline
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.stats().snapshot());
+    Metrics {
+        system,
+        pipeline,
+        running: state.is_running(),
+    }
+}
+
+/// 匯出診斷:最近 5 分鐘取樣 + 管線統計 + 機器資訊 → bench-out/diag-<時間>.json;回傳路徑。
+#[tauri::command]
+pub fn export_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+    ensure_sampler(&state);
+    let history = state
+        .sampler
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.history())
+        .unwrap_or_default();
+    let pipeline = state
+        .pipeline
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.stats().snapshot());
+    let info = serde_json::json!({
+        "gpu": gpu::nvidia_info(),
+        "data_dir": paths::data_dir().display().to_string(),
+        "os": std::env::consts::OS,
+        "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        "exported_at": chrono_like_now(),
+    });
+    let doc = serde_json::json!({ "info": info, "pipeline": pipeline, "samples": history });
+    let dir = paths::data_dir().parent().map(|p| p.join("bench-out")).unwrap_or_else(|| paths::data_dir().join("bench-out"));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("diag-{}.json", chrono_like_now().replace([':', ' '], "-")));
+    std::fs::write(&path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// 不引入 chrono:以 Unix 秒數組成可讀時間戳。
+fn chrono_like_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
 /// 斷句靈敏度:fast / normal / slow(−100 / 0 / +100 ms)與是否自動調整。執行中即時生效。
 #[tauri::command]
 pub fn set_segmentation(state: State<'_, AppState>, sensitivity: String, adaptive: bool) -> Result<(), String> {

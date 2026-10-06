@@ -27,7 +27,7 @@ pub enum AsrEngine {
 }
 use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
-use crate::metrics::{SentenceTiming, TimingSnapshot};
+use crate::metrics::{PipelineStats, SentenceTiming, TimingSnapshot};
 use crate::mt::{TranslateRequest, Translator};
 use crate::postprocess::{postprocess, Glossary};
 use crate::sentence::{completeness, Completeness};
@@ -182,9 +182,15 @@ pub struct PipelineHandle {
     mt_task: Option<tokio::task::JoinHandle<()>>,
     speakers: SharedSpeakers,
     events: mpsc::UnboundedSender<PipelineEvent>,
+    stats: Arc<PipelineStats>,
 }
 
 impl PipelineHandle {
+    /// 效能計數(前端每 2 s 讀一次)。
+    pub fn stats(&self) -> Arc<PipelineStats> {
+        self.stats.clone()
+    }
+
     /// 說話者改名;成功則重送 `Speakers` 事件。
     pub fn rename_speaker(&self, from: &str, to: &str) -> bool {
         let mut guard = self.speakers.lock().unwrap();
@@ -263,6 +269,7 @@ pub fn start(
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
     let (utt_tx, utt_rx) = mpsc::unbounded_channel::<Utterance>();
+    let stats = Arc::new(PipelineStats::default());
 
     let capture = start_loopback(cfg.capture.clone(), audio_tx)?;
 
@@ -271,10 +278,11 @@ pub fn start(
         let stop = stop.clone();
         let cfg = cfg.clone();
         let speakers = speakers.clone();
+        let stats = stats.clone();
         std::thread::Builder::new()
             .name("tingyi-worker".into())
             .spawn(move || {
-                worker_loop(cfg, segmenter, final_asr, preview_asr, speakers, audio_rx, utt_tx, events, stop)
+                worker_loop(cfg, segmenter, final_asr, preview_asr, speakers, stats, audio_rx, utt_tx, events, stop)
             })
             .map_err(|e| anyhow!("spawn worker: {e}"))?
     };
@@ -282,7 +290,8 @@ pub fn start(
     let mt_task = {
         let events = events.clone();
         let cfg = cfg.clone();
-        tokio::spawn(mt_loop(cfg, translator, utt_rx, events))
+        let stats = stats.clone();
+        tokio::spawn(mt_loop(cfg, translator, utt_rx, events, stats))
     };
 
     Ok(PipelineHandle {
@@ -292,6 +301,7 @@ pub fn start(
         mt_task: Some(mt_task),
         speakers,
         events,
+        stats,
     })
 }
 
@@ -302,6 +312,7 @@ fn worker_loop(
     asr: Box<dyn Transcriber>,
     preview_asr: SenseVoice,
     speakers: SharedSpeakers,
+    stats: Arc<PipelineStats>,
     audio_rx: crossbeam_channel::Receiver<AudioChunk>,
     utt_tx: mpsc::UnboundedSender<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
@@ -352,6 +363,7 @@ fn worker_loop(
         match asr.transcribe(&pcm, cfg.lock_lang) {
             Ok(mut t) => {
                 timing.asr_done = Some(Instant::now());
+                stats.record_asr(t.asr_ms);
                 if t.text.is_empty() {
                     // 段落沒有文字(雜音):把可能殘留的預覽清掉
                     let _ = events.send(PipelineEvent::Partial {
@@ -380,10 +392,14 @@ fn worker_loop(
                 }
 
                 // 說話者
+                let sp_t0 = Instant::now();
                 let speaker = {
                     let mut guard = speakers.lock().unwrap();
                     guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
                 };
+                if speakers.lock().unwrap().is_some() {
+                    stats.record_speaker(sp_t0.elapsed().as_millis() as u32);
+                }
                 if let Some(s) = speakers.lock().unwrap().as_mut() {
                     for (from, into) in s.take_merges() {
                         let _ = events.send(PipelineEvent::SpeakerMerged { from, into });
@@ -421,6 +437,7 @@ fn worker_loop(
                     speaker: speaker.clone(),
                 });
                 if will_translate {
+                    PipelineStats::add(&stats.mt_sent, 1);
                     let _ = utt_tx.send(Utterance {
                         id,
                         text: t.text,
@@ -455,7 +472,9 @@ fn worker_loop(
                         reason: p.reason,
                     });
                 }
+                stats.set_backlog(audio_rx.len());
                 let segs = segmenter.push(&chunk.samples);
+                stats.speaking.store(segmenter.speaking(), Ordering::Relaxed);
                 let had_segment = !segs.is_empty();
                 for seg in segs {
                     handle_segment(seg, &mut last_lang, &mut tuner, &mut segmenter);
@@ -469,6 +488,7 @@ fn worker_loop(
                     if let Some(cur) = segmenter.current_speech() {
                         if cur.len() >= min_preview_samples {
                             last_preview = Instant::now();
+                            let pv_t0 = Instant::now();
                             let pcm = if cfg.normalize_audio {
                                 normalize_rms(&cur, -20.0, 8.0)
                             } else {
@@ -486,6 +506,7 @@ fn worker_loop(
                                     });
                                 }
                             }
+                            stats.record_preview(pv_t0.elapsed().as_millis() as u32);
                         }
                     }
                 }
@@ -554,10 +575,13 @@ async fn mt_loop(
     translator: Option<Arc<dyn Translator>>,
     mut rx: mpsc::UnboundedReceiver<Utterance>,
     events: mpsc::UnboundedSender<PipelineEvent>,
+    stats: Arc<PipelineStats>,
 ) {
     let Some(translator) = translator else {
         // 無翻譯器:把 utterance 吃掉即可。
-        while rx.recv().await.is_some() {}
+        while rx.recv().await.is_some() {
+            PipelineStats::add(&stats.mt_done, 1);
+        }
         return;
     };
     let mut context: VecDeque<(String, String)> = VecDeque::new();
@@ -570,7 +594,7 @@ async fn mt_loop(
             let remain = budget.saturating_sub(p.arrived.elapsed());
             if remain.is_zero() {
                 let u = pending.take().unwrap();
-                translate_one(&cfg, &translator, &events, &mut context, u).await;
+                translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
                 continue;
             }
             match tokio::time::timeout(remain, rx.recv()).await {
@@ -578,7 +602,7 @@ async fn mt_loop(
                 Ok(None) => None, // channel 關閉
                 Err(_) => {
                     let u = pending.take().unwrap();
-                    translate_one(&cfg, &translator, &events, &mut context, u).await;
+                    translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
                     continue;
                 }
             }
@@ -588,13 +612,17 @@ async fn mt_loop(
 
         let Some(u) = next else {
             if let Some(p) = pending.take() {
-                translate_one(&cfg, &translator, &events, &mut context, p).await;
+                translate_one(&cfg, &translator, &events, &mut context, p, &stats).await;
             }
             break;
         };
 
         let u = match pending.take() {
-            Some(p) => merge(&cfg, p, u, &events),
+            Some(p) => {
+                PipelineStats::add(&stats.merges, 1);
+                PipelineStats::add(&stats.mt_done, 1); // 被併入的那句不會單獨翻
+                merge(&cfg, p, u, &events)
+            }
             None => u,
         };
 
@@ -602,7 +630,7 @@ async fn mt_loop(
         if wait_for(&cfg, &u).is_some() {
             pending = Some(u);
         } else {
-            translate_one(&cfg, &translator, &events, &mut context, u).await;
+            translate_one(&cfg, &translator, &events, &mut context, u, &stats).await;
         }
     }
     tracing::info!("mt task 結束");
@@ -614,6 +642,7 @@ async fn translate_one(
     events: &mpsc::UnboundedSender<PipelineEvent>,
     context: &mut VecDeque<(String, String)>,
     mut u: Utterance,
+    stats: &PipelineStats,
 ) {
     let hits: Vec<_> = cfg.glossary.hits(&u.text).into_iter().cloned().collect();
     let req = TranslateRequest {
@@ -642,6 +671,8 @@ async fn translate_one(
                 .or(Some(now));
             let hit_refs: Vec<_> = hits.iter().collect();
             let text = postprocess(&res.text, &hit_refs);
+            let snap = u.timing.snapshot();
+            stats.record_mt(res.first_token_ms.unwrap_or(res.total_ms), res.total_ms, snap.e2e_first_ms);
             context.push_back((u.text.clone(), text.clone()));
             // 累加式前文:平時只追加(提示前綴不變 → 快取命中);超過額度才一次裁到最近幾句。
             let total: usize = context.iter().map(|(s, t)| s.chars().count() + t.chars().count()).sum();
@@ -659,12 +690,14 @@ async fn translate_one(
             });
         }
         Ok(Err(e)) => {
+            PipelineStats::add(&stats.mt_done, 1);
             let _ = events.send(PipelineEvent::TranslationFailed {
                 id,
                 error: format!("{e:#}"),
             });
         }
         Err(_) => {
+            PipelineStats::add(&stats.mt_done, 1);
             let _ = events.send(PipelineEvent::TranslationFailed {
                 id,
                 error: format!("翻譯逾時(> {:?})", cfg.mt_timeout),

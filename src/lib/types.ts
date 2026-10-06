@@ -83,4 +83,51 @@ export interface Info {
 
 export type Sensitivity = "fast" | "normal" | "slow";
 
+export interface GpuSample {
+  util_pct: number;
+  mem_used_mib: number;
+  mem_total_mib: number;
+  temp_c: number;
+}
+export interface ProcSample {
+  pid: number;
+  name: string;
+  cpu_pct: number;
+  rss_mb: number;
+}
+export interface SysSample {
+  ts_ms: number;
+  cpu_pct: number;
+  mem_used_mb: number;
+  mem_total_mb: number;
+  gpu: GpuSample | null;
+  procs: ProcSample[];
+}
+export interface StatsSnapshot {
+  segments: number;
+  asr_avg_ms: number;
+  asr_last_ms: number;
+  preview_count: number;
+  preview_avg_ms: number;
+  speaker_count: number;
+  speaker_avg_ms: number;
+  speaker_last_ms: number;
+  mt_queue: number;
+  mt_done: number;
+  mt_first_avg_ms: number;
+  mt_total_avg_ms: number;
+  mt_last_first_ms: number;
+  merges: number;
+  audio_backlog: number;
+  audio_backlog_max: number;
+  speaking: boolean;
+  e2e_p50: number;
+  e2e_recent: number[];
+}
+export interface Metrics {
+  system: SysSample | null;
+  pipeline: StatsSnapshot | null;
+  running: boolean;
+}
+
 export type OverlayMode = "bilingual" | "translation";

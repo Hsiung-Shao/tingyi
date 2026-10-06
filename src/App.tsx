@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useSubtitles } from "./lib/useSubtitles";
 import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
+import PerfPanel from "./PerfPanel";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -398,6 +399,7 @@ export default function App() {
             <Metric label="端到端首字 p50" value={stats.e2eP50} unit="ms" warn={(stats.e2eP50 ?? 0) > 2000} />
             <Metric label="端到端首字 p95" value={stats.e2eP95} unit="ms" warn={(stats.e2eP95 ?? 0) > 2000} />
           </div>
+          <PerfPanel running={running} />
           <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-2 flex flex-col gap-2">
             {sentences.length === 0 && (
               <div className="text-neutral-500 mt-8 text-center">

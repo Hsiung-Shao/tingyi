@@ -3,10 +3,14 @@
 use std::sync::{Arc, Mutex};
 use tingyi_core::llama::{LlamaServerProcess, WhisperServerProcess};
 use tingyi_core::pipeline::PipelineHandle;
+use tingyi_core::sysmon::{Sampler, Watched};
 use tingyi_core::tuner::SegControl;
 
 #[derive(Default)]
 pub struct AppState {
+    /// 系統取樣器(第一次 get_metrics 時才啟動);watched 列子程序 pid。
+    pub sampler: Mutex<Option<Sampler>>,
+    pub watched: Watched,
     pub server: Mutex<Option<LlamaServerProcess>>,
     pub whisper: Mutex<Option<WhisperServerProcess>>,
     /// 斷句控制面;跨回合保留使用者的偏移與自動開關,start_session 時交給管線。
