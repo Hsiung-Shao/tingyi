@@ -151,6 +151,29 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 第二份診斷(執行中匯出,`diag-1791250478.json`,32 段):Whisper 辨識均值 181 ms、說話者 29 ms、預覽 82 ms × 78 次、譯文首字 65 ms / 完成 233 ms;端到端首字 p50 736 ms、p95 2.8 s(其中約 500 ms 是「看不出完整與否」的固定等待);音訊積壓峰值 15 chunk(辨識期間 VAD 被擋)。
 減負與延遲措施:預覽平均 > 150 ms 時間隔拉到 1.5 倍、音訊積壓 > 5 chunk 時暫停預覽;正式辨識與說話者搬到獨立執行緒(VAD 不再被 Whisper 擋住);合併等待改看講者是否已停(Unknown 句靜音 ≥ 250 ms、Incomplete 句靜音 ≥ 1.2 s 即翻)。後續候選:預覽用 2 threads、說話者小窗只在 ≥ 3 s 段落做、更小翻譯模型(Qwen3-0.6B、TranslateGemma、MADLAD-400)用 30 句對照評估。
 
+第三份診斷(獨立辨識執行緒 + 講者靜音判斷後,執行中匯出,`diag-1791263445.json`,41 段、150 筆取樣):端到端首字 p50 從 736 ms 降到 **384 ms**,音訊積壓峰值 15 → **3**,翻譯佇列與合併歸零;p95 仍 2.7 s(Incomplete 句等 1.2 s 靜音加下一段的辨識)。主程式 CPU 平均 81%(單核基準)。監測本身有兩個 bug 待修:子程序 PID 只在前端拉 `get_metrics` 時登錄,所以取樣裡沒有 llama-server / whisper-server;整機 CPU 仍回 0。
+
+## 6e. 特化翻譯模型對照:SakuraLLM(2026-10-06 加入)
+
+使用者要求日文、英文各一個特化模型。日文選 SakuraLLM(Qwen2.5 底、日→簡中特化、CC BY-NC-SA 4.0 禁商用);英文目前沒有成熟的「只做英中」特化模型,候選 NiuTrans LMT-60(Apache-2.0,中英為中心)未下載。程式面:`PromptStyle` 依模型檔名切 Sakura 的 system / user 提示,後處理加 OpenCC s2twp(純 Rust `opencc-fmmseg`)。
+
+30 句對照(`docs/bench/sentences-30.tsv`,Sakura 不送前文;Hy-MT2 數字取自 §4):
+
+| 模型 | 首字 p50 / p95 | 完成 p50 / p95 | 顯示記憶體增量 |
+|---|---|---|---|
+| Hy-MT2-7B-Q4_K_M | 45 / 59 ms | 253 / 350 ms | 5089 MiB |
+| Sakura-7B-Qwen2.5-v1.0 IQ4_XS | 61 / 85 ms | 230 / 515 ms | 4155 MiB |
+| Sakura-1.5B-Qwen2.5-v1.0 F16 | 18 / 23 ms | 143 / 206 ms | 2875 MiB |
+
+日文 15 句品質(人工對讀,`bench-out/mt-sakura-*.jsonl`):
+- Sakura-7B 最貼近直播語境:「スパチャ」→「超留」、「ビルド」→「能力值」、「サーバー落ちた」→「伺服器當機」、「ラグい」→「有點 lag」,語氣像台灣實況口語;缺點是偶爾意譯過頭(第 17 句「被一拳打死」變「那一拳是怎樣」)、長句完成時間拉到 515 ms。
+- Sakura-1.5B 以不到 Hy-MT2 7B 六成的顯示記憶體拿到接近的日文品質,遊戲用語也比 Hy-MT2 準(「ビルド」→「技能組合」、「耐性」→「抗性」);弱點是直播俚語(「スパチャ」→「賞光」、「パッチノート」→「補丁筆記」)。
+- Hy-MT2-7B 文句通順但遊戲術語常譯錯(「ビルド確認」→「檢查建築結構」、「耐性」→「耐久度」)。
+- 英文 15 句 Sakura 完全不能用(有整句原文照抄),Sakura 僅能當日文專用。
+
+結論:日文用 Sakura 明顯優於 Hy-MT2;若要省資源,Sakura-1.5B 是最佳性價比。採用的代價是「依語言切模型」,英文仍需 Hy-MT2,兩個 llama-server 同時載入顯示記憶體至少 +2.9 GB(1.5B)或 +4.2 GB(7B);或改為只在日文回合啟動 Sakura。由使用者決定。
+
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。

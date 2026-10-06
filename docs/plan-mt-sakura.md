@@ -23,8 +23,9 @@
 - [x] `paths.rs`:`KNOWN_MT_MODELS` 加兩個 Sakura 檔名,app 下拉選單可選。
 - [x] `scripts/download-models.ps1`:`-WithSakura`。
 - [x] app 與 bench 建翻譯器改走 `LlamaServerConfig::for_model`。
-- [ ] 30 句對照(`docs/bench/sentences-30.tsv`):Hy-MT2-7B-Q4_K_M vs Sakura-7B vs Sakura-1.5B,比首字 / 完成 / 顯示記憶體 / 日文品質。
-- [ ] 結果寫進 `docs/validation-report.md §6e`,由使用者決定預設模型是否按語言切換。
+- [x] 30 句對照(`docs/bench/sentences-30.tsv`):Hy-MT2-7B-Q4_K_M vs Sakura-7B vs Sakura-1.5B,比首字 / 完成 / 顯示記憶體 / 日文品質(`bench-out/mt-sakura-*.jsonl`)。
+- [x] 結果寫進 `docs/validation-report.md §6e`。
+- [ ] 使用者決定:是否採用 Sakura 當日文模型、1.5B 或 7B、以及依語言切模型的方式。
 - [ ] `/handoff-check`。
 
 ## 已知限制
