@@ -51,9 +51,10 @@ impl Sampler {
             .spawn(move || {
                 let mut sys = System::new();
                 let self_pid = Pid::from_u32(std::process::id());
-                // 第一次 refresh 只是建立基準,CPU % 要兩次取樣之間才有意義;
+                // System::new() 的 CPU 清單是空的,refresh_cpu_specifics 只更新既有項目,
+                // 所以第一次要用 refresh_cpu_list 建清單;這一輪同時是 CPU % 的基準。
                 // 整機 CPU 用各核平均(global_cpu_usage 在 Windows 上第一輪常回 0)。
-                sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+                sys.refresh_cpu_list(CpuRefreshKind::nothing().with_cpu_usage());
                 sys.refresh_memory();
                 let mut last = Instant::now();
                 while !stop2.load(Ordering::Relaxed) {

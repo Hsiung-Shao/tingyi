@@ -208,6 +208,8 @@ pub async fn start_session(
                 &mut noop,
             )
             .await;
+        // 子程序 pid 立刻登錄到取樣器,不等前端拉 get_metrics
+        state.watched.lock().unwrap().push(("llama-server".into(), proc_.pid()));
         *state.server.lock().unwrap() = Some(proc_);
         translator = Some(Arc::new(tr));
     }
@@ -243,6 +245,7 @@ pub async fn start_session(
         cfg.asr_engine = AsrEngine::Whisper {
             base_url: wp.base_url(),
         };
+        state.watched.lock().unwrap().push(("whisper-server".into(), wp.pid()));
         *state.whisper.lock().unwrap() = Some(wp);
     }
 
