@@ -1,7 +1,10 @@
 //! 翻譯:統一介面 `Translator` + `LlamaServerTranslator`(OpenAI 相容串流端點)。
 //!
 //! 本機 llama-server 與雲端 OpenAI 相容服務共用同一套程式碼。
-//! 提示依 Hy-MT2 模型卡(簡體原文),目標語言「繁體中文」。
+//! 提示範本依模型家族切換(`PromptStyle`):
+//! - Hy-MT2:依模型卡(簡體原文),目標語言「繁體中文」,支援背景前文與術語。
+//! - Sakura:依 SakuraLLM v1.0 README 的 system / user 格式(日→簡中,後處理再轉繁體),
+//!   不送背景前文(模型未以此格式訓練),術語表用 `src->dst` 每行一筆。
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::future::BoxFuture;
@@ -32,6 +35,56 @@ pub struct TranslateResult {
     /// llama-server 回傳的 timings(若有)。
     pub server_prompt_ms: Option<f32>,
     pub server_predicted_ms: Option<f32>,
+}
+
+/// 提示範本家族,依模型檔名決定(含 "sakura" → Sakura,其餘 Hy-MT2)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PromptStyle {
+    #[default]
+    HyMt2,
+    Sakura,
+}
+
+impl PromptStyle {
+    pub fn for_model(model_name: &str) -> Self {
+        if model_name.to_ascii_lowercase().contains("sakura") {
+            Self::Sakura
+        } else {
+            Self::HyMt2
+        }
+    }
+}
+
+/// SakuraLLM v1.0 的 system prompt(README 原文,簡體)。
+pub const SAKURA_SYSTEM: &str = "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。";
+
+/// 組出送給 chat 端點的訊息(role, content)。
+pub fn build_messages(req: &TranslateRequest, style: PromptStyle) -> Vec<(&'static str, String)> {
+    match style {
+        PromptStyle::HyMt2 => vec![("user", build_prompt(req))],
+        PromptStyle::Sakura => vec![
+            ("system", SAKURA_SYSTEM.to_string()),
+            ("user", build_sakura_prompt(req)),
+        ],
+    }
+}
+
+/// Sakura v1.0 user prompt:有術語表與無術語表兩種(README 建議無術語時用短版)。
+pub fn build_sakura_prompt(req: &TranslateRequest) -> String {
+    if req.glossary.is_empty() {
+        format!("将下面的日文文本翻译成中文：{}", req.text)
+    } else {
+        let dict: Vec<String> = req
+            .glossary
+            .iter()
+            .map(|g| format!("{}->{}", g.source, g.target))
+            .collect();
+        format!(
+            "根据以下术语表（可以为空）：\n{}\n将下面的日文文本根据对应关系和备注翻译成中文：{}",
+            dict.join("\n"),
+            req.text
+        )
+    }
 }
 
 /// 串流回呼:每收到一段增量文字就呼叫。
@@ -97,6 +150,10 @@ pub struct LlamaServerConfig {
     pub temperature: f32,
     /// 整句逾時;超過先顯示原文。
     pub timeout: Duration,
+    /// 提示範本家族。
+    pub style: PromptStyle,
+    /// 核取樣;None 用伺服器預設。Sakura README 建議 0.3。
+    pub top_p: Option<f32>,
 }
 
 impl Default for LlamaServerConfig {
@@ -108,6 +165,27 @@ impl Default for LlamaServerConfig {
             max_tokens: 200,
             temperature: 0.0,
             timeout: Duration::from_secs(15),
+            style: PromptStyle::HyMt2,
+            top_p: None,
+        }
+    }
+}
+
+impl LlamaServerConfig {
+    /// 依模型檔名挑範本與取樣參數(Sakura README:temperature 0.1、top_p 0.3)。
+    pub fn for_model(base_url: impl Into<String>, model_name: &str) -> Self {
+        let style = PromptStyle::for_model(model_name);
+        let (temperature, top_p) = match style {
+            PromptStyle::HyMt2 => (0.0, None),
+            PromptStyle::Sakura => (0.1, Some(0.3)),
+        };
+        Self {
+            base_url: base_url.into(),
+            model: model_name.to_string(),
+            temperature,
+            top_p,
+            style,
+            ..Default::default()
         }
     }
 }
@@ -153,6 +231,8 @@ struct ChatRequest<'a> {
     messages: Vec<ChatMessage<'a>>,
     stream: bool,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
     max_tokens: u32,
     cache_prompt: bool,
     stream_options: StreamOptions,
@@ -211,15 +291,16 @@ impl Translator for LlamaServerTranslator {
     ) -> BoxFuture<'a, Result<TranslateResult>> {
         Box::pin(async move {
             let t0 = Instant::now();
-            let prompt = build_prompt(&req);
+            let msgs = build_messages(&req, self.cfg.style);
             let body = ChatRequest {
                 model: &self.cfg.model,
-                messages: vec![ChatMessage {
-                    role: "user",
-                    content: &prompt,
-                }],
+                messages: msgs
+                    .iter()
+                    .map(|(role, content)| ChatMessage { role, content })
+                    .collect(),
                 stream: true,
                 temperature: self.cfg.temperature,
+                top_p: self.cfg.top_p,
                 max_tokens: self.cfg.max_tokens,
                 cache_prompt: true,
                 stream_options: StreamOptions { include_usage: true },
@@ -323,5 +404,38 @@ mod tests {
         assert!(p.contains("Welcome. => 歡迎。"));
         assert!(p.contains("Exile 翻译成 流亡者"));
         assert!(p.contains("【待翻译文本】\nExile, run!"));
+    }
+
+    #[test]
+    fn style_by_model_name() {
+        assert_eq!(PromptStyle::for_model("Sakura-7B-Qwen2.5-v1.0-IQ4_XS"), PromptStyle::Sakura);
+        assert_eq!(PromptStyle::for_model("Hy-MT2-7B-Q4_K_M"), PromptStyle::HyMt2);
+        let c = LlamaServerConfig::for_model("http://x", "Sakura-1.5B-Qwen2.5-v1.0-F16");
+        assert_eq!(c.top_p, Some(0.3));
+        assert_eq!(LlamaServerConfig::for_model("http://x", "Hy-MT2-1.8B-Q8_0").top_p, None);
+    }
+
+    #[test]
+    fn sakura_messages() {
+        let r = TranslateRequest {
+            text: "今日は配信ありがとう".into(),
+            src_lang: Lang::Ja,
+            context: vec![("前".into(), "前".into())],
+            ..Default::default()
+        };
+        let m = build_messages(&r, PromptStyle::Sakura);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].0, "system");
+        assert_eq!(m[1].1, "将下面的日文文本翻译成中文：今日は配信ありがとう");
+        let r2 = TranslateRequest {
+            glossary: vec![GlossaryEntry {
+                source: "配信".into(),
+                target: "直播".into(),
+            }],
+            ..r
+        };
+        let m2 = build_messages(&r2, PromptStyle::Sakura);
+        assert!(m2[1].1.starts_with("根据以下术语表"));
+        assert!(m2[1].1.contains("配信->直播"));
     }
 }

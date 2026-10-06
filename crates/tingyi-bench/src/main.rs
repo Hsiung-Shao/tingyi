@@ -235,10 +235,9 @@ async fn main() -> Result<()> {
             if let (Some(a), Some(b)) = (before, after) {
                 println!("llama-server 顯示記憶體增量:{} MiB(載入後總用量 {} MiB)", b.saturating_sub(a), b);
             }
-            let translator: Arc<dyn Translator> = Arc::new(LlamaServerTranslator::new(LlamaServerConfig {
-                base_url: format!("http://127.0.0.1:{port}"),
-                ..Default::default()
-            }));
+            let translator: Arc<dyn Translator> = Arc::new(LlamaServerTranslator::new(
+                LlamaServerConfig::for_model(format!("http://127.0.0.1:{port}"), &model),
+            ));
             // 熱身一句,讓固定前綴進快取。
             let mut noop = |_: &str| {};
             let _ = translator
@@ -530,10 +529,10 @@ async fn run_mt(
         let vram = after.zip(before).map(|(a, b)| a.saturating_sub(b));
         println!("\n===== {model} =====\n載入 {:.1}s,顯示記憶體增量 {vram:?} MiB", load.as_secs_f32());
 
-        let tr = LlamaServerTranslator::new(LlamaServerConfig {
-            base_url: format!("http://127.0.0.1:{port}"),
-            ..Default::default()
-        });
+        let tr = LlamaServerTranslator::new(LlamaServerConfig::for_model(
+            format!("http://127.0.0.1:{port}"),
+            model,
+        ));
         let mut noop = |_: &str| {};
         let _ = tr
             .translate(

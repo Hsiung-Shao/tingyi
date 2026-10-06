@@ -192,10 +192,10 @@ pub async fn start_session(
         } else {
             emit_status("llama-server 就緒");
         }
-        let tr = LlamaServerTranslator::new(LlamaServerConfig {
-            base_url: format!("http://127.0.0.1:{port}"),
-            ..Default::default()
-        });
+        let tr = LlamaServerTranslator::new(LlamaServerConfig::for_model(
+            format!("http://127.0.0.1:{port}"),
+            model,
+        ));
         // 熱身:固定前綴進快取
         let mut noop = |_: &str| {};
         let _ = tr

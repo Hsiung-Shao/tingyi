@@ -4,11 +4,13 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\download-models.ps1            # 必要項目
 #   powershell -ExecutionPolicy Bypass -File scripts\download-models.ps1 -With7B    # 加 7B
 #   ... -WithWhisper  加 Whisper large-v3-turbo q8 模型(執行檔需 scriptsuild-whisper.ps1 自行編譯)
+#   ... -WithSakura   加 SakuraLLM 日→中特化模型(7B IQ4_XS 與 1.5B F16;CC BY-NC-SA 4.0,禁商用)
 #   ... -ListOnly  只列清單不下載
 param(
     [switch]$With7B,
     [switch]$With1_8B_Q4,
     [switch]$WithWhisper,
+    [switch]$WithSakura,
     [switch]$ListOnly
 )
 
@@ -41,6 +43,12 @@ if ($With1_8B_Q4) {
 if ($WithWhisper) {
     $items += @{ Name = 'ggml-large-v3-turbo-q8_0.bin'; Size = '874 MB'; Dest = (Join-Path $models 'ggml-large-v3-turbo-q8_0.bin');
        Url = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin'; Source = 'ggerganov/whisper.cpp (Hugging Face, MIT);執行檔請另跑 scriptsuild-whisper.ps1' }
+}
+if ($WithSakura) {
+    $items += @{ Name = 'Sakura-7B-Qwen2.5-v1.0-IQ4_XS.gguf'; Size = '4.25 GB'; Dest = (Join-Path $models 'Sakura-7B-Qwen2.5-v1.0-IQ4_XS.gguf');
+       Url = 'https://huggingface.co/SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-7b-qwen2.5-v1.0-iq4xs.gguf'; Source = 'SakuraLLM (Hugging Face, CC BY-NC-SA 4.0);日→中特化' }
+    $items += @{ Name = 'Sakura-1.5B-Qwen2.5-v1.0-F16.gguf'; Size = '3.56 GB'; Dest = (Join-Path $models 'Sakura-1.5B-Qwen2.5-v1.0-F16.gguf');
+       Url = 'https://huggingface.co/SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-1.5b-qwen2.5-v1.0-fp16.gguf'; Source = 'SakuraLLM (Hugging Face, CC BY-NC-SA 4.0);日→中特化小模型' }
 }
 if ($With7B) {
     $items += @{ Name = 'Hy-MT2-7B-Q4_K_M.gguf'; Size = '4.62 GB'; Dest = (Join-Path $models 'Hy-MT2-7B-Q4_K_M.gguf');

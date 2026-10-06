@@ -1,9 +1,15 @@
-//! 譯文後處理:使用者術語表(最高優先)與台灣用語修正。
+//! 譯文後處理:OpenCC s2twp 簡轉繁(含台灣用語)、內建詞表補充、使用者術語表(最高優先)。
 //!
-//! 規格書原訂以 OpenCC s2twp 做保險;驗證週先以內建詞表處理最常見的大陸用詞,
-//! OpenCC 整合列為 MVP 待辦(見 docs/validation-report.md 風險欄)。
+//! OpenCC 用純 Rust 的 `opencc-fmmseg`(MIT,字典內嵌);Hy-MT2 本就輸出繁體,轉換是保險,
+//! Sakura 只會輸出簡體,必須轉。
 
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+fn opencc() -> &'static opencc_fmmseg::OpenCC {
+    static C: OnceLock<opencc_fmmseg::OpenCC> = OnceLock::new();
+    C.get_or_init(opencc_fmmseg::OpenCC::new)
+}
 
 /// 一條術語:原文(大小寫不敏感比對)→ 指定譯法。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,9 +75,9 @@ const TW_TERMS: &[(&str, &str)] = &[
     ("支持", "支援"),
 ];
 
-/// 台灣用語修正。保留給 OpenCC s2twp 取代的介面。
+/// 簡轉繁(OpenCC s2twp,不動標點)後再套內建詞表補 OpenCC 沒收的用詞。
 pub fn to_taiwan_terms(text: &str) -> String {
-    let mut out = text.to_string();
+    let mut out = opencc().convert(text, "s2twp", false);
     for (from, to) in TW_TERMS {
         if out.contains(from) {
             out = out.replace(from, to);
@@ -95,6 +101,15 @@ pub fn postprocess(translation: &str, glossary_hits: &[&GlossaryEntry]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simplified_to_traditional() {
+        let out = to_taiwan_terms("这是一个简体测试，软件很好用。");
+        assert!(out.contains("這是一個簡體測試"), "{out}");
+        assert!(out.contains("軟體"), "{out}");
+        // 已是繁體的字幕不應被改壞
+        assert_eq!(to_taiwan_terms("歡迎回來,今天要挑戰新地圖。"), "歡迎回來,今天要挑戰新地圖。");
+    }
 
     #[test]
     fn taiwan_terms_replace() {
