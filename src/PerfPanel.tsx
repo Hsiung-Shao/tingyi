@@ -79,6 +79,7 @@ export default function PerfPanel({ running }: { running: boolean }) {
             </button>
           </div>
           {exportMsg && <div className="text-neutral-500 truncate">{exportMsg}</div>}
+          {!running && <div className="text-neutral-600">執行中按「匯出診斷」才會包含管線統計。</div>}
         </div>
       )}
     </div>

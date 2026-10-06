@@ -484,7 +484,14 @@ fn worker_loop(
                     // 這裡不另送清空事件,避免「清空 → 補上」的閃動。
                     preview_shown = false;
                 }
-                if cfg.preview && !had_segment && last_preview.elapsed() >= cfg.preview_interval {
+                // 減負:預覽平均超過 150 ms → 間隔拉到 1.5 倍;音訊積壓 > 5 chunk → 暫停預覽讓正式辨識優先
+                let preview_avg = {
+                    let n = stats.preview_count.load(Ordering::Relaxed);
+                    if n == 0 { 0 } else { stats.preview_total_ms.load(Ordering::Relaxed) / n }
+                };
+                let interval = if preview_avg > 150 { cfg.preview_interval.mul_f32(1.5) } else { cfg.preview_interval };
+                let backlog_ok = audio_rx.len() <= 5;
+                if cfg.preview && !had_segment && backlog_ok && last_preview.elapsed() >= interval {
                     if let Some(cur) = segmenter.current_speech() {
                         if cur.len() >= min_preview_samples {
                             last_preview = Instant::now();

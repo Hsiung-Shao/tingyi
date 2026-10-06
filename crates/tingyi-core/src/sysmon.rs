@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{CpuRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::gpu::{nvidia_sample, GpuSample};
 
@@ -51,8 +51,9 @@ impl Sampler {
             .spawn(move || {
                 let mut sys = System::new();
                 let self_pid = Pid::from_u32(std::process::id());
-                // 第一次 refresh 只是建立基準,CPU % 要兩次取樣之間才有意義
-                sys.refresh_cpu_usage();
+                // 第一次 refresh 只是建立基準,CPU % 要兩次取樣之間才有意義;
+                // 整機 CPU 用各核平均(global_cpu_usage 在 Windows 上第一輪常回 0)。
+                sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
                 sys.refresh_memory();
                 let mut last = Instant::now();
                 while !stop2.load(Ordering::Relaxed) {
@@ -65,7 +66,7 @@ impl Sampler {
                     let mut pids: Vec<Pid> = vec![self_pid];
                     let watched_now: Vec<(String, u32)> = watched2.lock().unwrap().clone();
                     pids.extend(watched_now.iter().map(|(_, p)| Pid::from_u32(*p)));
-                    sys.refresh_cpu_usage();
+                    sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
                     sys.refresh_memory();
                     sys.refresh_processes_specifics(
                         ProcessesToUpdate::Some(&pids),
@@ -92,7 +93,14 @@ impl Sampler {
                             .duration_since(UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0),
-                        cpu_pct: sys.global_cpu_usage(),
+                        cpu_pct: {
+                            let cpus = sys.cpus();
+                            if cpus.is_empty() {
+                                sys.global_cpu_usage()
+                            } else {
+                                cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / cpus.len() as f32
+                            }
+                        },
                         mem_used_mb: (sys.used_memory() / 1_000_000) as u32,
                         mem_total_mb: (sys.total_memory() / 1_000_000) as u32,
                         gpu: nvidia_sample(),
