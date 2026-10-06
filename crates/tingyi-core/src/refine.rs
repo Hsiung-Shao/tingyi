@@ -214,6 +214,19 @@ pub fn align(window_start: i64, sentences: &[Span], segs: &[WSeg], cfg: &RefineC
     let mut buckets: Vec<Vec<&Placed>> = vec![Vec::new(); sentences.len()];
     let mut unassigned: Vec<&Placed> = Vec::new();
     for p in &placed {
+        // 一個 segment 明顯橫跨兩句以上(各重疊 ≥ 該句 30% 或 500 ms):沒有逐字時間戳切不開,
+        // 拿它修任何一句都會把鄰句內容吃進來 → 保守略過。
+        let spanned = sentences
+            .iter()
+            .filter(|s| {
+                let ov = (p.b.min(s.end) - p.a.max(s.start)).max(0);
+                let need = ((s.end - s.start) * 3 / 10).min(ms_to_samples(500)).max(1);
+                ov >= need
+            })
+            .count();
+        if spanned >= 2 {
+            continue;
+        }
         let mid = (p.a + p.b) / 2;
         let cands: Vec<usize> = sentences
             .iter()
@@ -671,6 +684,16 @@ mod tests {
         let segs = [w(3.5, 4.5, "今日も"), w(5.0, 6.0, "ご視聴ありがとうございました"), w(7.0, 7.1, "あ")];
         let o = align(0, &sents, &segs, &cfg());
         assert!(o.recovered.is_empty(), "{:?}", o.recovered);
+    }
+
+    #[test]
+    fn align_skips_segment_spanning_two_sentences() {
+        let sents = [s(7, 0, 3200, "Hold on, did that boss just one-shot me?"), s(8, 3400, 5200, "That is actually insane.")];
+        // Whisper 把兩句併成一段 0.1–5.1 s → 兩句都不該被改
+        let segs = [w(0.1, 5.1, "Hold on, did that boss just one shot me? That is actually insane.")];
+        let o = align(0, &sents, &segs, &cfg());
+        assert!(o.revised.is_empty(), "{:?}", o.revised);
+        assert!(o.recovered.is_empty());
     }
 
     #[test]
