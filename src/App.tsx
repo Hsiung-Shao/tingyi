@@ -3,13 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSubtitles } from "./lib/useSubtitles";
 import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
-
-const SPEAKER_COLORS = ["text-sky-300", "text-amber-300", "text-emerald-300", "text-pink-300", "text-violet-300", "text-orange-300"];
-export function speakerColor(name: string | null, speakers: string[]) {
-  if (!name) return "text-neutral-400";
-  const i = speakers.indexOf(name);
-  return SPEAKER_COLORS[(i < 0 ? 0 : i) % SPEAKER_COLORS.length];
-}
+import { speakerColor } from "./lib/speakerColor";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -75,7 +69,7 @@ export default function App() {
     // 刻意不把 start / info 放進依賴,否則每次 info 刷新都會重跑這個 effect。
     if (info?.autostart && !info.running && !autostarted.current) {
       autostarted.current = true;
-      void start();
+      void start(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [info?.autostart]);
@@ -120,7 +114,15 @@ export default function App() {
       })
       .filter((g) => g.source && g.target);
 
-  const start = async () => {
+  const [askClear, setAskClear] = useState(false);
+
+  const start = async (clearHistory?: boolean) => {
+    // 有上一輪紀錄且尚未決定 → 先問要清除還是保留
+    if (clearHistory === undefined && sentences.length > 0) {
+      setAskClear(true);
+      return;
+    }
+    setAskClear(false);
     setBusy(true);
     try {
       await invoke("start_session", {
@@ -128,6 +130,7 @@ export default function App() {
           model: translate ? model : null,
           asr_engine: asrEngine,
           speaker_id: speakerId,
+          clear_history: clearHistory ?? true,
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
         },
@@ -169,6 +172,25 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col text-sm">
+      {askClear && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
+          <div className="bg-neutral-900 border border-neutral-700 rounded-lg p-5 w-[360px] flex flex-col gap-4">
+            <div className="text-base font-semibold">上一輪還有 {sentences.length} 句紀錄</div>
+            <div className="text-neutral-400">要清除後重新開始,還是保留並接續?</div>
+            <div className="flex gap-2">
+              <button className="flex-1 bg-rose-700 hover:bg-rose-600 rounded py-2" onClick={() => start(true)}>
+                清除
+              </button>
+              <button className="flex-1 bg-sky-700 hover:bg-sky-600 rounded py-2" onClick={() => start(false)}>
+                保留
+              </button>
+              <button className="px-3 bg-neutral-800 hover:bg-neutral-700 rounded py-2" onClick={() => setAskClear(false)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
         <h1 className="text-lg font-semibold tracking-wide">聽譯</h1>
         <span className="text-neutral-400">技術驗證版</span>
@@ -249,7 +271,7 @@ export default function App() {
             {!running ? (
               <button
                 className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 rounded py-2 font-semibold"
-                onClick={start}
+                onClick={() => start()}
                 disabled={busy || !ready}
               >
                 {busy ? "啟動中…" : "開始"}

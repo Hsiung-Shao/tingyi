@@ -24,6 +24,12 @@ function reducer(state: State, ev: Action): State {
       return { sentences: [], status: state.status, errors: [], partial: "", speakers: [], segmentation: null };
     case "segmentation":
       return { ...state, segmentation: { min_silence_ms: ev.min_silence_ms, max_speech_ms: ev.max_speech_ms, reason: ev.reason } };
+    case "speaker_merged":
+      return {
+        ...state,
+        speakers: state.speakers.filter((n) => n !== ev.from),
+        sentences: state.sentences.map((s) => (s.speaker === ev.from ? { ...s, speaker: ev.into } : s)),
+      };
     case "speakers": {
       // 改名時把舊名換成新名(舊名不在新清單、新名是新出現的)
       const gone = state.speakers.filter((n) => !ev.names.includes(n));

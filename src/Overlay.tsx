@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSubtitles } from "./lib/useSubtitles";
+import { speakerColor } from "./lib/speakerColor";
 import type { OverlayMode } from "./lib/types";
 
 // 使用者回饋(2026-10-06):同時只顯示一句譯文與灰字預覽,畫面最乾淨。
@@ -52,9 +53,9 @@ export default function Overlay() {
       )}
       {visible.map((s) => {
         const hasTranslation = s.translation.length > 0;
-        const body = s.state === "no_translate" ? s.source : hasTranslation ? s.translation : s.source;
-        // 超過一位說話者時在譯文前加名字
-        const mainText = speakers.length > 1 && s.speaker ? `${s.speaker}:${body}` : body;
+        const mainText = s.state === "no_translate" ? s.source : hasTranslation ? s.translation : s.source;
+        // 超過一位說話者時在譯文前加有顏色的名字
+        const showSpeaker = speakers.length > 1 && !!s.speaker;
         const pending = s.state === "translating" && !hasTranslation;
         return (
           <div key={s.id} className="fade-in-up text-center max-w-full">
@@ -68,6 +69,7 @@ export default function Overlay() {
                 pending ? "text-neutral-400" : "text-white"
               } ${s.state === "failed" ? "text-amber-200" : ""}`}
             >
+              {showSpeaker && <span className={speakerColor(s.speaker, speakers)}>{s.speaker}:</span>}
               {mainText}
               {s.state === "translating" && hasTranslation && (
                 <span className="inline-block w-[0.4em] animate-pulse">▍</span>

@@ -447,6 +447,7 @@ async fn run_pipeline(
                     PipelineEvent::Partial { text, .. } => { if !text.is_empty() { println!("[{ts:6.1}s]    預覽:{text}"); } }
                     PipelineEvent::Segmentation { min_silence_ms, max_speech_ms, reason } => println!("[{ts:6.1}s] 斷句參數:靜音 {min_silence_ms} ms、上限 {max_speech_ms} ms({reason})"),
                     PipelineEvent::Speakers { names } => println!("[{ts:6.1}s] 說話者:{names:?}"),
+                    PipelineEvent::SpeakerMerged { from, into } => println!("[{ts:6.1}s] 說話者合併:{from} → {into}"),
                     PipelineEvent::Transcript { id, text, lang, asr_ms: a, will_translate, speaker } => {
                         asr_ms.push(*a);
                         println!("[{ts:6.1}s] #{id} 辨識 {a} ms [{}]{}{} {text}", lang.code(), if *will_translate { "" } else { "(不翻)" },

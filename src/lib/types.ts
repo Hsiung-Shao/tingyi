@@ -28,6 +28,7 @@ export type PipelineEvent =
     }
   | { type: "segmentation"; min_silence_ms: number; max_speech_ms: number; reason: string }
   | { type: "speakers"; names: string[] }
+  | { type: "speaker_merged"; from: string; into: string }
   | { type: "translation_delta"; id: number; delta: string }
   | {
       type: "translation_done";

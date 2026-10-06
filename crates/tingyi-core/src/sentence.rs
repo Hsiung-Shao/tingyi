@@ -88,6 +88,10 @@ pub fn completeness(text: &str, lang: Lang) -> Completeness {
             Completeness::Unknown
         }
         Lang::En => {
+            // 英文有句點就算說完(「...not doing that.」尾字 that 不該被當未完句)
+            if matches!(last_raw, '.') {
+                return Completeness::Complete;
+            }
             let last_word = body
                 .split_whitespace()
                 .last()
@@ -96,9 +100,6 @@ pub fn completeness(text: &str, lang: Lang) -> Completeness {
                 .to_lowercase();
             if EN_INCOMPLETE.contains(&last_word.as_str()) {
                 return Completeness::Incomplete;
-            }
-            if matches!(last_raw, '.') {
-                return Completeness::Complete;
             }
             Completeness::Unknown
         }
@@ -152,6 +153,8 @@ mod tests {
         assert_eq!(completeness("Yeah, I was coming on in a sec and", Lang::En), Incomplete);
         assert_eq!(completeness("Sometimes when I'm driving, I can be going so fast", Lang::En), Unknown);
         assert_eq!(completeness("Hold on, did that boss just one-shot me?", Lang::En), Complete);
+        assert_eq!(completeness("Thank you for not doing that.", Lang::En), Complete);
+        assert_eq!(completeness("I guess. Sorry, it was mentioned though, like,", Lang::En), Incomplete);
     }
 
     #[test]

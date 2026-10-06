@@ -14,8 +14,12 @@ use crate::audio::TARGET_SAMPLE_RATE;
 #[derive(Debug, Clone)]
 pub struct SpeakerConfig {
     pub model: PathBuf,
-    /// 餘弦相似度門檻;高於此視為同一人。
+    /// 餘弦相似度 ≥ 此值 → 歸到該說話者。
     pub threshold: f32,
+    /// 相似度 < 此值才新建說話者;介於兩者之間歸到最像的既有說話者(遲滯,避免同一人被拆成多位)。
+    pub new_below: f32,
+    /// 兩位說話者的平均聲紋相似度 ≥ 此值 → 自動合併。
+    pub merge_above: f32,
     /// 短於此的段落不算聲紋(沿用上一位)。
     pub min_audio_ms: u32,
     /// 每位說話者最多保留幾筆 embedding(滾動)。
@@ -27,7 +31,9 @@ impl Default for SpeakerConfig {
     fn default() -> Self {
         Self {
             model: crate::paths::speaker_model(),
-            threshold: 0.55,
+            threshold: 0.50,
+            new_below: 0.40,
+            merge_above: 0.62,
             min_audio_ms: 1000,
             max_per_speaker: 20,
             num_threads: 1,
@@ -44,6 +50,8 @@ pub struct SpeakerIdentifier {
     order: Vec<String>,
     next_n: usize,
     last: Option<(String, Instant)>,
+    /// 自動合併紀錄(from → into),由管線取走後送事件給前端。
+    merges: Vec<(String, String)>,
 }
 
 impl SpeakerIdentifier {
@@ -68,7 +76,48 @@ impl SpeakerIdentifier {
             order: Vec::new(),
             next_n: 1,
             last: None,
+            merges: Vec::new(),
         })
+    }
+
+    /// 取走自動合併紀錄。
+    pub fn take_merges(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.merges)
+    }
+
+    fn centroid(embs: &[Vec<f32>]) -> Vec<f32> {
+        let dim = embs.first().map(|e| e.len()).unwrap_or(0);
+        let mut c = vec![0f32; dim];
+        for e in embs {
+            for (i, v) in e.iter().enumerate() {
+                c[i] += v;
+            }
+        }
+        let n = embs.len().max(1) as f32;
+        c.iter_mut().for_each(|v| *v /= n);
+        c
+    }
+
+    /// 兩位說話者平均聲紋太像就合併(後出現的併入先出現的)。
+    fn auto_merge(&mut self) {
+        let names: Vec<String> = self.order.clone();
+        for i in 0..names.len() {
+            for j in (i + 1)..names.len() {
+                let (a, b) = (&names[i], &names[j]);
+                let (Some(ea), Some(eb)) = (self.store.get(a), self.store.get(b)) else { continue };
+                if ea.len() < 2 || eb.len() < 2 {
+                    continue; // 各至少兩段再判斷
+                }
+                let sim = Self::cosine(&Self::centroid(ea), &Self::centroid(eb));
+                if sim >= self.cfg.merge_above {
+                    let (from, into) = (b.clone(), a.clone());
+                    if self.rename(&from, &into) {
+                        self.merges.push((from, into));
+                    }
+                    return; // 一次合併一組,下次再看
+                }
+            }
+        }
     }
 
     /// 算一段 16 kHz 音訊的 embedding。
@@ -104,28 +153,39 @@ impl SpeakerIdentifier {
             return if recent { self.last.as_ref().map(|(n, _)| n.clone()) } else { None };
         }
         let emb = self.embed(pcm)?;
-        let best = self.manager.get_best_matches(&emb, 0.0, 1).into_iter().next();
+        // 分數 = max(與該人任一筆的最高相似度, 與該人平均聲紋的相似度),再取各人最高者
+        let mut best: Option<(String, f32)> = None;
+        for (name, embs) in &self.store {
+            let max_s = embs.iter().map(|e| Self::cosine(e, &emb)).fold(f32::MIN, f32::max);
+            let cen_s = Self::cosine(&Self::centroid(embs), &emb);
+            let s = max_s.max(cen_s);
+            if best.as_ref().map(|(_, b)| s > *b).unwrap_or(true) {
+                best = Some((name.clone(), s));
+            }
+        }
         let name = match best {
-            Some(m) if m.score >= self.cfg.threshold => m.name,
-            Some(m)
-                if audio_ms < 1500
-                    && recent
-                    && m.score >= self.cfg.threshold - 0.1
-                    && self.last.as_ref().map(|(n, _)| n == &m.name).unwrap_or(false) =>
-            {
-                // 短段、分數接近門檻、而且就是上一位 → 沿用
-                m.name
+            Some((n, s)) if s >= self.cfg.threshold => n,
+            // 遲滯區:不夠像但也不夠不像 → 歸到最像的那位,不新建
+            Some((n, s)) if s >= self.cfg.new_below => n,
+            // 短段、剛有人講過、分數不太低 → 沿用上一位
+            Some((_, s)) if audio_ms < 1500 && recent && s >= self.cfg.new_below - 0.1 => {
+                self.last.as_ref().map(|(n, _)| n.clone()).unwrap_or_else(|| self.new_speaker())
             }
-            _ => {
-                let n = format!("說話者 {}", self.next_n);
-                self.next_n += 1;
-                self.order.push(n.clone());
-                n
-            }
+            _ => self.new_speaker(),
         };
         self.add_embedding(&name, emb);
         self.last = Some((name.clone(), end_at));
+        self.auto_merge();
+        // 合併可能把 name 改掉
+        let name = self.last.as_ref().map(|(n, _)| n.clone()).unwrap_or(name);
         Some(name)
+    }
+
+    fn new_speaker(&mut self) -> String {
+        let n = format!("說話者 {}", self.next_n);
+        self.next_n += 1;
+        self.order.push(n.clone());
+        n
     }
 
     fn add_embedding(&mut self, name: &str, emb: Vec<f32>) {
@@ -191,6 +251,13 @@ impl SpeakerIdentifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centroid_is_mean() {
+        let c = SpeakerIdentifier::centroid(&[vec![1.0, 0.0], vec![0.0, 1.0]]);
+        assert_eq!(c, vec![0.5, 0.5]);
+        assert!(SpeakerIdentifier::centroid(&[]).is_empty());
+    }
 
     #[test]
     fn cosine_basics() {

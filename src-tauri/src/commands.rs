@@ -131,6 +131,8 @@ pub struct StartOptions {
     pub asr_engine: Option<String>,
     /// 說話者辨識(預設開;模型不存在時自動略過)。
     pub speaker_id: Option<bool>,
+    /// 開始時是否清除上一輪的字幕紀錄(預設清除;前端有舊紀錄時會先詢問)。
+    pub clear_history: Option<bool>,
     /// 鎖定來源語言 en/ja/ko;None = 自動(限 en/ja/ko)。
     pub lang: Option<String>,
     pub glossary: Option<Vec<GlossaryEntry>>,
@@ -160,8 +162,10 @@ pub async fn start_session(
     let emit_status = |msg: &str| {
         let _ = app.emit("status", msg.to_string());
     };
-    // 新回合:前端清空上一輪的字幕列表
-    let _ = app.emit("session-start", ());
+    // 新回合:前端清空上一輪的字幕列表(使用者選擇保留時不清)
+    if opts.clear_history.unwrap_or(true) {
+        let _ = app.emit("session-start", ());
+    }
 
     // 1. 翻譯模型(可選)
     let mut translator: Option<Arc<dyn Translator>> = None;

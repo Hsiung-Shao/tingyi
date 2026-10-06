@@ -74,6 +74,8 @@ pub enum PipelineEvent {
     },
     /// 已知說話者清單(新增或改名時重送)。
     Speakers { names: Vec<String> },
+    /// 系統自動把 `from` 併入 `into`(聲紋太像);前端把舊標籤換成新標籤。
+    SpeakerMerged { from: String, into: String },
     /// `from` 那段被併入 `into`;`text` 為合併後原文。前端應移除 `from`、更新 `into`。
     TranscriptMerged { into: u64, from: u64, text: String },
     /// 講話中的即時預覽(暫定原文,不翻譯);空字串 = 清除。段落結束後由正式 `Transcript` 取代。
@@ -380,7 +382,10 @@ fn worker_loop(
                     let mut guard = speakers.lock().unwrap();
                     guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
                 };
-                if let Some(s) = speakers.lock().unwrap().as_ref() {
+                if let Some(s) = speakers.lock().unwrap().as_mut() {
+                    for (from, into) in s.take_merges() {
+                        let _ = events.send(PipelineEvent::SpeakerMerged { from, into });
+                    }
                     let n = s.speakers().len();
                     if n != known_speakers {
                         known_speakers = n;
