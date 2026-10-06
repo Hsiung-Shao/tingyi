@@ -78,6 +78,11 @@ pub const KNOWN_MT_MODELS: &[(&str, &str)] = &[
     ("Hy-MT2-7B-Q4_K_M", "約 5.5 GB,品質優先"),
     ("Sakura-7B-Qwen2.5-v1.0-IQ4_XS", "約 4.3 GB,日→中特化(僅日文)"),
     ("Sakura-1.5B-Qwen2.5-v1.0-F16", "約 3.6 GB,日→中特化小模型(僅日文)"),
+    ("Seed-X-PPO-7B-Q4_K_M", "約 4.6 GB,ByteDance 28 語翻譯專用"),
+    ("LMT-60-4B-Q4_K_M", "約 2.7 GB,NiuTrans 中英為核心 60 語(Apache-2.0)"),
+    ("LMT-60-8B-Q4_K_M", "約 5.0 GB,NiuTrans 中英為核心 60 語(Apache-2.0)"),
+    ("TranslateGemma-4B-it-Q4_K_M", "約 2.5 GB,Google 55 語翻譯專用"),
+    ("TranslateGemma-12B-it-Q4_K_M", "約 7.3 GB,Google 55 語翻譯專用,品質優先"),
 ];
 
 /// llama-server 執行檔(解壓後放在 `bin/llama/`)。

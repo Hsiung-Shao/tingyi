@@ -5,6 +5,11 @@
 //! - Hy-MT2:依模型卡(簡體原文),目標語言「繁體中文」,支援背景前文與術語。
 //! - Sakura:依 SakuraLLM v1.0 README 的 system / user 格式(日→簡中,後處理再轉繁體),
 //!   不送背景前文(模型未以此格式訓練),術語表用 `src->dst` 每行一筆。
+//! - Seed-X:無 chat 範本,走 `/completion` 原始提示,結尾必須帶 `<zh>` 語言標籤(PPO 訓練格式)。
+//! - LMT-60:chat user 訊息「Translate the following text from X into Chinese:」。
+//! - TranslateGemma:官方範本需要結構化 content,llama-server 吃不到語言參數,
+//!   所以自己渲染成 Gemma 回合格式走 `/completion`。
+//! 除 Hy-MT2 外都不送背景前文、也不送術語(各模型沒有對應格式)。
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::future::BoxFuture;
@@ -43,15 +48,79 @@ pub enum PromptStyle {
     #[default]
     HyMt2,
     Sakura,
+    SeedX,
+    Lmt,
+    TranslateGemma,
 }
 
 impl PromptStyle {
     pub fn for_model(model_name: &str) -> Self {
-        if model_name.to_ascii_lowercase().contains("sakura") {
+        let n = model_name.to_ascii_lowercase();
+        if n.contains("sakura") {
             Self::Sakura
+        } else if n.contains("seed-x") {
+            Self::SeedX
+        } else if n.contains("lmt-60") {
+            Self::Lmt
+        } else if n.contains("translategemma") {
+            Self::TranslateGemma
         } else {
             Self::HyMt2
         }
+    }
+
+    /// 是否走 llama-server 原始 `/completion`(自己渲染回合格式)而非 chat 端點。
+    pub fn raw_completion(self) -> bool {
+        matches!(self, Self::SeedX | Self::TranslateGemma)
+    }
+}
+
+/// 英文語言名(給英文提示的模型)。Unknown 以 English 代替,實際由模型自行判斷。
+fn lang_name(l: Lang) -> &'static str {
+    match l {
+        Lang::En | Lang::Unknown => "English",
+        Lang::Ja => "Japanese",
+        Lang::Ko => "Korean",
+        Lang::Zh => "Chinese",
+    }
+}
+
+/// Seed-X 原始提示(模型卡格式;`<zh>` 標籤必要)。
+pub fn build_seedx_prompt(req: &TranslateRequest) -> String {
+    format!(
+        "Translate the following {} sentence into Chinese:\n{} <zh>",
+        lang_name(req.src_lang),
+        req.text
+    )
+}
+
+/// LMT-60 user 訊息(README 範例格式)。
+pub fn build_lmt_prompt(req: &TranslateRequest) -> String {
+    let src = lang_name(req.src_lang);
+    format!(
+        "Translate the following text from {src} into Chinese:\n{src}: {}\nChinese:",
+        req.text
+    )
+}
+
+/// TranslateGemma 官方範本渲染後的文字(取自 llama.cpp issue #19295 的輸出),包成 Gemma 回合。
+pub fn build_translategemma_prompt(req: &TranslateRequest) -> String {
+    let src = lang_name(req.src_lang);
+    let code = req.src_lang.code();
+    let body = format!(
+        "You are a professional {src} ({code}) to Chinese (zh-TW) translator. Your goal is to accurately convey the meaning and nuances of the original {src} text while adhering to Chinese grammar, vocabulary, and cultural sensitivities. Produce only the Chinese translation, without any additional explanations or commentary. Please translate the following {src} text into Chinese:\n\n\n{}",
+        req.text
+    );
+    format!("<start_of_turn>user\n{body}<end_of_turn>\n<start_of_turn>model\n")
+}
+
+/// 原始 `/completion` 用的提示字串(只對 `raw_completion()` 的範本有意義)。
+pub fn build_raw_prompt(req: &TranslateRequest, style: PromptStyle) -> String {
+    match style {
+        PromptStyle::SeedX => build_seedx_prompt(req),
+        PromptStyle::TranslateGemma => build_translategemma_prompt(req),
+        // 其他範本不走原始端點;給一個可用的退路而非 panic
+        _ => build_prompt(req),
     }
 }
 
@@ -66,6 +135,8 @@ pub fn build_messages(req: &TranslateRequest, style: PromptStyle) -> Vec<(&'stat
             ("system", SAKURA_SYSTEM.to_string()),
             ("user", build_sakura_prompt(req)),
         ],
+        PromptStyle::Lmt => vec![("user", build_lmt_prompt(req))],
+        PromptStyle::SeedX | PromptStyle::TranslateGemma => vec![("user", build_raw_prompt(req, style))],
     }
 }
 
@@ -176,8 +247,9 @@ impl LlamaServerConfig {
     pub fn for_model(base_url: impl Into<String>, model_name: &str) -> Self {
         let style = PromptStyle::for_model(model_name);
         let (temperature, top_p) = match style {
-            PromptStyle::HyMt2 => (0.0, None),
             PromptStyle::Sakura => (0.1, Some(0.3)),
+            // Seed-X / LMT-60 / TranslateGemma 模型卡皆建議 greedy
+            _ => (0.0, None),
         };
         Self {
             base_url: base_url.into(),
@@ -243,6 +315,31 @@ struct StreamOptions {
     include_usage: bool,
 }
 
+/// llama-server 原生 `/completion` 請求。
+#[derive(Serialize)]
+struct CompletionRequest<'a> {
+    prompt: &'a str,
+    stream: bool,
+    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    n_predict: u32,
+    cache_prompt: bool,
+}
+
+/// `/completion` 串流每筆事件。
+#[derive(Deserialize, Default)]
+struct CompletionChunk {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    tokens_predicted: Option<u32>,
+    #[serde(default)]
+    tokens_evaluated: Option<u32>,
+    #[serde(default)]
+    timings: Option<Timings>,
+}
+
 #[derive(Serialize)]
 struct ChatMessage<'a> {
     role: &'a str,
@@ -291,29 +388,38 @@ impl Translator for LlamaServerTranslator {
     ) -> BoxFuture<'a, Result<TranslateResult>> {
         Box::pin(async move {
             let t0 = Instant::now();
+            let raw = self.cfg.style.raw_completion();
+            let base = self.cfg.base_url.trim_end_matches('/');
             let msgs = build_messages(&req, self.cfg.style);
-            let body = ChatRequest {
-                model: &self.cfg.model,
-                messages: msgs
-                    .iter()
-                    .map(|(role, content)| ChatMessage { role, content })
-                    .collect(),
-                stream: true,
-                temperature: self.cfg.temperature,
-                top_p: self.cfg.top_p,
-                max_tokens: self.cfg.max_tokens,
-                cache_prompt: true,
-                stream_options: StreamOptions { include_usage: true },
+            let raw_prompt = build_raw_prompt(&req, self.cfg.style);
+            let mut rb = if raw {
+                self.client.post(format!("{base}/completion")).json(&CompletionRequest {
+                    prompt: &raw_prompt,
+                    stream: true,
+                    temperature: self.cfg.temperature,
+                    top_p: self.cfg.top_p,
+                    n_predict: self.cfg.max_tokens,
+                    cache_prompt: true,
+                })
+            } else {
+                self.client.post(format!("{base}/v1/chat/completions")).json(&ChatRequest {
+                    model: &self.cfg.model,
+                    messages: msgs
+                        .iter()
+                        .map(|(role, content)| ChatMessage { role, content })
+                        .collect(),
+                    stream: true,
+                    temperature: self.cfg.temperature,
+                    top_p: self.cfg.top_p,
+                    max_tokens: self.cfg.max_tokens,
+                    cache_prompt: true,
+                    stream_options: StreamOptions { include_usage: true },
+                })
             };
-            let url = format!(
-                "{}/v1/chat/completions",
-                self.cfg.base_url.trim_end_matches('/')
-            );
-            let mut rb = self.client.post(&url).json(&body);
             if let Some(k) = &self.cfg.api_key {
                 rb = rb.bearer_auth(k);
             }
-            let resp = rb.send().await.context("POST /v1/chat/completions")?;
+            let resp = rb.send().await.context("POST 翻譯端點")?;
             if !resp.status().is_success() {
                 let st = resp.status();
                 let txt = resp.text().await.unwrap_or_default();
@@ -334,6 +440,25 @@ impl Translator for LlamaServerTranslator {
                     let Some(data) = line.strip_prefix("data:") else { continue };
                     let data = data.trim();
                     if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    if raw {
+                        let Ok(c) = serde_json::from_str::<CompletionChunk>(data) else { continue };
+                        if !c.content.is_empty() {
+                            if out.first_token_ms.is_none() {
+                                out.first_token_ms = Some(t0.elapsed().as_millis() as u32);
+                            }
+                            text.push_str(&c.content);
+                            on_delta(&c.content);
+                        }
+                        if c.tokens_predicted.is_some() {
+                            out.prompt_tokens = c.tokens_evaluated;
+                            out.completion_tokens = c.tokens_predicted;
+                        }
+                        if let Some(t) = c.timings {
+                            out.server_prompt_ms = t.prompt_ms;
+                            out.server_predicted_ms = t.predicted_ms;
+                        }
                         continue;
                     }
                     let Ok(c) = serde_json::from_str::<ChatChunk>(data) else { continue };
@@ -437,5 +562,33 @@ mod tests {
         let m2 = build_messages(&r2, PromptStyle::Sakura);
         assert!(m2[1].1.starts_with("根据以下术语表"));
         assert!(m2[1].1.contains("配信->直播"));
+    }
+
+    #[test]
+    fn other_styles_by_name_and_prompt() {
+        assert_eq!(PromptStyle::for_model("Seed-X-PPO-7B-Q4_K_M"), PromptStyle::SeedX);
+        assert_eq!(PromptStyle::for_model("LMT-60-4B-Q4_K_M"), PromptStyle::Lmt);
+        assert_eq!(PromptStyle::for_model("TranslateGemma-12B-it-Q4_K_M"), PromptStyle::TranslateGemma);
+        assert!(PromptStyle::SeedX.raw_completion());
+        assert!(PromptStyle::TranslateGemma.raw_completion());
+        assert!(!PromptStyle::Lmt.raw_completion());
+
+        let r = TranslateRequest {
+            text: "配信ありがとう".into(),
+            src_lang: Lang::Ja,
+            ..Default::default()
+        };
+        assert_eq!(
+            build_seedx_prompt(&r),
+            "Translate the following Japanese sentence into Chinese:\n配信ありがとう <zh>"
+        );
+        let lmt = build_lmt_prompt(&r);
+        assert!(lmt.starts_with("Translate the following text from Japanese into Chinese:\nJapanese: 配信ありがとう"));
+        assert!(lmt.ends_with("\nChinese:"));
+        let tg = build_translategemma_prompt(&r);
+        assert!(tg.starts_with("<start_of_turn>user\nYou are a professional Japanese (ja) to Chinese (zh-TW) translator."));
+        assert!(tg.ends_with("Please translate the following Japanese text into Chinese:\n\n\n配信ありがとう<end_of_turn>\n<start_of_turn>model\n"));
+        // greedy
+        assert_eq!(LlamaServerConfig::for_model("http://x", "Seed-X-PPO-7B-Q4_K_M").temperature, 0.0);
     }
 }

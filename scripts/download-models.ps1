@@ -5,12 +5,14 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\download-models.ps1 -With7B    # 加 7B
 #   ... -WithWhisper  加 Whisper large-v3-turbo q8 模型(執行檔需 scriptsuild-whisper.ps1 自行編譯)
 #   ... -WithSakura   加 SakuraLLM 日→中特化模型(7B IQ4_XS 與 1.5B F16;CC BY-NC-SA 4.0,禁商用)
+#   ... -WithCandidates 加 Seed-X-PPO-7B、LMT-60 4B/8B、TranslateGemma 4B/12B 的 Q4_K_M(翻譯模型對照用,約 22 GB)
 #   ... -ListOnly  只列清單不下載
 param(
     [switch]$With7B,
     [switch]$With1_8B_Q4,
     [switch]$WithWhisper,
     [switch]$WithSakura,
+    [switch]$WithCandidates,
     [switch]$ListOnly
 )
 
@@ -49,6 +51,18 @@ if ($WithSakura) {
        Url = 'https://huggingface.co/SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-7b-qwen2.5-v1.0-iq4xs.gguf'; Source = 'SakuraLLM (Hugging Face, CC BY-NC-SA 4.0);日→中特化' }
     $items += @{ Name = 'Sakura-1.5B-Qwen2.5-v1.0-F16.gguf'; Size = '3.56 GB'; Dest = (Join-Path $models 'Sakura-1.5B-Qwen2.5-v1.0-F16.gguf');
        Url = 'https://huggingface.co/SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-1.5b-qwen2.5-v1.0-fp16.gguf'; Source = 'SakuraLLM (Hugging Face, CC BY-NC-SA 4.0);日→中特化小模型' }
+}
+if ($WithCandidates) {
+    $cands = @(
+        @('Seed-X-PPO-7B-Q4_K_M.gguf', '4.56 GB', 'https://huggingface.co/mradermacher/Seed-X-PPO-7B-GGUF/resolve/main/Seed-X-PPO-7B.Q4_K_M.gguf', 'mradermacher (Hugging Face);ByteDance Seed-X,OpenMDW'),
+        @('LMT-60-4B-Q4_K_M.gguf', '2.72 GB', 'https://huggingface.co/mradermacher/LMT-60-4B-GGUF/resolve/main/LMT-60-4B.Q4_K_M.gguf', 'mradermacher (Hugging Face);NiuTrans LMT-60,Apache-2.0'),
+        @('LMT-60-8B-Q4_K_M.gguf', '5.03 GB', 'https://huggingface.co/mradermacher/LMT-60-8B-GGUF/resolve/main/LMT-60-8B.Q4_K_M.gguf', 'mradermacher (Hugging Face);NiuTrans LMT-60,Apache-2.0'),
+        @('TranslateGemma-4B-it-Q4_K_M.gguf', '2.49 GB', 'https://huggingface.co/mradermacher/translategemma-4b-it-GGUF/resolve/main/translategemma-4b-it.Q4_K_M.gguf', 'mradermacher (Hugging Face);Google TranslateGemma,Gemma 授權'),
+        @('TranslateGemma-12B-it-Q4_K_M.gguf', '7.30 GB', 'https://huggingface.co/mradermacher/translategemma-12b-it-GGUF/resolve/main/translategemma-12b-it.Q4_K_M.gguf', 'mradermacher (Hugging Face);Google TranslateGemma,Gemma 授權')
+    )
+    foreach ($c in $cands) {
+        $items += @{ Name = $c[0]; Size = $c[1]; Dest = (Join-Path $models $c[0]); Url = $c[2]; Source = $c[3] }
+    }
 }
 if ($With7B) {
     $items += @{ Name = 'Hy-MT2-7B-Q4_K_M.gguf'; Size = '4.62 GB'; Dest = (Join-Path $models 'Hy-MT2-7B-Q4_K_M.gguf');
