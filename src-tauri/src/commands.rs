@@ -67,8 +67,20 @@ pub struct ModelInfo {
     pub size_mb: u64,
 }
 
+/// 狀態資訊。改為非同步命令:同步命令在 Tauri 2 跑在主執行緒,
+/// 這裡會呼叫 nvidia-smi 與列舉音訊裝置(數百毫秒),放在主執行緒會讓整個介面卡住。
 #[tauri::command]
-pub fn get_info(state: State<'_, AppState>) -> Info {
+pub async fn get_info(state: State<'_, AppState>) -> Result<Info, String> {
+    let seg_offset_ms = state.seg_control.offset_ms.load(std::sync::atomic::Ordering::Relaxed);
+    let seg_adaptive = state.seg_control.adaptive.load(std::sync::atomic::Ordering::Relaxed);
+    let seg_current_ms = state.seg_control.current_ms.load(std::sync::atomic::Ordering::Relaxed);
+    let running = state.is_running();
+    tokio::task::spawn_blocking(move || collect_info(seg_offset_ms, seg_adaptive, seg_current_ms, running))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, running: bool) -> Info {
     let models = paths::KNOWN_MT_MODELS
         .iter()
         .map(|(name, note)| {
@@ -110,15 +122,15 @@ pub fn get_info(state: State<'_, AppState>) -> Info {
         recommended_model,
         asr_engines,
         speaker_model_ready: paths::speaker_model().exists(),
-        seg_offset_ms: state.seg_control.offset_ms.load(std::sync::atomic::Ordering::Relaxed),
-        seg_adaptive: state.seg_control.adaptive.load(std::sync::atomic::Ordering::Relaxed),
-        seg_current_ms: state.seg_control.current_ms.load(std::sync::atomic::Ordering::Relaxed),
+        seg_offset_ms,
+        seg_adaptive,
+        seg_current_ms,
         gpu_used_mib: gpu::nvidia_used_mib(),
         models,
         sensevoice_ready: paths::sensevoice_model().exists() && paths::sensevoice_tokens().exists(),
         vad_ready: paths::silero_vad_model().exists(),
         llama_server_ready: paths::llama_server_exe().exists(),
-        running: state.is_running(),
+        running,
         autostart: std::env::var("TINGYI_AUTOSTART").map(|v| v == "1").unwrap_or(false),
     }
 }
