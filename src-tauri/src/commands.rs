@@ -514,16 +514,41 @@ pub fn set_overlay_interactive(app: AppHandle, state: State<'_, AppState>, inter
     Ok(())
 }
 
+/// 該視窗是否為前景視窗。
+/// 不用 is_focused:單一 webview 視窗的鍵盤焦點在 WebView2 子視窗,頂層視窗幾乎永遠回 false。
+#[cfg(windows)]
+fn is_foreground(w: &tauri::WebviewWindow) -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetForegroundWindow() -> *mut std::ffi::c_void;
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    match w.hwnd() {
+        Ok(h) => h.0 as *mut std::ffi::c_void == fg,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn is_foreground(w: &tauri::WebviewWindow) -> bool {
+    w.is_focused().unwrap_or(false)
+}
+
 /// 字幕視窗 show / 切換穿透時 tao 會用 SW_SHOW 啟用它、搶走主視窗焦點;
 /// 這些操作都源自使用者在主視窗按鈕,所以若主視窗原本在前景,做完就把焦點還給它。
 fn keep_main_focus<T>(app: &AppHandle, f: impl FnOnce() -> T) -> T {
     let main = app.get_webview_window("main");
-    let had = main
-        .as_ref()
-        .map(|m| m.is_focused().unwrap_or(false))
-        .unwrap_or(false);
+    let had = main.as_ref().map(is_foreground).unwrap_or(false);
     let r = f();
-    if had {
+    // 做完後前景仍是主視窗或字幕視窗才還焦點,避免把使用者切去別的程式又拉回來
+    let still_ours = had
+        && (main.as_ref().map(is_foreground).unwrap_or(false)
+            || app
+                .get_webview_window("overlay")
+                .as_ref()
+                .map(is_foreground)
+                .unwrap_or(false));
+    if still_ours {
         if let Some(m) = main {
             if let Err(e) = m.set_focus() {
                 tracing::warn!("還原主視窗焦點失敗:{e}");
