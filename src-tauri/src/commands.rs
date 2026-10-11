@@ -11,6 +11,7 @@ use tingyi_core::pipeline::AsrEngine;
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
 use tingyi_core::pipeline::{self, PipelineConfig};
 use tingyi_core::postprocess::{Glossary, GlossaryEntry};
+use tingyi_core::export::{self, ExportSentence};
 use tingyi_core::{gpu, paths};
 
 use crate::state::AppState;
@@ -318,11 +319,22 @@ pub async fn start_session(
     *state.forwarder.lock().unwrap() = Some(fwd);
     *state.pipeline.lock().unwrap() = Some(handle);
     emit_status("執行中");
+    if let Err(e) = set_overlay_visible(&app, true) {
+        tracing::warn!("顯示懸浮字幕失敗:{e}");
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // 按下停止就先收起字幕(關子程序要幾秒),並退出拖曳模式恢復滑鼠穿透
+    if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.set_ignore_cursor_events(true);
+    }
+    let _ = app.emit("overlay-interactive", false);
+    if let Err(e) = set_overlay_visible(&app, false) {
+        tracing::warn!("隱藏懸浮字幕失敗:{e}");
+    }
     let handle = state.pipeline.lock().unwrap().take();
     if let Some(h) = handle {
         h.stop().await;
@@ -475,14 +487,32 @@ pub fn list_speakers(state: State<'_, AppState>) -> Vec<String> {
 
 /// 解鎖/鎖定懸浮字幕(鎖定 = 滑鼠穿透)。
 #[tauri::command]
-pub fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
+pub fn set_overlay_interactive(app: AppHandle, state: State<'_, AppState>, interactive: bool) -> Result<(), String> {
     let w = app
         .get_webview_window("overlay")
         .ok_or("overlay window missing")?;
     w.set_ignore_cursor_events(!interactive)
         .map_err(|e| e.to_string())?;
+    // 停止狀態也要能調整位置:解鎖時叫出字幕,鎖定時若沒在執行就收起來
+    if interactive {
+        set_overlay_visible(&app, true)?;
+    } else if !state.is_running() {
+        set_overlay_visible(&app, false)?;
+    }
     let _ = app.emit("overlay-interactive", interactive);
     Ok(())
+}
+
+/// 懸浮字幕顯示 / 隱藏(開始時顯示、停止時隱藏;`show_overlay` 命令也走這裡)。
+fn set_overlay_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let w = app
+        .get_webview_window("overlay")
+        .ok_or("overlay window missing")?;
+    if visible {
+        w.show().map_err(|e| e.to_string())
+    } else {
+        w.hide().map_err(|e| e.to_string())
+    }
 }
 
 /// 顯示模式:bilingual / translation。
@@ -493,12 +523,19 @@ pub fn set_overlay_mode(app: AppHandle, mode: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn show_overlay(app: AppHandle, visible: bool) -> Result<(), String> {
-    let w = app
-        .get_webview_window("overlay")
-        .ok_or("overlay window missing")?;
-    if visible {
-        w.show().map_err(|e| e.to_string())
-    } else {
-        w.hide().map_err(|e| e.to_string())
-    }
+    set_overlay_visible(&app, visible)
+}
+
+/// 匯出辨識紀錄(純文字對照,UTF-8 帶 BOM);回寫入的句數。路徑由前端另存新檔對話框取得。
+#[tauri::command]
+pub async fn export_transcript(path: String, sentences: Vec<ExportSentence>, exported_at: String) -> Result<usize, String> {
+    let n = sentences.len();
+    tokio::task::spawn_blocking(move || {
+        let text = export::to_text(&sentences, &exported_at);
+        export::write_text_file(std::path::Path::new(&path), &text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("{e:#}"))?;
+    Ok(n)
 }

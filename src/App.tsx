@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useSubtitles } from "./lib/useSubtitles";
 import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
@@ -79,9 +80,12 @@ export default function App() {
   useEffect(() => {
     refreshInfo();
     const un = listen<string>("status", (e) => setStatus(e.payload));
+    // 後端停止時會自動退出拖曳模式,按鈕狀態跟著同步
+    const un2 = listen<boolean>("overlay-interactive", (e) => setUnlocked(e.payload));
     const t = setInterval(refreshInfo, 10000);
     return () => {
       un.then((f) => f());
+      un2.then((f) => f());
       clearInterval(t);
     };
   }, []);
@@ -164,6 +168,37 @@ export default function App() {
     const next = !unlocked;
     await invoke("set_overlay_interactive", { interactive: next });
     setUnlocked(next);
+  };
+
+  const exportTranscript = async () => {
+    const d = new Date();
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+    try {
+      const path = await save({
+        defaultPath: `聽譯-${stamp}.txt`,
+        filters: [{ name: "文字檔", extensions: ["txt"] }],
+      });
+      if (!path) return; // 使用者取消
+      const n = await invoke<number>("export_transcript", {
+        path,
+        exportedAt: `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`,
+        sentences: sentences.map((s) => ({
+          id: s.id,
+          source: s.source,
+          translation: s.translation,
+          state: s.state,
+          lang: s.lang,
+          speaker: s.speaker,
+          start_ms: s.startMs ?? null,
+          revised: !!s.revised,
+          recovered: !!s.recovered,
+        })),
+      });
+      setStatus(`已匯出 ${n} 句:${path}`);
+    } catch (e) {
+      setStatus(`匯出失敗:${String(e)}`);
+    }
   };
 
   const changeMode = async (m: OverlayMode) => {
@@ -415,6 +450,17 @@ export default function App() {
             <Metric label="端到端首字 p95" value={stats.e2eP95} unit="ms" warn={(stats.e2eP95 ?? 0) > 2000} />
           </div>
           <PerfPanel running={running} />
+          <div className="px-4 py-1.5 border-b border-neutral-800 flex items-center gap-2 text-xs">
+            <span className="text-neutral-500">辨識紀錄 {sentences.length} 句</span>
+            <button
+              className="ml-auto rounded border border-neutral-700 bg-neutral-900 px-2 py-1 hover:bg-neutral-800 disabled:opacity-40 disabled:hover:bg-neutral-900"
+              onClick={exportTranscript}
+              disabled={sentences.length === 0}
+              title="匯出為純文字對照檔(時間、說話者、原文、譯文)"
+            >
+              匯出紀錄
+            </button>
+          </div>
           <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-2 flex flex-col gap-2">
             {sentences.length === 0 && (
               <div className="text-neutral-500 mt-8 text-center">

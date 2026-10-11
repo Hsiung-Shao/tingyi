@@ -17,6 +17,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state::AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_info,
@@ -30,6 +31,7 @@ pub fn run() {
             commands::set_overlay_interactive,
             commands::set_overlay_mode,
             commands::show_overlay,
+            commands::export_transcript,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。
