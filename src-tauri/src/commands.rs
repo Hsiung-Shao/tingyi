@@ -319,7 +319,7 @@ pub async fn start_session(
     *state.forwarder.lock().unwrap() = Some(fwd);
     *state.pipeline.lock().unwrap() = Some(handle);
     emit_status("執行中");
-    if let Err(e) = set_overlay_visible(&app, true) {
+    if let Err(e) = keep_main_focus(&app, || set_overlay_visible(&app, true)) {
         tracing::warn!("顯示懸浮字幕失敗:{e}");
     }
     Ok(())
@@ -328,13 +328,15 @@ pub async fn start_session(
 #[tauri::command]
 pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     // 按下停止就先收起字幕(關子程序要幾秒),並退出拖曳模式恢復滑鼠穿透
-    if let Some(w) = app.get_webview_window("overlay") {
-        let _ = w.set_ignore_cursor_events(true);
-    }
+    keep_main_focus(&app, || {
+        if let Some(w) = app.get_webview_window("overlay") {
+            let _ = w.set_ignore_cursor_events(true);
+        }
+        if let Err(e) = set_overlay_visible(&app, false) {
+            tracing::warn!("隱藏懸浮字幕失敗:{e}");
+        }
+    });
     let _ = app.emit("overlay-interactive", false);
-    if let Err(e) = set_overlay_visible(&app, false) {
-        tracing::warn!("隱藏懸浮字幕失敗:{e}");
-    }
     let handle = state.pipeline.lock().unwrap().take();
     if let Some(h) = handle {
         h.stop().await;
@@ -494,15 +496,41 @@ pub fn set_overlay_interactive(app: AppHandle, state: State<'_, AppState>, inter
     // 停止狀態也要能調整位置:解鎖時先叫出字幕(失敗就直接回錯、不動穿透),
     // 鎖定時先切穿透,若沒在執行最後再收起來;全部成功才 emit。
     if interactive {
+        // 解鎖:使用者接著要拖字幕,不還焦點
         set_overlay_visible(&app, true)?;
-    }
-    w.set_ignore_cursor_events(!interactive)
-        .map_err(|e| e.to_string())?;
-    if !interactive && !state.is_running() {
-        set_overlay_visible(&app, false)?;
+        w.set_ignore_cursor_events(false)
+            .map_err(|e| e.to_string())?;
+    } else {
+        keep_main_focus(&app, || -> Result<(), String> {
+            w.set_ignore_cursor_events(true)
+                .map_err(|e| e.to_string())?;
+            if !state.is_running() {
+                set_overlay_visible(&app, false)?;
+            }
+            Ok(())
+        })?;
     }
     let _ = app.emit("overlay-interactive", interactive);
     Ok(())
+}
+
+/// 字幕視窗 show / 切換穿透時 tao 會用 SW_SHOW 啟用它、搶走主視窗焦點;
+/// 這些操作都源自使用者在主視窗按鈕,所以若主視窗原本在前景,做完就把焦點還給它。
+fn keep_main_focus<T>(app: &AppHandle, f: impl FnOnce() -> T) -> T {
+    let main = app.get_webview_window("main");
+    let had = main
+        .as_ref()
+        .map(|m| m.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+    let r = f();
+    if had {
+        if let Some(m) = main {
+            if let Err(e) = m.set_focus() {
+                tracing::warn!("還原主視窗焦點失敗:{e}");
+            }
+        }
+    }
+    r
 }
 
 /// 懸浮字幕顯示 / 隱藏(開始時顯示、停止時隱藏;`show_overlay` 命令也走這裡)。
