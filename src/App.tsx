@@ -166,8 +166,12 @@ export default function App() {
 
   const toggleUnlock = async () => {
     const next = !unlocked;
-    await invoke("set_overlay_interactive", { interactive: next });
-    setUnlocked(next);
+    try {
+      await invoke("set_overlay_interactive", { interactive: next });
+      setUnlocked(next);
+    } catch (e) {
+      setStatus(`切換字幕位置模式失敗:${String(e)}`);
+    }
   };
 
   const exportTranscript = async () => {

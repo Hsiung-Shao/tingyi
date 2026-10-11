@@ -59,14 +59,17 @@ pub fn nvidia_sample() -> Option<GpuSample> {
 
 /// 顯示卡名稱與總量(MiB)。執行期間不會變,只查一次後快取。
 pub fn nvidia_info() -> Option<(String, u32)> {
-    static INFO: OnceLock<Option<(String, u32)>> = OnceLock::new();
-    INFO.get_or_init(|| {
-        let s = nvidia_smi(&["--query-gpu=name,memory.total", "--format=csv,noheader,nounits", "--id=0"])?;
-        let line = s.lines().next()?;
-        let mut it = line.split(',');
-        let name = it.next()?.trim().to_string();
-        let total = it.next()?.trim().parse().ok()?;
-        Some((name, total))
-    })
-    .clone()
+    // 只快取成功結果;失敗(暫時查不到)下次再查
+    static INFO: OnceLock<(String, u32)> = OnceLock::new();
+    if let Some(v) = INFO.get() {
+        return Some(v.clone());
+    }
+    let s = nvidia_smi(&["--query-gpu=name,memory.total", "--format=csv,noheader,nounits", "--id=0"])?;
+    let line = s.lines().next()?;
+    let mut it = line.split(',');
+    let name = it.next()?.trim().to_string();
+    let total: u32 = it.next()?.trim().parse().ok()?;
+    let v = (name, total);
+    let _ = INFO.set(v.clone());
+    Some(v)
 }

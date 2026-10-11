@@ -37,6 +37,10 @@ pub fn run() {
             // 懸浮字幕視窗預設滑鼠穿透。
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
+                // 不可取得焦點(WS_EX_NOACTIVATE),show 時才不會搶走主視窗或遊戲的焦點。
+                if let Err(e) = w.set_focusable(false) {
+                    tracing::warn!("overlay set_focusable(false) 失敗:{e}");
+                }
             }
             Ok(())
         })

@@ -491,12 +491,14 @@ pub fn set_overlay_interactive(app: AppHandle, state: State<'_, AppState>, inter
     let w = app
         .get_webview_window("overlay")
         .ok_or("overlay window missing")?;
-    w.set_ignore_cursor_events(!interactive)
-        .map_err(|e| e.to_string())?;
-    // 停止狀態也要能調整位置:解鎖時叫出字幕,鎖定時若沒在執行就收起來
+    // 停止狀態也要能調整位置:解鎖時先叫出字幕(失敗就直接回錯、不動穿透),
+    // 鎖定時先切穿透,若沒在執行最後再收起來;全部成功才 emit。
     if interactive {
         set_overlay_visible(&app, true)?;
-    } else if !state.is_running() {
+    }
+    w.set_ignore_cursor_events(!interactive)
+        .map_err(|e| e.to_string())?;
+    if !interactive && !state.is_running() {
         set_overlay_visible(&app, false)?;
     }
     let _ = app.emit("overlay-interactive", interactive);
@@ -509,7 +511,12 @@ fn set_overlay_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
         .get_webview_window("overlay")
         .ok_or("overlay window missing")?;
     if visible {
-        w.show().map_err(|e| e.to_string())
+        w.show().map_err(|e| e.to_string())?;
+        // 顯示後工作列按鈕可能重現,再強制隱藏一次
+        if let Err(e) = w.set_skip_taskbar(true) {
+            tracing::warn!("overlay set_skip_taskbar 失敗:{e}");
+        }
+        Ok(())
     } else {
         w.hide().map_err(|e| e.to_string())
     }
