@@ -222,6 +222,7 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 | en-fleurs | 8.71% | **5.10%** | 5.14%(Parakeet) |
 | ko-fleurs | 8.65% | **5.69%** | 8.76%(韓文仍用 SenseVoice) |
 
+- 逐句表的專用模型未墊合成靜音(bench 逐句模式固定 0 ms),產品預設 350 ms 的效果見串流表。
 - 專用模型:日文 ReazonSpeech k2 v2(2024-08-01 日文版;ja-en 雙語版 2025-01-17 較差:JSUT 8.19%、FLEURS 6.64%)、英文 Parakeet TDT 0.6B v2。
 - 延遲 p50 / p95:SenseVoice 57–173 / 96–320 ms;Whisper 97–160 / 130–250 ms(+1214 MiB 顯示記憶體);ReazonSpeech 58–156 / 97–265 ms;Parakeet 350 / 649 ms(CPU 偏慢,RTF 0.039)。自動模式先跑 SenseVoice 判語言,路由延遲再加約 100 ms。
 - 自動模式語言判斷(字集啟發式,與管線路由同一套):ja-rs 97.7–98.7%,其餘 100%;高於推翻條件 98% 的門檻(ja-rs 因參考不完整有誤差)。

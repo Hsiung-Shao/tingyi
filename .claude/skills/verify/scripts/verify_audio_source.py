@@ -187,6 +187,11 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         ready = await wait_for(lambda: js("(() => { const b = window.__v.btn('開始'); return !!b && !b.disabled; })()"), 180)
         if not run.check("主視窗就緒(開始可按)", bool(ready)):
             return False
+        engines = await js("""[...document.querySelectorAll('select option')]
+            .filter(o => ['sensevoice', 'routed', 'whisper-turbo'].includes(o.value))
+            .map(o => ({ value: o.value, enabled: !o.disabled, text: o.textContent }))""")
+        routed = [e for e in engines if e["value"] == "routed"]
+        run.check("辨識引擎下拉列出可選的「專用模型」", bool(routed) and routed[0]["enabled"], json.dumps(engines, ensure_ascii=False))
         translate_on = await js("window.__v.setChecked('啟用本機翻譯', false)")
         run.log(f"翻譯勾選狀態:{translate_on}(只驗擷取,不啟動 llama-server)")
 
