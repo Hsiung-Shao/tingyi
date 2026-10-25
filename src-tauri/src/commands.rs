@@ -7,6 +7,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tingyi_core::asr::Lang;
 use tingyi_core::audio::source::{self, AppAudio, AudioSource};
+use tingyi_core::cleanup::Replacement;
 use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec, WhisperServerProcess, WhisperServerSpec};
 use tingyi_core::pipeline::AsrEngine;
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
@@ -107,6 +108,14 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
             note: "預設;不佔顯示記憶體".into(),
         },
         AsrEngineInfo {
+            id: "routed".into(),
+            label: "專用模型(CPU,日文 ReazonSpeech / 英文 Parakeet)".into(),
+            present: paths::sensevoice_model().exists()
+                && (paths::models_dir().join(paths::REAZONSPEECH_JA_DIR_NAME).exists()
+                    || paths::models_dir().join(paths::PARAKEET_DIR_NAME).exists()),
+            note: "不佔顯示記憶體;韓文仍用 SenseVoice;需 download-models.ps1 -WithReazonSpeech / -WithParakeet".into(),
+        },
+        AsrEngineInfo {
             id: "whisper-turbo".into(),
             label: "Whisper large-v3-turbo(GPU,準)".into(),
             present: whisper_present,
@@ -141,8 +150,10 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
 pub struct StartOptions {
     /// 翻譯模型名稱;None 或空字串 = 只辨識不翻譯。
     pub model: Option<String>,
-    /// 辨識引擎:"sensevoice"(預設)或 "whisper-turbo"。
+    /// 辨識引擎:"sensevoice"(預設)、"routed" 或 "whisper-turbo"。
     pub asr_engine: Option<String>,
+    /// 辨識取代表(錯字 → 正字)。
+    pub replacements: Option<Vec<Replacement>>,
     /// 說話者辨識(預設開;模型不存在時自動略過)。
     pub speaker_id: Option<bool>,
     /// 開始時是否清除上一輪的字幕紀錄(預設清除;前端有舊紀錄時會先詢問)。
@@ -286,6 +297,12 @@ pub async fn start_session(
     }
     if let Some(g) = opts.glossary {
         cfg.glossary = Glossary { entries: g };
+    }
+    if let Some(r) = opts.replacements {
+        cfg.replacements = r;
+    }
+    if opts.asr_engine.as_deref() == Some("routed") {
+        cfg.asr_engine = AsrEngine::Routed;
     }
     emit_status("載入 SenseVoice 與 VAD…");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

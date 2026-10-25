@@ -2,10 +2,12 @@
 
 參考 hayamimi 提高辨識正確率(CER)與效能,並新增「指定程式」音訊來源(執行中可即時切換)。計畫:`C:\Users\jerry\.claude\plans\lively-sniffing-shannon.md`(2026-10-25 核准)。
 
+為什麼不能靠刪除達成:指定程式擷取、CER 量測、專用模型路由都是現有程式沒有的能力(原本只有預設輸出裝置 loopback、沒有任何評測工具);擷取迴圈本身是就地改寫(逐包讀取 → 讀到空),沒有新增並行路徑。
+
 # Task
 
-- [ ] 0. 擷取穩定化:讀到空、加大緩衝、不連續計數;bench `capture-probe`
-- [ ] A. 指定程式音訊來源:`audio/source.rs`、capture 熱切換與重綁、Tauri 命令、前端下拉
+- [x] 0. 擷取穩定化:讀到空、加大緩衝、不連續計數;bench `capture-probe`(54db82a)
+- [x] A. 指定程式音訊來源:`audio/source.rs`、capture 熱切換與重綁、Tauri 命令、前端下拉(f60fe86;審查修正 6af0e8e)
 - [ ] B. CER 量測:`scripts/fetch-eval.py`、`eval.rs`、bench `asr-eval`(逐句、串流)、基準數字
 - [ ] C. 低成本修補:C1 preroll、C2 清理(重複字、取代表)、C3 短稿補救;逐項 A/B
 - [ ] D. 專用模型:ReazonSpeech、Parakeet、路由;量完決定預設

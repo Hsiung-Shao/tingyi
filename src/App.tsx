@@ -53,6 +53,7 @@ export default function App() {
     }
   };
   const [glossaryText, setGlossaryText] = useState("");
+  const [replaceText, setReplaceText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
   // get_info 只是狀態列資訊,失敗(例如後端尚未就緒)不影響操作,10 秒後會再查,故不報錯。
@@ -121,6 +122,18 @@ export default function App() {
       })
       .filter((g) => g.source && g.target);
 
+  // 辨識取代表:每行 錯字=正字(也接受 Tab 或 →),# 開頭為註解
+  const parseReplacements = () =>
+    replaceText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"))
+      .map((l) => {
+        const [from, to] = l.split(/\t|=|→/).map((x) => x?.trim() ?? "");
+        return { from, to };
+      })
+      .filter((r) => r.from);
+
   const [askClear, setAskClear] = useState(false);
 
   const start = async (clearHistory?: boolean) => {
@@ -141,6 +154,7 @@ export default function App() {
           clear_history: clearHistory ?? true,
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
+          replacements: parseReplacements(),
         },
       });
       setRunning(true);
@@ -309,6 +323,17 @@ export default function App() {
               onChange={(e) => setGlossaryText(e.target.value)}
               disabled={running}
               placeholder={"Exile=流亡者\nWraeclast=瓦爾克拉斯"}
+            />
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <label className="text-neutral-400">辨識取代表(每行 錯字=正字)</label>
+            <textarea
+              className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 h-20 font-mono text-xs"
+              value={replaceText}
+              onChange={(e) => setReplaceText(e.target.value)}
+              disabled={running}
+              placeholder={"(辨識常錯的人名、專有名詞)\n騎士=棋士"}
             />
           </section>
 

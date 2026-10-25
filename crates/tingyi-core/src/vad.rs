@@ -19,7 +19,9 @@ pub struct VadConfig {
     pub max_speech_sec: f32,
     /// Silero 視窗(16 kHz 時為 512)。
     pub window_size: i32,
-    /// 段首段尾補的緩衝(毫秒)。
+    /// 段首往前補的緩衝(毫秒);不會切進前一段的語音本體。
+    pub pre_pad_ms: u32,
+    /// 段尾補的緩衝(毫秒)。
     pub pad_ms: u32,
     pub num_threads: i32,
 }
@@ -35,6 +37,7 @@ impl Default for VadConfig {
             min_speech_sec: 0.25,
             max_speech_sec: 5.0,
             window_size: 512,
+            pre_pad_ms: 200,
             pad_ms: 200,
             num_threads: 1,
         }
@@ -49,20 +52,42 @@ pub struct Segment {
     pub start_sample: i64,
     /// 段尾被 VAD 判定的瞬間(端到端延遲原點)。
     pub end_at: Instant,
+    /// VAD 判定的語音本體 [start, end)(不含補白);斷句調整、說話者、字速都用這段。
+    pub core: (i64, i64),
+    /// 撞單段上限被強制切開(話還沒講完)。
+    pub forced: bool,
 }
 
 impl Segment {
     pub fn duration_ms(&self) -> u32 {
         (self.samples.len() as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32) as u32
     }
+
+    pub fn core_ms(&self) -> u32 {
+        ((self.core.1 - self.core.0).max(0) * 1000 / TARGET_SAMPLE_RATE as i64) as u32
+    }
+
+    /// 語音本體在 `samples` 中的索引範圍。
+    pub fn core_range(&self) -> std::ops::Range<usize> {
+        let len = self.samples.len() as i64;
+        let a = (self.core.0 - self.start_sample).clamp(0, len);
+        let b = (self.core.1 - self.start_sample).clamp(a, len);
+        a as usize..b as usize
+    }
 }
 
 /// 把連續 16 kHz 音訊切成語音段。
 pub struct Segmenter {
     vad: VoiceActivityDetector,
-    pad_samples: usize,
-    /// 已餵進 VAD 的總樣本數(VAD 回傳的 start 以此計)。
+    pre_pad: i64,
+    post_pad: i64,
+    /// 上一段語音本體的結尾與是否被強制切開(補白不切進前一段、強制切段不補白)。
+    last_core_end: Option<i64>,
+    last_forced: bool,
+    /// 已餵進 Segmenter 的總樣本數。
     fed: i64,
+    /// 目前這個 VAD 建立時的 `fed`:sherpa VAD 回傳的 start 從建立時起算,換參數重建後要加回原點。
+    vad_origin: i64,
     /// 最近的原始樣本,供補前後緩衝用。
     history: VecDeque<f32>,
     history_start: i64,
@@ -78,13 +103,17 @@ pub struct Segmenter {
 impl Segmenter {
     pub fn new(cfg: &VadConfig) -> Result<Self> {
         let vad = Self::build_vad(cfg)?;
-        let pad_samples = (cfg.pad_ms as usize * TARGET_SAMPLE_RATE as usize) / 1000;
+        let ms_to_samples = |ms: u32| ms as i64 * TARGET_SAMPLE_RATE as i64 / 1000;
         // history 要能容納最大的單段上限(自適應最高 6 s)+ 緩衝
         let history_cap = (cfg.max_speech_sec.max(6.0) as usize + 4) * TARGET_SAMPLE_RATE as usize;
         Ok(Self {
             vad,
-            pad_samples,
+            pre_pad: ms_to_samples(cfg.pre_pad_ms),
+            post_pad: ms_to_samples(cfg.pad_ms),
+            last_core_end: None,
+            last_forced: false,
             fed: 0,
+            vad_origin: 0,
             history: VecDeque::with_capacity(history_cap),
             history_start: 0,
             history_cap,
@@ -121,6 +150,7 @@ impl Segmenter {
         match Self::build_vad(&cfg) {
             Ok(v) => {
                 self.vad = v;
+                self.vad_origin = self.fed;
                 self.cfg = cfg;
                 self.pending = None;
                 tracing::debug!("VAD 參數已套用:靜音 {ms:.2}s、上限 {mx:.1}s");
@@ -174,8 +204,12 @@ impl Segmenter {
             self.speech_start = None;
         }
         if self.speech_start.is_none() && self.vad.detected() {
-            // 語音剛開始:往回多抓 pad,避免吃掉第一個音節
-            self.speech_start = Some((before - self.pad_samples as i64).max(self.history_start));
+            // 語音剛開始:往回多抓 pad,避免吃掉第一個音節;與正式段落同規則,不切進前一段
+            self.speech_start = Some(
+                (before - self.pre_pad)
+                    .max(self.history_start)
+                    .max(self.last_core_end.unwrap_or(i64::MIN)),
+            );
         }
         segs
     }
@@ -207,37 +241,70 @@ impl Segmenter {
     fn drain(&mut self, now: Instant) -> Vec<Segment> {
         let mut out = Vec::new();
         while !self.vad.is_empty() {
-            if let Some(seg) = self.vad.front() {
-                let start = seg.start() as i64;
-                let n = seg.n() as i64;
-                out.push(self.with_padding(start, n, seg.samples(), now));
-            }
+            let front = self
+                .vad
+                .front()
+                .map(|seg| (self.vad_origin + seg.start() as i64, seg.n() as i64, seg.samples().to_vec()));
             self.vad.pop();
+            if let Some((start, n, samples)) = front {
+                out.push(self.with_padding(start, n, samples, now));
+            }
         }
         out
     }
 
-    fn with_padding(&self, start: i64, n: i64, core: &[f32], now: Instant) -> Segment {
-        let pad = self.pad_samples as i64;
-        let want_start = (start - pad).max(self.history_start);
-        let want_end = (start + n + pad).min(self.history_start + self.history.len() as i64);
+    fn with_padding(&mut self, start: i64, n: i64, core_samples: Vec<f32>, now: Instant) -> Segment {
+        let max_n = self.cfg.max_speech_sec * TARGET_SAMPLE_RATE as f32;
+        let forced = n as f32 >= max_n * 0.95;
+        let hist = (self.history_start, self.history_start + self.history.len() as i64);
+        let (want_start, want_end) =
+            pad_bounds(start, start + n, self.pre_pad, self.post_pad, hist, self.last_core_end, self.last_forced, forced);
+        self.last_core_end = Some(start + n);
+        self.last_forced = forced;
+        let core = (start, start + n);
         // history 可能已不含這段(極端情況),就退回 VAD 給的原始樣本。
         if want_start >= want_end || start < self.history_start {
             return Segment {
-                samples: core.to_vec(),
+                samples: core_samples,
                 start_sample: start,
                 end_at: now,
+                core,
+                forced,
             };
         }
         let a = (want_start - self.history_start) as usize;
         let b = (want_end - self.history_start) as usize;
-        let samples: Vec<f32> = self.history.range(a..b).copied().collect();
         Segment {
-            samples,
+            samples: self.history.range(a..b).copied().collect(),
             start_sample: want_start,
             end_at: now,
+            core,
+            forced,
         }
     }
+}
+
+/// 段落補白後的範圍 [start, end)(樣本索引)。
+/// - 前段補 `pre`、後段補 `post`,都夾在 history 範圍 `hist` 內;
+/// - 前段不得早於前一段語音本體的結尾 `prev_core_end`(避免邊界字在兩段各出現一次);
+/// - 前一段是撞上限被強制切開的(`prev_forced`):話沒停,這段前面不補;
+/// - 這段自己是強制切開的(`forced`):後面不補,下一段會從語音本體接著開始。
+#[allow(clippy::too_many_arguments)]
+pub fn pad_bounds(
+    core_start: i64,
+    core_end: i64,
+    pre: i64,
+    post: i64,
+    hist: (i64, i64),
+    prev_core_end: Option<i64>,
+    prev_forced: bool,
+    forced: bool,
+) -> (i64, i64) {
+    let start = (core_start - if prev_forced { 0 } else { pre })
+        .max(prev_core_end.unwrap_or(i64::MIN))
+        .max(hist.0);
+    let end = (core_end + if forced { 0 } else { post }).min(hist.1);
+    (start, end)
 }
 
 /// 斷句合併判斷(規格書):段落很短且無句末標點 → 等下一段合併。
@@ -291,5 +358,35 @@ mod tests {
         assert!(is_fragment("そう?", true)); // ≤ 3 字
         assert!(is_fragment("好在。", true)); // ≤ 3 字即使有句號也等待合併(逾時 1.5 s 後仍會送出)
         assert!(!is_fragment("", true));
+    }
+
+    // T17:沒有前段時前後都補白
+    #[test]
+    fn pad_bounds_no_prev_pads_both_sides() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, false, false), (8000, 35200));
+    }
+
+    // T17:前一段本體結尾在補白範圍內時,起點不得早於它
+    #[test]
+    fn pad_bounds_start_not_before_prev_core_end() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), Some(12000), false, false), (12000, 35200));
+    }
+
+    // T17:前一段是強制切開時,這段前面不補白
+    #[test]
+    fn pad_bounds_prev_forced_no_pre_pad() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, true, false), (16000, 35200));
+    }
+
+    // T17:這段是強制切開時,後面不補白
+    #[test]
+    fn pad_bounds_forced_no_post_pad() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, false, true), (8000, 32000));
+    }
+
+    // T17:補白超出 history 範圍時夾在範圍內
+    #[test]
+    fn pad_bounds_clamped_to_history() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (10000, 33000), None, false, false), (10000, 33000));
     }
 }

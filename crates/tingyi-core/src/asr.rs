@@ -6,8 +6,8 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
-use std::path::PathBuf;
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, OfflineTransducerModelConfig};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::audio::TARGET_SAMPLE_RATE;
@@ -130,12 +130,9 @@ impl SenseVoice {
 impl Transcriber for SenseVoice {
     fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
         let t0 = Instant::now();
+        // 語言只能在建立辨識器時鎖定(sherpa-onnx 的 SenseVoice 不讀 stream 的 language 選項),
+        // `lang_hint` 只用來標記輸出語言。
         let stream = self.recognizer.create_stream();
-        if let Some(l) = lang_hint.or(self.locked) {
-            if stream.has_option("language") {
-                stream.set_option("language", l.code());
-            }
-        }
         stream.accept_waveform(TARGET_SAMPLE_RATE, pcm);
         self.recognizer.decode(&stream);
         let result = stream
@@ -156,6 +153,129 @@ impl Transcriber for SenseVoice {
 
     fn name(&self) -> &'static str {
         "sensevoice-small-int8"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 單一語言的 transducer 專用模型(ReazonSpeech zipformer、NeMo Parakeet TDT;sherpa-onnx,CPU)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TransducerConfig {
+    /// 模型目錄;encoder / decoder / joiner 優先取 `*.int8.onnx`。
+    pub dir: PathBuf,
+    /// sherpa-onnx 的 model_type:Parakeet 要 `nemo_transducer`,zipformer 留 None。
+    pub model_type: Option<String>,
+    pub num_threads: i32,
+    /// 模型的語言;輸出一律標成這個語言(或呼叫端鎖定的語言)。
+    pub lang: Lang,
+    /// 段首段尾墊的合成靜音(毫秒):段首直接是語音時 ReazonSpeech 會吞第一個詞(hayamimi 實測)。
+    pub pad_ms: u32,
+    pub name: &'static str,
+}
+
+impl TransducerConfig {
+    pub fn reazonspeech(dir_name: &str, num_threads: i32) -> Self {
+        Self {
+            dir: crate::paths::models_dir().join(dir_name),
+            model_type: None,
+            num_threads,
+            lang: Lang::Ja,
+            pad_ms: 0,
+            name: if dir_name == crate::paths::REAZONSPEECH_JA_DIR_NAME { "reazonspeech-ja-int8" } else { "reazonspeech-ja-en-int8" },
+        }
+    }
+
+    pub fn parakeet(num_threads: i32) -> Self {
+        Self {
+            dir: crate::paths::models_dir().join(crate::paths::PARAKEET_DIR_NAME),
+            model_type: Some("nemo_transducer".into()),
+            num_threads,
+            lang: Lang::En,
+            pad_ms: 0,
+            name: "parakeet-tdt-0.6b-v2-int8",
+        }
+    }
+}
+
+/// 在模型目錄找 `<prefix>*.int8.onnx`,沒有再找 `<prefix>*.onnx`(不取 fp16)。
+fn find_onnx(dir: &Path, prefix: &str) -> Result<PathBuf> {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| anyhow!("讀不到模型目錄 {}:{e}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.starts_with(prefix) && n.ends_with(".onnx") && !n.ends_with(".fp16.onnx"))
+        .collect();
+    names
+        .iter()
+        .find(|n| n.ends_with(".int8.onnx"))
+        .or_else(|| names.first())
+        .map(|n| dir.join(n))
+        .ok_or_else(|| anyhow!("{} 裡找不到 {prefix}*.onnx", dir.display()))
+}
+
+pub struct SherpaTransducer {
+    recognizer: OfflineRecognizer,
+    lang: Lang,
+    pad: usize,
+    name: &'static str,
+}
+
+impl SherpaTransducer {
+    pub fn new(cfg: &TransducerConfig) -> Result<Self> {
+        let tokens = cfg.dir.join("tokens.txt");
+        if !tokens.exists() {
+            return Err(anyhow!("找不到 {}", tokens.display()));
+        }
+        let path = |p: PathBuf| Some(p.to_string_lossy().to_string());
+        let mut config = OfflineRecognizerConfig::default();
+        config.model_config.transducer = OfflineTransducerModelConfig {
+            encoder: path(find_onnx(&cfg.dir, "encoder")?),
+            decoder: path(find_onnx(&cfg.dir, "decoder")?),
+            joiner: path(find_onnx(&cfg.dir, "joiner")?),
+        };
+        config.model_config.tokens = path(tokens);
+        config.model_config.num_threads = cfg.num_threads;
+        config.model_config.provider = Some("cpu".into());
+        config.model_config.model_type = cfg.model_type.clone();
+        config.decoding_method = Some("greedy_search".into());
+        let recognizer = OfflineRecognizer::create(&config)
+            .ok_or_else(|| anyhow!("OfflineRecognizer::create({}) 失敗", cfg.name))?;
+        Ok(Self {
+            recognizer,
+            lang: cfg.lang,
+            pad: cfg.pad_ms as usize * TARGET_SAMPLE_RATE as usize / 1000,
+            name: cfg.name,
+        })
+    }
+}
+
+impl Transcriber for SherpaTransducer {
+    fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
+        let t0 = Instant::now();
+        let stream = self.recognizer.create_stream();
+        if self.pad > 0 {
+            let mut padded = vec![0.0f32; self.pad];
+            padded.extend_from_slice(pcm);
+            padded.resize(padded.len() + self.pad, 0.0);
+            stream.accept_waveform(TARGET_SAMPLE_RATE, &padded);
+        } else {
+            stream.accept_waveform(TARGET_SAMPLE_RATE, pcm);
+        }
+        self.recognizer.decode(&stream);
+        let raw = stream
+            .get_result()
+            .ok_or_else(|| anyhow!("{} 無結果", self.name))?
+            .text;
+        Ok(Transcript {
+            text: collapse_cjk_spaces(raw.trim()),
+            lang: lang_hint.unwrap_or(self.lang),
+            raw,
+            asr_ms: t0.elapsed().as_millis() as u32,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
     }
 }
 

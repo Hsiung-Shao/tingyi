@@ -469,6 +469,11 @@ pub(crate) fn refine_loop(
         );
 
         for (id, text) in outcome.revised {
+            // 與快路徑同一套清理,否則會把取代表修好的字換回錯字
+            let Some(text) = crate::pipeline::clean(&cfg, text).filter(|t| !t.is_empty()) else { continue };
+            if ledger.iter().any(|l| l.id == id && l.text == text) {
+                continue;
+            }
             if let Some(l) = ledger.iter_mut().find(|l| l.id == id) {
                 l.text = text.clone();
             }
@@ -480,7 +485,9 @@ pub(crate) fn refine_loop(
                 }
             }
         }
-        for r in outcome.recovered {
+        for mut r in outcome.recovered {
+            let Some(text) = crate::pipeline::clean(&cfg, std::mem::take(&mut r.text)).filter(|t| !t.is_empty()) else { continue };
+            r.text = text;
             let id = NEXT_SENTENCE_ID.fetch_add(1, Ordering::Relaxed);
             let mut lang = detect_lang(&r.text);
             if lang == Lang::Unknown {

@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
+use crate::cleanup::{clean_transcript, Replacement};
+use crate::route::{resolve_load_set, RoutedTranscriber};
 use crate::audio::capture::{start_capture, AudioChunk, CaptureConfig, CaptureHandle};
 use crate::audio::source::SourceControl;
 use crate::audio::ring::samples_to_ms;
@@ -45,6 +47,8 @@ pub enum AsrEngine {
     SenseVoice,
     /// 需要已啟動的 whisper-server(見 `llama::WhisperServerProcess`)。
     Whisper { base_url: String },
+    /// 依語言路由專用模型(CPU):日文 ReazonSpeech、英文 Parakeet,其餘 SenseVoice。
+    Routed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,6 +134,12 @@ pub struct PipelineConfig {
     /// 使用者鎖定語言(覆蓋自動偵測)。
     pub lock_lang: Option<Lang>,
     pub glossary: Glossary,
+    /// 辨識取代表(錯字 → 正字),四個出口(正式、預覽、回修改原文、回修補回句)都套。
+    pub replacements: Vec<Replacement>,
+    /// 幻聽式重複壓縮 + 取代表;bench A/B 可關。
+    pub cleanup: bool,
+    /// 短稿補救(字數明顯太少時切兩半重解);bench A/B 後決定預設。
+    pub rescue: bool,
     /// 前文採「累加式」:舊句固定不動、只在尾端加新句,讓 llama-server 的提示快取命中;
     /// 累計字元超過 `context_max_chars` 時整批清到剩最近 `context_sentences` 句(快取失效一次後重建)。
     pub context_sentences: usize,
@@ -159,6 +169,8 @@ pub struct PipelineConfig {
     pub preview_min: Duration,
     /// 斷句控制面(偏移、自動開關、目前值);Tauri 持有同一個 Arc 即可即時調整。
     pub seg_control: Arc<SegControl>,
+    /// 依語言預設與語速調整 VAD 參數;關掉則全程用 `vad` 的設定(bench 固定參數比較用)。
+    pub seg_tuning: bool,
     /// 說話者辨識(模型存在時才生效)。
     pub speaker_id: bool,
     pub speaker: SpeakerConfig,
@@ -179,6 +191,9 @@ impl Default for PipelineConfig {
             allowed_langs: [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect(),
             lock_lang: None,
             glossary: Glossary::default(),
+            replacements: Vec::new(),
+            cleanup: true,
+            rescue: false,
             context_sentences: 6,
             context_max_chars: 1600,
             incomplete_wait: Duration::from_millis(2500),
@@ -195,6 +210,7 @@ impl Default for PipelineConfig {
             preview_interval: Duration::from_millis(1000),
             preview_min: Duration::from_millis(1200),
             seg_control: Arc::new(SegControl::default()),
+            seg_tuning: true,
             speaker_id: true,
             speaker: SpeakerConfig::default(),
             refine: RefineConfig::default(),
@@ -264,6 +280,16 @@ impl PipelineHandle {
 
     pub async fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.join_all().await;
+    }
+
+    /// 等已送入的音訊全部處理完再結束(不設 stop,不截斷尾巴)。
+    /// `start_with_audio` 的呼叫端要先丟掉送音訊的 sender。
+    pub async fn finish(mut self) {
+        self.join_all().await;
+    }
+
+    async fn join_all(&mut self) {
         if let Some(c) = self.capture.take() {
             c.stop(); // 關掉擷取 → channel 斷 → vad thread 結束 → seg channel 斷 → asr thread 結束
         }
@@ -286,23 +312,55 @@ impl PipelineHandle {
     }
 }
 
+/// 管線的音訊來源:即時擷取,或由呼叫端餵(bench 串流評測)。
+enum AudioInput {
+    Capture,
+    Channel(crossbeam_channel::Receiver<AudioChunk>),
+}
+
 /// 啟動整條管線。`translator` 為 None 時只做辨識(bench asr 用)。
 pub fn start(
     cfg: PipelineConfig,
     translator: Option<Arc<dyn Translator>>,
     events: mpsc::UnboundedSender<PipelineEvent>,
 ) -> Result<PipelineHandle> {
+    start_inner(cfg, translator, events, AudioInput::Capture)
+}
+
+/// 不開擷取,改用呼叫端餵的 16 kHz 音訊跑整條管線(串流評測)。送完丟掉 sender,再呼叫 `finish()`。
+pub fn start_with_audio(
+    cfg: PipelineConfig,
+    translator: Option<Arc<dyn Translator>>,
+    events: mpsc::UnboundedSender<PipelineEvent>,
+    audio_rx: crossbeam_channel::Receiver<AudioChunk>,
+) -> Result<PipelineHandle> {
+    start_inner(cfg, translator, events, AudioInput::Channel(audio_rx))
+}
+
+fn start_inner(
+    cfg: PipelineConfig,
+    translator: Option<Arc<dyn Translator>>,
+    events: mpsc::UnboundedSender<PipelineEvent>,
+    input: AudioInput,
+) -> Result<PipelineHandle> {
     let stop = Arc::new(AtomicBool::new(false));
 
     // 先載模型,失敗就直接回錯,不啟動擷取。預覽永遠用 SenseVoice;正式辨識依設定。
-    let preview_asr = SenseVoice::new(&cfg.asr)?;
+    // 鎖定語言要在建立 SenseVoice 時就設好(之後每次呼叫傳的語言提示不會生效)
+    let sv_cfg = SenseVoiceConfig { language: cfg.lock_lang, ..cfg.asr.clone() };
+    let preview_asr = SenseVoice::new(&sv_cfg)?;
     let final_asr: Box<dyn Transcriber> = match &cfg.asr_engine {
-        AsrEngine::SenseVoice => Box::new(SenseVoice::new(&cfg.asr)?),
+        AsrEngine::SenseVoice => Box::new(SenseVoice::new(&sv_cfg)?),
         AsrEngine::Whisper { base_url } => Box::new(WhisperServer::new(WhisperServerConfig {
             base_url: base_url.clone(),
             language: cfg.lock_lang,
             ..Default::default()
         })),
+        AsrEngine::Routed => Box::new(RoutedTranscriber::new(
+            &sv_cfg,
+            &resolve_load_set(cfg.lock_lang, &cfg.allowed_langs),
+            crate::paths::REAZONSPEECH_JA_DIR_NAME,
+        )?),
     };
     let segmenter = Segmenter::new(&cfg.vad)?;
     if let Some(d) = &cfg.record_dir {
@@ -328,7 +386,6 @@ pub fn start(
         ),
     });
 
-    let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
     let (seg_tx, seg_rx) = crossbeam_channel::bounded::<Segment>(64);
     let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<SegObservation>();
     let (utt_tx, utt_rx) = mpsc::unbounded_channel::<Utterance>();
@@ -337,7 +394,7 @@ pub fn start(
     // 回修:只有 Whisper 引擎有時間戳
     let refine_on = match (&cfg.refine.enabled, &cfg.asr_engine) {
         (true, AsrEngine::Whisper { .. }) => true,
-        (true, AsrEngine::SenseVoice) => {
+        (true, AsrEngine::SenseVoice | AsrEngine::Routed) => {
             let _ = events.send(PipelineEvent::Status { message: "回修僅支援 Whisper 引擎,已停用".into() });
             false
         }
@@ -350,7 +407,14 @@ pub fn start(
         None => None,
     };
 
-    let capture = start_capture(cfg.capture.clone(), cfg.audio_source.clone(), stats.capture.clone(), audio_tx)?;
+    let (capture, audio_rx) = match input {
+        AudioInput::Capture => {
+            let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
+            let c = start_capture(cfg.capture.clone(), cfg.audio_source.clone(), stats.capture.clone(), audio_tx)?;
+            (Some(c), audio_rx)
+        }
+        AudioInput::Channel(rx) => (None, rx),
+    };
 
     let vad_thread = {
         let events = events.clone();
@@ -389,7 +453,7 @@ pub fn start(
         let whisper_url = match (&cfg.refine.whisper_url, &cfg.asr_engine) {
             (Some(u), _) => u.clone(),
             (None, AsrEngine::Whisper { base_url }) => base_url.clone(),
-            (None, AsrEngine::SenseVoice) => unreachable!(),
+            (None, AsrEngine::SenseVoice | AsrEngine::Routed) => unreachable!(),
         };
         let refine_asr = WhisperServer::new(WhisperServerConfig {
             base_url: whisper_url,
@@ -424,7 +488,7 @@ pub fn start(
 
     Ok(PipelineHandle {
         stop,
-        capture: Some(capture),
+        capture,
         vad_thread: Some(vad_thread),
         asr_thread: Some(asr_thread),
         mt_task: Some(mt_task),
@@ -467,7 +531,10 @@ fn feed_samples(
     Some(had_segment)
 }
 
-fn send_segmentation(events: &mpsc::UnboundedSender<PipelineEvent>, segmenter: &mut Segmenter, p: crate::tuner::SegParams) {
+fn send_segmentation(events: &mpsc::UnboundedSender<PipelineEvent>, segmenter: &mut Segmenter, p: crate::tuner::SegParams, enabled: bool) {
+    if !enabled {
+        return;
+    }
     segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
     let _ = events.send(PipelineEvent::Segmentation {
         min_silence_ms: p.min_silence_ms,
@@ -496,7 +563,7 @@ fn vad_loop(
     let mut last_lang: Option<Lang> = cfg.lock_lang;
     if let Some(l) = cfg.lock_lang {
         if let Some(p) = tuner.set_lang(l, &cfg.seg_control) {
-            send_segmentation(&events, &mut segmenter, p);
+            send_segmentation(&events, &mut segmenter, p, cfg.seg_tuning);
         }
     }
     let mut last_preview = Instant::now();
@@ -511,15 +578,15 @@ fn vad_loop(
                 while let Ok(o) = obs_rx.try_recv() {
                     last_lang = Some(o.lang);
                     if let Some(p) = tuner.set_lang(o.lang, &cfg.seg_control) {
-                        send_segmentation(&events, &mut segmenter, p);
+                        send_segmentation(&events, &mut segmenter, p, cfg.seg_tuning);
                     }
                     if let Some(p) = tuner.observe(o.stat, &cfg.seg_control) {
-                        send_segmentation(&events, &mut segmenter, p);
+                        send_segmentation(&events, &mut segmenter, p, cfg.seg_tuning);
                     }
                 }
                 // 使用者改了偏移/自動開關 → 立刻重算參數
                 if let Some(p) = tuner.emit_if_changed(&cfg.seg_control) {
-                    send_segmentation(&events, &mut segmenter, p);
+                    send_segmentation(&events, &mut segmenter, p, cfg.seg_tuning);
                 }
 
                 stats.set_backlog(audio_rx.len());
@@ -556,15 +623,12 @@ fn vad_loop(
                             let pv_t0 = Instant::now();
                             let pcm = if cfg.normalize_audio { normalize_rms(&cur, -20.0, 8.0) } else { cur };
                             if let Ok(t) = preview_asr.transcribe(&pcm, cfg.lock_lang.or(last_lang)) {
-                                if !t.text.is_empty() {
+                                let text = clean(&cfg, t.text).unwrap_or_default();
+                                if !text.is_empty() {
                                     preview_shown = true;
                                     // 先比對說話者(不學習),讓名字和灰字一起最早出現
                                     let speaker = speakers.lock().unwrap().as_ref().and_then(|s| s.peek(&pcm));
-                                    let _ = events.send(PipelineEvent::Partial {
-                                        text: t.text,
-                                        lang: t.lang,
-                                        speaker,
-                                    });
+                                    let _ = events.send(PipelineEvent::Partial { text, lang: t.lang, speaker });
                                 }
                             }
                             stats.record_preview(pv_t0.elapsed().as_millis() as u32);
@@ -585,6 +649,39 @@ fn vad_loop(
         }
     }
     tracing::info!("vad thread 結束");
+}
+
+/// 四個出口共用的清理;關閉時原樣回傳。整段是幻聽回 None。
+pub(crate) fn clean(cfg: &PipelineConfig, text: String) -> Option<String> {
+    if cfg.cleanup {
+        clean_transcript(&text, &cfg.replacements)
+    } else {
+        Some(text)
+    }
+}
+
+/// 短稿補救:字數明顯太少時在段內低能量處切兩半各自重解(兩側墊 0.35 s 合成靜音、語言固定),
+/// 重解更長、字速正常且保留原結果尾段才採用。
+fn rescue_text(asr: &dyn Transcriber, pcm: &[f32], text: &str, speech_ms: u32, lang: Lang, cfg: &PipelineConfig) -> Option<String> {
+    if !crate::rescue::should_rescue(text, speech_ms, lang) {
+        return None;
+    }
+    let at = crate::rescue::find_split(pcm, TARGET_SAMPLE_RATE as u32)?;
+    let pad = vec![0.0f32; TARGET_SAMPLE_RATE as usize * 35 / 100];
+    let mut parts = Vec::new();
+    for half in [&pcm[..at], &pcm[at..]] {
+        let mut padded = pad.clone();
+        padded.extend_from_slice(half);
+        padded.extend_from_slice(&pad);
+        let t = asr.transcribe(&padded, Some(lang)).ok()?;
+        if let Some(s) = clean(cfg, t.text).filter(|s| !s.is_empty()) {
+            parts.push(s);
+        }
+    }
+    let retry = parts.join(if lang.is_cjk() { "" } else { " " });
+    let accepted = crate::rescue::accept_retry(text, &retry, speech_ms, lang);
+    tracing::debug!("短稿補救({}):{text} → {retry}", if accepted { "採用" } else { "放棄" });
+    accepted.then_some(retry)
 }
 
 /// 正式辨識 + 說話者 + 斷句觀察值回饋。
@@ -620,8 +717,8 @@ fn asr_loop(
         let mut timing = SentenceTiming::new(id, seg.end_at, audio_ms);
 
         let pcm = if cfg.normalize_audio { normalize_rms(&seg.samples, -20.0, 8.0) } else { seg.samples.clone() };
-        let max_speech_ms = cfg.seg_control.current_max_speech_ms.load(Ordering::Relaxed).max(1000);
-        let hit_max = audio_ms as f32 >= max_speech_ms as f32 * 0.95;
+        let core_ms = seg.core_ms();
+        let hit_max = seg.forced;
 
         let mut t = match asr.transcribe(&pcm, cfg.lock_lang) {
             Ok(t) => t,
@@ -630,6 +727,16 @@ fn asr_loop(
                 continue;
             }
         };
+        match clean(&cfg, std::mem::take(&mut t.text)) {
+            Some(text) => t.text = text,
+            None => tracing::debug!("丟棄幻聽段落 #{id}"),
+        }
+        if cfg.rescue && !t.text.is_empty() {
+            let lang = cfg.lock_lang.unwrap_or(t.lang);
+            if let Some(text) = rescue_text(asr.as_ref(), &pcm, &t.text, core_ms, lang, &cfg) {
+                t.text = text;
+            }
+        }
         timing.asr_done = Some(Instant::now());
         stats.record_asr(t.asr_ms);
         if t.text.is_empty() {
@@ -651,7 +758,8 @@ fn asr_loop(
         let sp_t0 = Instant::now();
         let speaker = {
             let mut guard = speakers.lock().unwrap();
-            guard.as_mut().and_then(|s| s.identify(&pcm, seg.end_at))
+            // 只用語音本體:前段補白可能吃到上一位講者的尾音
+            guard.as_mut().and_then(|s| s.identify(&pcm[seg.core_range()], seg.end_at))
         };
         if let Some(s) = speakers.lock().unwrap().as_mut() {
             stats.record_speaker(sp_t0.elapsed().as_millis() as u32);
@@ -670,7 +778,7 @@ fn asr_loop(
         let incomplete = completeness(&t.text, t.lang) == Completeness::Incomplete;
         let _ = obs_tx.send(SegObservation {
             lang: t.lang,
-            stat: SegStat { audio_ms, chars, hit_max, incomplete },
+            stat: SegStat { audio_ms: core_ms, chars, hit_max, incomplete },
         });
 
         let will_translate = t.lang != Lang::Zh

@@ -3,6 +3,7 @@
 //! 子命令:
 //! - `devices`           列出預設輸出裝置與有音訊 session 的程式
 //! - `capture-probe`     擷取探測:每秒封包數、靜音封包、不連續次數、樣本數/實際時間比
+//! - `asr-eval`          CER/WER 評測(scripts/fetch-eval.py 下載的評測集):逐句或串流模式
 //! - `vad`               播影片,印出 VAD 切段
 //! - `asr`               播影片,印出辨識結果與延遲
 //! - `mt`                固定句子集跑翻譯,輸出對照表(可指定多個模型)
@@ -130,6 +131,53 @@ enum Cmd {
     },
     /// 說話者 embedding 驗證:印相似度矩陣與分群結果(不同檔應為不同人)
     Speakers { files: Vec<PathBuf> },
+    /// CER/WER 評測:每集 micro 錯誤率、語言判斷正確率、延遲、RTF;逐句結果寫 JSONL
+    AsrEval {
+        /// 評測集(資料目錄 eval/<名>/manifest.tsv)
+        #[arg(long, num_args = 1.., default_values_t = ["ja-rs".to_string(), "ja-jsut".into(), "ja-fleurs".into(), "en-fleurs".into(), "ko-fleurs".into()])]
+        sets: Vec<String>,
+        /// 引擎(可多個):sensevoice、whisper、reazonspeech(ja-en)、reazonspeech-ja、reazonspeech-pad(段首尾墊 0.35 s)、parakeet、routed
+        #[arg(long, num_args = 1.., default_values_t = ["sensevoice".to_string()])]
+        engines: Vec<String>,
+        /// 每集最多幾句(0 = 全部)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        #[arg(long, default_value_t = 4)]
+        threads: i32,
+        /// 不鎖定語言,改自動偵測(並統計語言判斷正確率)
+        #[arg(long)]
+        auto: bool,
+        /// 關閉送辨識前的音量正規化(預設與管線相同,開啟)
+        #[arg(long)]
+        no_normalize: bool,
+        #[arg(long, default_value = "bench-out/eval")]
+        out: PathBuf,
+        /// 串流模式:每 `session-size` 句接成一條長音訊(固定種子間隔 0.3–1.5 s、底噪 -60 dBFS),
+        /// 走完整管線(VAD、正式辨識;不預覽、不回修、不翻譯),量串接後的錯誤率與切段診斷
+        #[arg(long)]
+        stream: bool,
+        #[arg(long, default_value_t = 20)]
+        session_size: usize,
+        /// 串流模式:段首往前補的緩衝(毫秒,預設沿用 VadConfig)
+        #[arg(long)]
+        pre_pad_ms: Option<u32>,
+        /// 串流模式:開啟短稿補救
+        #[arg(long)]
+        rescue: bool,
+        /// 串流模式:關閉幻聽重複壓縮
+        #[arg(long)]
+        no_cleanup: bool,
+        /// 串流模式:單段上限秒數(預設沿用 VadConfig;搭配 --no-tuning 才不會被調整器覆寫)
+        #[arg(long)]
+        max_speech_sec: Option<f32>,
+        /// 串流模式:關閉斷句參數調整(全程固定 VAD 參數)
+        #[arg(long)]
+        no_tuning: bool,
+        /// 串流模式:每句先調到這個響度(RMS dBFS)再接成長音訊;評測集裡有低到 -66 dBFS 的錄音,
+        /// 不調的話會和底噪一樣小聲,不像真實播放
+        #[arg(long, default_value_t = -26.0, allow_hyphen_values = true)]
+        level_dbfs: f32,
+    },
 }
 
 /// 建立正式辨識引擎;whisper 時順便啟動 whisper-server(回傳的 process 要活到辨識結束)。
@@ -139,9 +187,31 @@ fn make_engine(
     lock: Option<Lang>,
     port: u16,
 ) -> Result<(Box<dyn tingyi_core::asr::Transcriber>, Option<tingyi_core::llama::WhisperServerProcess>)> {
-    use tingyi_core::asr::{SenseVoice, SenseVoiceConfig, WhisperServer, WhisperServerConfig};
+    use tingyi_core::asr::{SenseVoice, SenseVoiceConfig, SherpaTransducer, TransducerConfig, WhisperServer, WhisperServerConfig};
     use tingyi_core::llama::{WhisperServerProcess, WhisperServerSpec};
+    let transducer = |cfg: TransducerConfig| -> Result<Box<dyn tingyi_core::asr::Transcriber>> {
+        let t0 = Instant::now();
+        let t = SherpaTransducer::new(&cfg)?;
+        println!("{} 載入 {} ms", cfg.name, t0.elapsed().as_millis());
+        Ok(Box::new(t))
+    };
     match engine {
+        "reazonspeech" => Ok((transducer(TransducerConfig::reazonspeech(paths::REAZONSPEECH_JA_EN_DIR_NAME, threads))?, None)),
+        "reazonspeech-ja" => Ok((transducer(TransducerConfig::reazonspeech(paths::REAZONSPEECH_JA_DIR_NAME, threads))?, None)),
+        "reazonspeech-pad" => {
+            let mut cfg = TransducerConfig::reazonspeech(paths::REAZONSPEECH_JA_EN_DIR_NAME, threads);
+            cfg.pad_ms = 350;
+            Ok((transducer(cfg)?, None))
+        }
+        "parakeet" => Ok((transducer(TransducerConfig::parakeet(threads))?, None)),
+        "routed" => {
+            let t0 = Instant::now();
+            let load = [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect();
+            let sv = SenseVoiceConfig { num_threads: threads, language: lock, ..Default::default() };
+            let r = tingyi_core::route::RoutedTranscriber::new(&sv, &load, paths::REAZONSPEECH_JA_DIR_NAME)?;
+            println!("routed 載入 {} ms({:?})", t0.elapsed().as_millis(), r.available());
+            Ok((Box::new(r), None))
+        }
         "whisper" => {
             let before = gpu::nvidia_used_mib();
             let mut spec = WhisperServerSpec::new(paths::whisper_model(), port);
@@ -172,6 +242,325 @@ fn make_engine(
             Ok((Box::new(s), None))
         }
     }
+}
+
+/// 評測集的一句。
+struct EvalUtt {
+    wav: PathBuf,
+    lang: Lang,
+    reference: String,
+}
+
+fn load_eval_set(name: &str, limit: usize) -> Result<Vec<EvalUtt>> {
+    let dir = paths::data_dir().join("eval").join(name);
+    let manifest = dir.join("manifest.tsv");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("讀不到 {}(先跑 scripts/fetch-eval.py)", manifest.display()))?;
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 3 {
+            return Err(anyhow!("{} 格式錯誤:{line}", manifest.display()));
+        }
+        out.push(EvalUtt { wav: dir.join(cols[0]), lang: parse_lang(cols[1])?, reference: cols[2].to_string() });
+        if limit > 0 && out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn read_wav_16k(path: &std::path::Path) -> Result<Vec<f32>> {
+    let w = sherpa_onnx::Wave::read(&path.to_string_lossy()).ok_or_else(|| anyhow!("讀不到 wav:{}", path.display()))?;
+    let samples = w.samples().to_vec();
+    if w.sample_rate() == 16000 {
+        return Ok(samples);
+    }
+    let r = sherpa_onnx::LinearResampler::create(w.sample_rate(), 16000).ok_or_else(|| anyhow!("resampler"))?;
+    Ok(r.resample(&samples, true))
+}
+
+#[derive(serde::Serialize)]
+struct EvalSummary {
+    engine: String,
+    set: String,
+    n: usize,
+    /// 英文為 WER,其餘為 CER(micro 平均)。
+    error_rate: f64,
+    ops: tingyi_core::eval::EditOps,
+    /// 自動模式才有:判斷出的語言與標註相同的比例。
+    lid_accuracy: Option<f64>,
+    asr_ms: tingyi_core::metrics::Stats,
+    rtf: f64,
+}
+
+fn run_asr_eval(sets: &[String], engines: &[String], limit: usize, threads: i32, auto: bool, normalize: bool, out: &std::path::Path) -> Result<()> {
+    use tingyi_core::eval::{score, EditOps};
+    std::fs::create_dir_all(out)?;
+    let data: Vec<(String, Vec<EvalUtt>)> = sets.iter().map(|s| Ok((s.clone(), load_eval_set(s, limit)?))).collect::<Result<_>>()?;
+    let mut summaries = Vec::new();
+    for engine in engines {
+        // 鎖定模式每集各建一個鎖定該語言的引擎(SenseVoice 的語言只能在建立時設定)
+        let mut shared = if auto { Some(make_engine(engine, threads, None, 8179)?) } else { None };
+        for (set, utts) in &data {
+            let lock = utts.first().map(|u| u.lang);
+            let per_set;
+            let (asr, _server) = match shared.as_mut() {
+                Some(e) => (&e.0, &e.1),
+                None => {
+                    per_set = make_engine(engine, threads, lock, 8179)?;
+                    (&per_set.0, &per_set.1)
+                }
+            };
+            let mut f = std::fs::File::create(out.join(format!("{engine}-{set}{}.jsonl", if auto { "-auto" } else { "" })))?;
+            let mut corpus = EditOps::default();
+            let (mut lid_ok, mut ms, mut audio_ms_total, mut asr_ms_total) = (0usize, Vec::new(), 0u64, 0u64);
+            for (i, u) in utts.iter().enumerate() {
+                let mut pcm = read_wav_16k(&u.wav)?;
+                let audio_ms = (pcm.len() * 1000 / 16000) as u64;
+                if normalize {
+                    pcm = tingyi_core::audio::normalize_rms(&pcm, -20.0, 8.0);
+                }
+                let t = asr.transcribe(&pcm, if auto { None } else { Some(u.lang) })?;
+                let ops = score(&u.reference, &t.text, u.lang);
+                corpus.add(&ops);
+                lid_ok += usize::from(t.lang == u.lang);
+                ms.push(t.asr_ms);
+                audio_ms_total += audio_ms;
+                asr_ms_total += t.asr_ms as u64;
+                serde_json::to_writer(&mut f, &serde_json::json!({
+                    "i": i, "wav": u.wav.file_name().map(|x| x.to_string_lossy().to_string()),
+                    "ref": u.reference, "hyp": t.text, "lang_ref": u.lang, "lang_hyp": t.lang,
+                    "ops": ops, "rate": ops.rate(), "asr_ms": t.asr_ms, "audio_ms": audio_ms,
+                }))?;
+                writeln!(f)?;
+            }
+            let s = EvalSummary {
+                engine: engine.clone(),
+                set: set.clone(),
+                n: utts.len(),
+                error_rate: corpus.rate(),
+                ops: corpus,
+                lid_accuracy: auto.then(|| lid_ok as f64 / utts.len().max(1) as f64),
+                asr_ms: tingyi_core::metrics::Stats::from_samples(ms),
+                rtf: asr_ms_total as f64 / audio_ms_total.max(1) as f64,
+            };
+            println!(
+                "{engine:<12} {set:<10} n={:<4} {}={:>6.2}%  (替換 {} 刪除 {} 插入 {} / {})  {}辨識 p50 {} / p95 {} ms  RTF {:.3}",
+                s.n,
+                if utts.first().is_some_and(|u| u.lang == Lang::En) { "WER" } else { "CER" },
+                s.error_rate * 100.0,
+                s.ops.sub,
+                s.ops.del,
+                s.ops.ins,
+                s.ops.ref_len,
+                s.lid_accuracy.map(|a| format!("語言判斷 {:.1}%  ", a * 100.0)).unwrap_or_default(),
+                s.asr_ms.p50,
+                s.asr_ms.p95,
+                s.rtf
+            );
+            summaries.push(s);
+        }
+    }
+    let path = out.join(format!("summary-{}.json", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs()));
+    std::fs::write(&path, serde_json::to_string_pretty(&summaries)?)?;
+    println!("彙總:{}", path.display());
+    Ok(())
+}
+
+/// 串流評測的 A/B 開關。
+struct StreamOpts {
+    session_size: usize,
+    pre_pad_ms: Option<u32>,
+    rescue: bool,
+    cleanup: bool,
+    max_speech_sec: Option<f32>,
+    tuning: bool,
+    level_dbfs: f32,
+}
+
+/// 把整段縮放到指定 RMS(dBFS),clip 在 ±1。
+fn level_to(pcm: &[f32], dbfs: f32) -> Vec<f32> {
+    let rms = (pcm.iter().map(|x| x * x).sum::<f32>() / pcm.len().max(1) as f32).sqrt();
+    if rms < 1e-7 {
+        return pcm.to_vec();
+    }
+    let gain = 10f32.powf(dbfs / 20.0) / rms;
+    pcm.iter().map(|x| (x * gain).clamp(-1.0, 1.0)).collect()
+}
+
+#[derive(serde::Serialize, Default)]
+struct StreamSummary {
+    engine: String,
+    set: String,
+    sessions: usize,
+    utts: usize,
+    segments: usize,
+    error_rate: f64,
+    ops: tingyi_core::eval::EditOps,
+    /// 依時間重疊分組:一對一、切開、合併、漏掉、多出
+    matched: usize,
+    split: usize,
+    merged: usize,
+    missed: usize,
+    inserted: usize,
+    asr_ms: tingyi_core::metrics::Stats,
+    /// VAD 切出的段落總長 ÷ 參考句總長(含補白,> 1 代表多切了靜音;明顯 < 1 代表語音沒進辨識)
+    vad_coverage: f64,
+}
+
+/// 串流評測:句子接成長音訊走完整管線,主指標是整條 session 串接後的錯誤率(不受切段影響)。
+async fn run_stream_eval(
+    sets: &[String],
+    engines: &[String],
+    limit: usize,
+    threads: i32,
+    auto: bool,
+    opts: &StreamOpts,
+    out: &std::path::Path,
+) -> Result<()> {
+    use tingyi_core::audio::capture::AudioChunk;
+    use tingyi_core::eval::{build_stream, group_alignment, score, EditOps, GroupKind};
+    use tingyi_core::pipeline::AsrEngine;
+    std::fs::create_dir_all(out)?;
+    let mut summaries = Vec::new();
+    for engine in engines {
+        let (asr, server) = make_engine(engine, threads, None, 8179)?;
+        drop(asr); // 管線自己建引擎;這裡只為了讓 whisper-server 活著
+        let asr_engine = match (engine.as_str(), &server) {
+            (_, Some(p)) => AsrEngine::Whisper { base_url: p.base_url() },
+            ("sensevoice", None) => AsrEngine::SenseVoice,
+            ("routed", None) => AsrEngine::Routed,
+            (other, None) => return Err(anyhow!("串流模式不支援引擎 {other}(可用 sensevoice、whisper、routed)")),
+        };
+        let tag = format!(
+            "{engine}{}{}{}{}{}{}",
+            if opts.level_dbfs == -26.0 { String::new() } else { format!("-lv{}", opts.level_dbfs) },
+            opts.pre_pad_ms.map(|ms| format!("-pre{ms}")).unwrap_or_default(),
+            if opts.rescue { "-rescue" } else { "" },
+            if opts.cleanup { "" } else { "-nocleanup" },
+            opts.max_speech_sec.map(|s| format!("-max{s}")).unwrap_or_default(),
+            if opts.tuning { "" } else { "-notune" }
+        );
+        for set in sets {
+            let utts = load_eval_set(set, limit)?;
+            let lang = utts.first().map(|u| u.lang).unwrap_or(Lang::Unknown);
+            let sep = if lang == Lang::En { " " } else { "" };
+            let mut f = std::fs::File::create(out.join(format!("stream-{tag}-{set}{}.jsonl", if auto { "-auto" } else { "" })))?;
+            let mut s = StreamSummary { engine: tag.clone(), set: set.clone(), ..Default::default() };
+            let mut corpus = EditOps::default();
+            let mut asr_ms = Vec::new();
+            let (mut seg_audio_ms, mut ref_audio_ms) = (0u64, 0u64);
+            for (k, group) in utts.chunks(opts.session_size.max(1)).enumerate() {
+                let pcms: Vec<Vec<f32>> = group.iter().map(|u| Ok(level_to(&read_wav_16k(&u.wav)?, opts.level_dbfs))).collect::<Result<_>>()?;
+                let (audio, spans) = build_stream(&pcms, k as u64, (300, 1500), -60.0, 16_000);
+
+                let mut cfg = PipelineConfig::default();
+                cfg.asr_engine = asr_engine.clone();
+                cfg.asr.num_threads = threads;
+                cfg.preview = false;
+                cfg.speaker_id = false;
+                cfg.refine.enabled = false;
+                cfg.rescue = opts.rescue;
+                cfg.cleanup = opts.cleanup;
+                if let Some(ms) = opts.pre_pad_ms {
+                    cfg.vad.pre_pad_ms = ms;
+                }
+                if let Some(s) = opts.max_speech_sec {
+                    cfg.vad.max_speech_sec = s;
+                }
+                cfg.seg_tuning = opts.tuning;
+                cfg.lock_lang = (!auto).then_some(lang);
+                if cfg.lock_lang.is_some() {
+                    cfg.allowed_langs = HashSet::new();
+                }
+                let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (audio_tx, audio_rx) = crossbeam_channel::bounded::<AudioChunk>(256);
+                let handle = pipeline::start_with_audio(cfg, None, ev_tx, audio_rx)?;
+                let collector = tokio::spawn(async move {
+                    let mut v = Vec::new();
+                    while let Some(e) = ev_rx.recv().await {
+                        v.push(e);
+                    }
+                    v
+                });
+                tokio::task::spawn_blocking(move || {
+                    for c in audio.chunks(480) {
+                        if audio_tx.send(AudioChunk { samples: c.to_vec(), gen: 0 }).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await?;
+                handle.finish().await;
+                let events = collector.await?;
+
+                let mut hyps: Vec<(String, (usize, usize))> = Vec::new();
+                for e in &events {
+                    match e {
+                        PipelineEvent::Transcript { text, start_ms, end_ms, asr_ms: ms, .. } => {
+                            hyps.push((text.clone(), (*start_ms as usize * 16, *end_ms as usize * 16)));
+                            asr_ms.push(*ms);
+                        }
+                        PipelineEvent::Segment { audio_ms, .. } => seg_audio_ms += *audio_ms as u64,
+                        _ => {}
+                    }
+                }
+                ref_audio_ms += spans.iter().map(|(a, b)| ((b - a) / 16) as u64).sum::<u64>();
+                let reference = group.iter().map(|u| u.reference.as_str()).collect::<Vec<_>>().join(sep);
+                let hyp = hyps.iter().map(|h| h.0.as_str()).collect::<Vec<_>>().join(sep);
+                let ops = score(&reference, &hyp, lang);
+                corpus.add(&ops);
+                let hyp_spans: Vec<(usize, usize)> = hyps.iter().map(|h| h.1).collect();
+                let groups = group_alignment(&spans, &hyp_spans, 3_200);
+                for g in &groups {
+                    match g.kind {
+                        GroupKind::Match => s.matched += 1,
+                        GroupKind::Split => s.split += 1,
+                        GroupKind::Merged => s.merged += 1,
+                        GroupKind::Missed => s.missed += 1,
+                        GroupKind::Inserted => s.inserted += 1,
+                    }
+                }
+                s.sessions += 1;
+                s.utts += group.len();
+                s.segments += hyps.len();
+                serde_json::to_writer(&mut f, &serde_json::json!({
+                    "session": k, "ref": reference, "hyp": hyp, "ops": ops, "rate": ops.rate(),
+                    "segments": hyp_spans, "ref_spans": spans, "groups": groups,
+                }))?;
+                writeln!(f)?;
+            }
+            s.error_rate = corpus.rate();
+            s.ops = corpus;
+            s.asr_ms = tingyi_core::metrics::Stats::from_samples(asr_ms);
+            s.vad_coverage = seg_audio_ms as f64 / ref_audio_ms.max(1) as f64;
+            println!(
+                "[串流] {tag:<16} {set:<10} {} 條/{} 句 → {} 段(覆蓋 {:.0}%)  {}={:>6.2}%(替換 {} 刪除 {} 插入 {} / {})  一對一 {} 切開 {} 合併 {} 漏掉 {} 多出 {}  辨識 p50 {} ms",
+                s.sessions,
+                s.utts,
+                s.segments,
+                s.vad_coverage * 100.0,
+                if lang == Lang::En { "WER" } else { "CER" },
+                s.error_rate * 100.0,
+                s.ops.sub,
+                s.ops.del,
+                s.ops.ins,
+                s.ops.ref_len,
+                s.matched,
+                s.split,
+                s.merged,
+                s.missed,
+                s.inserted,
+                s.asr_ms.p50
+            );
+            summaries.push(s);
+        }
+    }
+    let path = out.join(format!("stream-summary-{}.json", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs()));
+    std::fs::write(&path, serde_json::to_string_pretty(&summaries)?)?;
+    println!("彙總:{}", path.display());
+    Ok(())
 }
 
 fn parse_lang(s: &str) -> Result<Lang> {
@@ -319,6 +708,16 @@ async fn main() -> Result<()> {
                     t.text,
                     t.raw
                 );
+            }
+        }
+        Cmd::AsrEval {
+            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, rescue, no_cleanup, max_speech_sec, no_tuning, level_dbfs,
+        } => {
+            if stream {
+                let opts = StreamOpts { session_size, pre_pad_ms, rescue, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs };
+                run_stream_eval(&sets, &engines, limit, threads, auto, &opts, &out).await?
+            } else {
+                run_asr_eval(&sets, &engines, limit, threads, auto, !no_normalize, &out)?
             }
         }
         Cmd::Speakers { files } => {

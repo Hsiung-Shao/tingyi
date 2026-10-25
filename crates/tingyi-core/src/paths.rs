@@ -62,6 +62,15 @@ pub fn sensevoice_tokens() -> PathBuf {
     sensevoice_dir().join("tokens.txt")
 }
 
+/// 日文專用模型(ReazonSpeech k2 v2:Zipformer RNN-T、159M 參數,sherpa-onnx 轉出)。
+/// - ja-en 2025-01-17:官方日英雙語版(reazon-research/reazonspeech-k2-v2-ja-en)
+/// - ja 2024-08-01:官方日文版(reazon-research/reazonspeech-k2-v2,Apache-2.0)
+pub const REAZONSPEECH_JA_EN_DIR_NAME: &str = "sherpa-onnx-zipformer-ja-en-reazonspeech-2025-01-17";
+pub const REAZONSPEECH_JA_DIR_NAME: &str = "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01";
+
+/// 英文專用模型(NVIDIA Parakeet TDT 0.6B v2,只有英文,CC-BY-4.0)。v3 多語版英文 WER 較差(hayamimi 實測)。
+pub const PARAKEET_DIR_NAME: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+
 pub fn silero_vad_model() -> PathBuf {
     models_dir().join("silero_vad.onnx")
 }
