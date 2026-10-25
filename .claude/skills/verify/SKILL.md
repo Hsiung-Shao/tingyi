@@ -20,7 +20,7 @@ python .claude/skills/verify/scripts/verify_download_script.py --existing D:\cod
 
 第二支驗專用模型的 app 內下載(見 `features/routed-models.md`):自己架假 Hugging Face(本機 Range 伺服器,提供 `data/models` 的真實檔、限速),`TINGYI_DATA_DIR` 指向證據目錄裡的臨時資料目錄,結束後刪掉臨時資料目錄(只留檔案清單)。選項 `--source-data`、`--rate-mbps`。
 
-第三支驗開發用下載腳本 `scripts/download-models.ps1`(真網路,約 3.4 GB,不啟動 app):乾淨資料目錄下載必要項目與日英專用模型包、Python 獨立重算 SHA256、`-Verify`、竄改一個位元組必須失敗且錯誤訊息只點名該檔、竄改已解壓的模型與 llama DLL 也必須被 `-Verify` 抓到;`--existing` 再對既有資料目錄的全部選配項目跑 `-Verify`(先 `-ListOnly`,有「待下載」就不跑)。結束時刪掉下載的資料(只留檔案清單);腳本會把 llama-server 複製到本 worktree 的 `src-tauri\binaries`(已 gitignore)。
+第三支驗開發用下載腳本 `scripts/download-models.ps1`(真網路,約 3.4 GB,不啟動 app):乾淨資料目錄下載必要項目與日英專用模型包、Python 獨立重算 SHA256、`-Verify`、竄改一個位元組必須失敗且錯誤訊息只點名該檔、竄改已解壓的模型與 llama DLL 也必須被 `-Verify` 抓到,且照訊息「請刪除:」的路徑刪除後重跑可恢復;`--existing` 再對既有資料目錄的全部選配項目跑 `-Verify`(先 `-ListOnly`,有「待下載」就不跑)。結束時刪掉下載的資料(只留檔案清單);腳本會把 llama-server 複製到本 worktree 的 `src-tauri\binaries`(已 gitignore)。
 
 選項:`--data-dir <模型資料目錄>`(預設 `D:\codeproject\translate\data`;worktree 沒有 `data/`,不設會退回 `%LOCALAPPDATA%\tingyi` 而找不到模型)、`--launch-timeout 600`。
 

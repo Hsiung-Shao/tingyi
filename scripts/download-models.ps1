@@ -129,6 +129,7 @@ foreach ($i in $items) {
 }
 if ($ListOnly) { exit 0 }
 
+# 每筆記「不符的檔案」與「要刪除的路徑」:單一檔案刪掉就會重新下載;已解壓的目錄以 tokens.txt 或 llama-server.exe 當完成標記,要整個目錄刪掉才會重新解壓
 $bad = @()
 foreach ($i in $items) {
     if ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt'))) {
@@ -136,14 +137,14 @@ foreach ($i in $items) {
         if ($Verify) {
             foreach ($f in $i.Files) {
                 $p = Join-Path $i.Extracted $f[0]
-                if (-not (Test-Path -LiteralPath $p) -or -not (Test-Sha256 $p $f[1])) { $bad += $p }
+                if (-not (Test-Path -LiteralPath $p) -or -not (Test-Sha256 $p $f[1])) { $bad += @{ File = $p; Remove = $i.Extracted } }
             }
         }
         continue
     }
     if (Test-Path $i.Dest) {
         # 壓縮檔接著要解壓成模型或執行檔,每次都校驗;其他檔案指定 -Verify 才校驗
-        if (($Verify -or $i.Name -match '\.(zip|tar\.bz2)$') -and -not (Test-Sha256 $i.Dest $i.Sha256)) { $bad += $i.Dest }
+        if (($Verify -or $i.Name -match '\.(zip|tar\.bz2)$') -and -not (Test-Sha256 $i.Dest $i.Sha256)) { $bad += @{ File = $i.Dest; Remove = $i.Dest } }
         continue
     }
     Write-Host "下載 $($i.Name) ..."
@@ -177,10 +178,13 @@ function Get-ZipMismatch($Zip, $Dir) {
 }
 # 實際當 sidecar 用的 llama 執行檔已解壓時,與 zip 內容比對(zip 本身上面已校驗)
 if ($Verify -and (Test-Path (Join-Path $bin 'llama\llama-server.exe'))) {
-    $bad += @(Get-ZipMismatch (Join-Path $bin "llama-$llamaBuild-bin-win-vulkan-x64.zip") (Join-Path $bin 'llama'))
+    foreach ($p in @(Get-ZipMismatch (Join-Path $bin "llama-$llamaBuild-bin-win-vulkan-x64.zip") (Join-Path $bin 'llama'))) {
+        $bad += @{ File = $p; Remove = (Join-Path $bin 'llama') }
+    }
 }
 if ($bad) {
-    throw "以下已存在的檔案 SHA256 不符,請刪除後重跑:`n  $($bad -join "`n  ")"
+    foreach ($b in $bad) { Write-Host "  SHA256 不符:$($b.File);請刪除:$($b.Remove)" }
+    throw "有 $(@($bad).Count) 個檔案 SHA256 不符,請刪除上方「請刪除」列出的路徑後重跑(不加 -Verify 即會重新下載並解壓)"
 }
 if ($Verify) { Write-Host '已存在的檔案(含已解壓的專用模型與 llama 執行檔)SHA256 全部相符。' }
 

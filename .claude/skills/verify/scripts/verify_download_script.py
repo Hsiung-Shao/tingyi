@@ -6,7 +6,8 @@ A. 乾淨資料目錄下載必要項目 + 日文/英文專用模型壓縮包 →
 B. 同一目錄加 -Verify → exit 0、「全部相符」。
 C. 竄改 silero_vad.onnx 一個位元組後 -Verify → exit 非 0,錯誤段只點名該檔(之後還原)。
 E. 竄改已解壓的 joiner 模型與 llama 的一個 dll 後 -Verify → exit 非 0 並點名兩檔(finally 還原);
-   E2. 還原後 -Verify 恢復通過。
+   E3. 照錯誤訊息「請刪除:」的路徑刪除後,不加 -Verify 重跑可恢復,再 -Verify 全部相符
+   (沒取到路徑或路徑不在 data 底下就不刪,改還原兩檔並判失敗)。
 D. (選用 --existing)對既有資料目錄的全部選配項目跑 -Verify;先 -ListOnly,有「待下載」就不跑(免得下載進使用者目錄)。
 
 用法:python .claude/skills/verify/scripts/verify_download_script.py [--existing D:\\codeproject\\translate\\data]
@@ -119,19 +120,52 @@ def main() -> int:
             raise RuntimeError("bin/llama 底下找不到 .dll")
         dll = dlls[0]
         orig_j, orig_d = joiner.read_bytes(), dll.read_bytes()
+
+        def restore_tampered():
+            joiner.write_bytes(orig_j)
+            dll.write_bytes(orig_d)
+
         try:
             joiner.write_bytes(orig_j[:-1] + bytes([orig_j[-1] ^ 0xFF]))
             dll.write_bytes(orig_d[:-1] + bytes([orig_d[-1] ^ 0xFF]))
             code, out = ps(run, "E-tamper-extracted", ["-DataDir", str(data), "-Verify", *CLEAN])
-        finally:
-            joiner.write_bytes(orig_j)
-            dll.write_bytes(orig_d)
+        except BaseException:
+            restore_tampered()
+            raise
         sec = err_section(out)
         run.check("E 竄改已解壓的模型與 llama 執行檔後 -Verify 失敗並點名兩檔",
                   code != 0 and joiner.name in sec and dll.name in sec, f"exit {code};dll {dll.name}")
 
-        code, out = ps(run, "E2-verify-restored", ["-DataDir", str(data), "-Verify", *CLEAN])
-        run.check("E2 還原後 -Verify 恢復通過", code == 0 and "SHA256 全部相符" in out, f"exit {code}")
+        # E3:只在路徑齊全且都安全時才照訊息刪除;否則還原兩檔,讓後面的 D 不受影響
+        raw = re.findall(r"請刪除:(.+?)\s*$", out, re.M)
+        del_paths = list(dict.fromkeys(Path(x) for x in raw))
+        data_root = data.resolve()
+
+        def under_data(q: Path) -> bool:
+            r = q.resolve()
+            return r != data_root and data_root in r.parents
+
+        problem = ""
+        if not del_paths:
+            problem = "訊息沒有任何「請刪除:」路徑"
+        else:
+            bad = [str(q) for q in del_paths if not under_data(q) or not q.exists()]
+            if bad:
+                problem = f"路徑不在 data 底下或不存在:{bad}"
+        if problem:
+            restore_tampered()
+            run.check("E3 照訊息刪除後重跑可恢復", False, problem)
+        else:
+            for q in del_paths:
+                if q.is_dir():
+                    shutil.rmtree(q)
+                elif q.exists():  # 可能已隨上層目錄一起刪掉
+                    q.unlink()
+            code_r, _ = ps(run, "E3-rerun", ["-DataDir", str(data), *CLEAN])
+            code_v, out_v = ps(run, "E3-verify", ["-DataDir", str(data), "-Verify", *CLEAN])
+            run.check("E3 照訊息刪除後重跑可恢復",
+                      code_r == 0 and code_v == 0 and "SHA256 全部相符" in out_v,
+                      f"刪除 {len(del_paths)} 個路徑;rerun exit {code_r};verify exit {code_v}")
 
         if a.existing:
             code, out = ps(run, "D-list", ["-DataDir", a.existing, "-Verify", "-ListOnly", *ALL])
