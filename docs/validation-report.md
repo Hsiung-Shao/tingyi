@@ -281,6 +281,8 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 | GUI 旅程 `verify_model_download.py`(本機替身 HF,限速 20 MB/s) | 下載 → 取消(`.part` 約 45 MB 保留)→ 繼續送 `Range: bytes=45105152-` → 已下載 → 專用模型可選 → 開始,log「模型載入完成:routed[reazonspeech]」 |
 | 破壞對照(下載完不搬進正式目錄) | 卡在「已下載」那步,exit 1 |
 
+開發用 `scripts/download-models.ps1` 同步補強:Hugging Face 網址固定到 commit、18 個檔案寫死 SHA256(取自 HF LFS 與 GitHub 資產 digest;ReazonSpeech 壓縮包無官方 digest,以解出的 int8 檔與 HF 原始 repo 相同為據),壓縮檔解壓前必驗、`-Verify` 重驗既有檔。真網路實跑:乾淨目錄 3.4 GB 下載全部相符、竄改一個位元組會被擋下、既有資料目錄 40 GB 全部相符;順帶修正 Git Bash 啟動時 `tar.exe` 解析成 MSYS 版而解壓失敗的問題(改用 System32 的 tar)。
+
 實跑時發現並修正:下載在按「開始」前就完成,開始後仍顯示「下次按「開始」時生效」(舊的完成進度被誤判),旅程已加反向檢查。未驗:英文模型的 GUI 下載(程式路徑相同,只跑真網路 CLI)、需要代理的網路(不讀系統代理)、Hugging Face 限流與 CDN 網址過期(GUI 用本機替身)、磁碟不足與防毒鎖檔(只以錯誤碼單元測試)。
 
 ## 7. 驗證週發現的陷阱

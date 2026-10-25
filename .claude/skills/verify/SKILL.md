@@ -15,9 +15,12 @@ description: 聽譯 tingyi(Tauri 2 Windows 桌面 app,即時字幕翻譯)的實�
 ```bash
 python .claude/skills/verify/scripts/verify_audio_source.py
 python .claude/skills/verify/scripts/verify_model_download.py
+python .claude/skills/verify/scripts/verify_download_script.py --existing D:\codeproject\translate\data
 ```
 
 第二支驗專用模型的 app 內下載(見 `features/routed-models.md`):自己架假 Hugging Face(本機 Range 伺服器,提供 `data/models` 的真實檔、限速),`TINGYI_DATA_DIR` 指向證據目錄裡的臨時資料目錄,結束後刪掉臨時資料目錄(只留檔案清單)。選項 `--source-data`、`--rate-mbps`。
+
+第三支驗開發用下載腳本 `scripts/download-models.ps1`(真網路,約 3.4 GB,不啟動 app):乾淨資料目錄下載必要項目與日英專用模型包、Python 獨立重算 SHA256、`-Verify`、竄改一個位元組必須失敗;`--existing` 再對既有資料目錄的全部選配項目跑 `-Verify`(先 `-ListOnly`,有「待下載」就不跑)。結束時刪掉下載的資料(只留檔案清單);腳本會把 llama-server 複製到本 worktree 的 `src-tauri\binaries`(已 gitignore)。
 
 選項:`--data-dir <模型資料目錄>`(預設 `D:\codeproject\translate\data`;worktree 沒有 `data/`,不設會退回 `%LOCALAPPDATA%\tingyi` 而找不到模型)、`--launch-timeout 600`。
 
@@ -72,6 +75,7 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 - `scripts/cdp.py`:最小 CDP 用戶端(`connect(port, url_prefix)` → `Page.eval(js)`;也可命令列單次執行)。依賴 Python `websockets`。
 - `scripts/verify_audio_source.py`:指定程式音訊來源旅程(見 `features/audio-source.md`)。
 - `scripts/verify_model_download.py`:專用模型下載旅程(見 `features/routed-models.md`)。
+- `scripts/verify_download_script.py`:開發用下載腳本的 SHA256 校驗(見上方說明)。
 - 專案腳本:`scripts/tts-smoke.ps1`(TTS 供音)、`scripts/shot-windows.ps1`(截圖)。
 
 ## 破壞對照紀錄
@@ -79,3 +83,5 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 2026-10-25:把 `capture.rs` 的世代號檢查改成 `if false && ...`(UI 顯示已切換但擷取不換),驗證在「切到靜音播放器後 12 秒內沒有新字幕」FAIL、exit 1(證據 `evidence/20261025-132442-neg/negative/`);以事前備份逐位元組還原(sha256 5e2d2cf3…)後恢復 PASS。
 
 2026-10-25:把 `model_download.rs` 的 `install(...)` 換成不執行(下載完不搬進正式目錄),`verify_model_download.py` 在「下載完成顯示「已下載」」FAIL、exit 1(證據 `evidence/20261025-164513-neg/negative/`);以事前備份逐位元組還原(sha256 b23b9a4d…)後恢復 PASS(`evidence/20261025-164856/`)。
+
+2026-10-26:把 `download-models.ps1` 的 llama.cpp 壓縮包 SHA256 第一個字元改掉,`verify_download_script.py` 在「A 乾淨目錄下載 exit 0」FAIL、腳本訊息「SHA256 不符,已刪除下載檔」、資料目錄無殘留(證據 `evidence/20261026-003001-dlscript-neg/negative/`);逐位元組還原(sha256 8ae216b1…)。
