@@ -1,8 +1,8 @@
 """實跑驗證:正式版(`pnpm tauri build`)的執行檔與 NSIS 安裝檔。
 
-不安裝(不動使用者已安裝的版本),直接啟動 `target/release/tingyi.exe`(安裝檔內就是這個執行檔),
-WebView2 開 CDP(正式版頁面是 `http://tauri.localhost/`):
-1. 安裝檔存在、比執行檔新;執行檔是 GUI 子系統(正式版不開主控台)。
+不安裝(不動使用者已安裝的版本),直接啟動 `target/release/tingyi.exe`(與安裝檔內的執行檔同一次建置;
+tauri 會改寫打包類型標記,位元組不一定相同),WebView2 開 CDP(正式版頁面是 `http://tauri.localhost/`):
+1. 安裝檔與執行檔是同一次建置;執行檔是 GUI 子系統(正式版不開主控台)。
 2. 主視窗載入、資料目錄的專用模型顯示「已下載」、專用模型引擎可選。
 3. 選專用模型、鎖日文、開本機翻譯 → 開始 → 出現「停止」、llama-server 子程序啟動、
    app log 有「模型載入完成:routed[reazonspeech]」→ 停止。
@@ -97,8 +97,10 @@ def main() -> int:
             return 1
         setups = sorted(NSIS.glob("*_x64-setup.exe"), key=lambda p: p.stat().st_mtime)
         newest = setups[-1] if setups else None
-        run.check("NSIS 安裝檔存在且比執行檔新", bool(newest) and EXE.exists() and newest.stat().st_mtime >= EXE.stat().st_mtime,
-                  f"{newest.name if newest else '-'} {newest.stat().st_size if newest else 0} bytes")
+        # tauri 在 makensis 前後各改寫一次執行檔的打包類型標記,執行檔會比安裝檔晚幾十毫秒;比同一次建置即可
+        gap = abs(newest.stat().st_mtime - EXE.stat().st_mtime) if newest and EXE.exists() else None
+        run.check("NSIS 安裝檔與執行檔是同一次建置", gap is not None and gap < 120,
+                  f"{newest.name if newest else '-'} {newest.stat().st_size if newest else 0} bytes;相差 {gap} s")
         run.check("執行檔是 GUI 子系統(正式版)", pe_subsystem(EXE) == 2, f"subsystem {pe_subsystem(EXE)}")
         run.result["exe"] = {"path": str(EXE), "size": EXE.stat().st_size, "mtime": time.ctime(EXE.stat().st_mtime)}
 
