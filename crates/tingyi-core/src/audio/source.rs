@@ -113,10 +113,10 @@ fn in_tree(pid: u32, ancestor: u32, table: &ProcTable) -> bool {
 }
 
 fn exe_stem(exe: &str) -> &str {
-    if exe.len() > 4 && exe[exe.len() - 4..].eq_ignore_ascii_case(".exe") {
-        &exe[..exe.len() - 4]
-    } else {
-        exe
+    // 用 get 避免切在多位元組字元中間而 panic
+    match exe.len().checked_sub(4).filter(|&n| n > 0).and_then(|n| exe.get(n..).map(|tail| (n, tail))) {
+        Some((n, tail)) if tail.eq_ignore_ascii_case(".exe") => &exe[..n],
+        _ => exe,
     }
 }
 
@@ -159,12 +159,14 @@ pub fn still_alive(pid: u32, start_time: u64, table: &ProcTable) -> bool {
 }
 
 /// 依執行檔名找新的最上層程序:有音訊 session 的優先,其次最早啟動的;找不到回 None。
+/// 候選 root 的執行檔名必須與 `exe` 相同(webview2 的宿主不同名,不會被選),且不在 `self_pid` 程序樹內。
 /// 回傳 (pid, start_time)。
-pub fn rebind(exe: &str, table: &ProcTable, sessions: &[SessionObs]) -> Option<(u32, u64)> {
+pub fn rebind(exe: &str, table: &ProcTable, sessions: &[SessionObs], self_pid: u32) -> Option<(u32, u64)> {
     let roots: BTreeSet<u32> = table
         .values()
         .filter(|p| exe_eq(&p.exe, exe))
         .map(|p| find_root(p.pid, table))
+        .filter(|r| table.get(r).is_some_and(|i| exe_eq(&i.exe, exe)) && !in_tree(*r, self_pid, table))
         .collect();
     let earliest = |cands: &mut dyn Iterator<Item = u32>| cands.min_by_key(|r| (table[r].start_time, *r));
     let with_session = earliest(&mut roots.iter().copied().filter(|r| sessions.iter().any(|s| find_root(s.pid, table) == *r)));
@@ -264,7 +266,7 @@ impl ProcWatch {
     /// 目標結束後依執行檔名找新的程序。
     pub fn rebind(&mut self, exe: &str) -> Option<(u32, u64)> {
         let sessions = enumerate_sessions().unwrap_or_default();
-        rebind(exe, &snapshot_processes(), &sessions)
+        rebind(exe, &snapshot_processes(), &sessions, std::process::id())
     }
 }
 
@@ -303,6 +305,18 @@ impl SourceControl {
         st.1 += 1;
         self.gen.store(st.1, Ordering::SeqCst);
         st.1
+    }
+
+    /// 世代號仍是 `expected` 時才換來源並遞增,回傳新世代號;已被別人改過則不寫,回 None。
+    pub fn set_if_gen(&self, expected: u64, source: AudioSource) -> Option<u64> {
+        let mut st = self.state.lock().unwrap();
+        if st.1 != expected {
+            return None;
+        }
+        st.0 = source;
+        st.1 += 1;
+        self.gen.store(st.1, Ordering::SeqCst);
+        Some(st.1)
     }
 
     pub fn waiting(&self) -> bool {
@@ -447,8 +461,8 @@ mod tests {
             p(501, Some(500), "Chrome.exe", 2001),
         ]);
         let sessions = vec![obs(501, true, "")];
-        assert_eq!(rebind("chrome.exe", &t, &sessions), Some((500, 2000)));
-        assert_eq!(rebind("CHROME.EXE", &t, &sessions), Some((500, 2000)));
+        assert_eq!(rebind("chrome.exe", &t, &sessions, 9999), Some((500, 2000)));
+        assert_eq!(rebind("CHROME.EXE", &t, &sessions, 9999), Some((500, 2000)));
     }
 
     // T13:都沒 session 時選最早啟動的最上層程序
@@ -460,7 +474,7 @@ mod tests {
             p(400, Some(1), "chrome.exe", 1000),
             p(401, Some(400), "chrome.exe", 1001),
         ]);
-        assert_eq!(rebind("chrome.exe", &t, &[]), Some((400, 1000)));
+        assert_eq!(rebind("chrome.exe", &t, &[], 9999), Some((400, 1000)));
     }
 
     // T13:表中沒有該程式時回 None
@@ -470,7 +484,7 @@ mod tests {
             p(1, None, "explorer.exe", 100),
             p(60, Some(1), "spotify.exe", 400),
         ]);
-        assert_eq!(rebind("chrome.exe", &t, &[obs(60, true, "")]), None);
+        assert_eq!(rebind("chrome.exe", &t, &[obs(60, true, "")], 9999), None);
     }
 
     // T14:每次 set 世代號加一,get 回最後設定的來源
@@ -498,5 +512,61 @@ mod tests {
         let (src, gen) = c.get();
         assert_eq!(src, app);
         assert_eq!(gen, c.gen());
+    }
+
+    // set_if_gen:世代相符才寫入並遞增,不符回 None 且來源與世代不變
+    #[test]
+    fn set_if_gen_writes_only_when_generation_matches() {
+        let c = SourceControl::new(AudioSource::System);
+        let (_, g0) = c.get();
+        let app = AudioSource::App { pid: 10, exe: "chrome.exe".into(), start_time: 200 };
+        assert_eq!(c.set_if_gen(g0, app.clone()), Some(g0 + 1));
+        assert_eq!(c.get(), (app.clone(), g0 + 1));
+        assert_eq!(c.gen(), g0 + 1);
+        // 過期世代:不得蓋掉
+        assert_eq!(c.set_if_gen(g0, AudioSource::System), None);
+        assert_eq!(c.get(), (app, g0 + 1));
+        assert_eq!(c.gen(), g0 + 1);
+    }
+
+    // exe_stem:非 ASCII、大小寫、過短檔名都不 panic 且回正確值
+    #[test]
+    fn exe_stem_handles_non_ascii_and_edge_cases() {
+        assert_eq!(exe_stem("測試"), "測試");
+        assert_eq!(exe_stem("測試.exe"), "測試");
+        assert_eq!(exe_stem("chrome.EXE"), "chrome");
+        assert_eq!(exe_stem("a.exe"), "a");
+        assert_eq!(exe_stem("exe"), "exe");
+        assert_eq!(exe_stem(".exe"), ".exe");
+        assert_eq!(exe_stem(""), "");
+    }
+
+    // rebind:目標為 webview2 時宿主 exe 不同,不得回傳宿主 pid
+    #[test]
+    fn rebind_webview_target_never_returns_host() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(20, Some(1), "foo.exe", 200),
+            p(21, Some(20), "msedgewebview2.exe", 201),
+        ]);
+        assert_eq!(rebind("msedgewebview2.exe", &t, &[obs(21, true, "")], 9999), None);
+    }
+
+    // rebind:目標程序在 self_pid 樹內時不被選中,改選樹外的同名程序
+    #[test]
+    fn rebind_skips_processes_inside_self_tree() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(50, Some(1), "tingyi.exe", 150),
+            p(51, Some(50), "helper.exe", 160),
+            p(70, Some(1), "helper.exe", 900),
+        ]);
+        assert_eq!(rebind("helper.exe", &t, &[], 50), Some((70, 900)));
+        let only_self = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(50, Some(1), "tingyi.exe", 150),
+            p(51, Some(50), "helper.exe", 160),
+        ]);
+        assert_eq!(rebind("helper.exe", &only_self, &[], 50), None);
     }
 }

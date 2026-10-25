@@ -392,7 +392,7 @@ fn parse_audio_source(spec: &str) -> Result<AudioSource> {
     let table = source::snapshot_processes();
     let pid = match arg.parse::<u32>() {
         Ok(pid) => pid,
-        Err(_) => source::rebind(arg, &table, &source::enumerate_sessions().unwrap_or_default())
+        Err(_) => source::rebind(arg, &table, &source::enumerate_sessions().unwrap_or_default(), std::process::id())
             .map(|(pid, _)| pid)
             .ok_or_else(|| anyhow!("找不到程式 {arg}"))?,
     };

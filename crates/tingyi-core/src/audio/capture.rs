@@ -190,6 +190,18 @@ fn capture_thread(
     tx: &Sender<AudioChunk>,
     stop: &AtomicBool,
 ) {
+    capture_loop(cfg, control, stats, tx, stop);
+    // 結束後不再等程式重開,別讓 waiting 殘留給前端
+    control.set_waiting(false);
+}
+
+fn capture_loop(
+    cfg: &CaptureConfig,
+    control: &SourceControl,
+    stats: &CaptureStats,
+    tx: &Sender<AudioChunk>,
+    stop: &AtomicBool,
+) {
     let mut watch = ProcWatch::new();
     while !stop.load(Ordering::SeqCst) {
         let (source, gen) = control.get();
@@ -200,8 +212,11 @@ fn capture_thread(
                     match watch.rebind(exe) {
                         Some((pid, start_time)) => {
                             tracing::info!("{exe} 重新開啟,改綁 pid {pid}");
-                            control.set_waiting(false);
-                            control.set(AudioSource::App { pid, exe: exe.clone(), start_time });
+                            // 改綁期間使用者若已改選(世代變了)就不寫,下一輪重讀
+                            let new = AudioSource::App { pid, exe: exe.clone(), start_time };
+                            if control.set_if_gen(gen, new).is_some() {
+                                control.set_waiting(false);
+                            }
                         }
                         None => {
                             control.set_waiting(true);

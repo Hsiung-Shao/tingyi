@@ -38,6 +38,10 @@ export default function AudioSourcePicker({ running }: { running: boolean }) {
     const t = setInterval(refreshState, 2000);
     return () => clearInterval(t);
   }, [running, refreshState]);
+  // 停止後擷取執行緒已把 waiting 清掉,補讀一次才不會殘留「等它重新開啟」
+  useEffect(() => {
+    if (!running) refreshState();
+  }, [running, refreshState]);
 
   const current = state?.source;
   const value = current?.kind === "app" ? `app:${current.pid}` : "system";
