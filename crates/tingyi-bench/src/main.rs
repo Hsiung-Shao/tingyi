@@ -158,7 +158,7 @@ enum Cmd {
         stream: bool,
         #[arg(long, default_value_t = 20)]
         session_size: usize,
-        /// 串流模式:段首往前補的緩衝(毫秒,預設沿用 VadConfig)
+        /// 串流模式:段首往前補的緩衝(毫秒,預設依引擎:SenseVoice/專用模型 800、Whisper 200)
         #[arg(long)]
         pre_pad_ms: Option<u32>,
         /// 串流模式:關閉幻聽重複壓縮
@@ -465,7 +465,7 @@ async fn run_stream_eval(
                 cfg.refine.enabled = false;
                 cfg.cleanup = opts.cleanup;
                 if let Some(ms) = opts.pre_pad_ms {
-                    cfg.vad.pre_pad_ms = ms;
+                    cfg.vad.pre_pad_ms = Some(ms);
                 }
                 if let Some(s) = opts.max_speech_sec {
                     cfg.vad.max_speech_sec = s;

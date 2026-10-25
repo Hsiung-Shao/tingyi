@@ -51,6 +51,17 @@ pub enum AsrEngine {
     Routed,
 }
 
+impl AsrEngine {
+    /// 段首往前補的真實音訊(毫秒)。2026-10-25 串流評測:SenseVoice 與專用模型加長到 800 ms 較好
+    /// (專用模型 FLEURS 日文 7.13% → 6.65%);Whisper 加長後英文變差(6.11% → 6.36%),維持 200 ms。
+    pub fn default_pre_pad_ms(&self) -> u32 {
+        match self {
+            AsrEngine::SenseVoice | AsrEngine::Routed => 800,
+            AsrEngine::Whisper { .. } => 200,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineEvent {
@@ -364,7 +375,11 @@ fn start_inner(
             cfg.transducer_pad_ms,
         )?),
     };
-    let segmenter = Segmenter::new(&cfg.vad)?;
+    let vad_cfg = VadConfig {
+        pre_pad_ms: cfg.vad.pre_pad_ms.or(Some(cfg.asr_engine.default_pre_pad_ms())),
+        ..cfg.vad.clone()
+    };
+    let segmenter = Segmenter::new(&vad_cfg)?;
     if let Some(d) = &cfg.record_dir {
         std::fs::create_dir_all(d).map_err(|e| anyhow!("建立錄音目錄 {}: {e}", d.display()))?;
     }
@@ -1008,5 +1023,18 @@ async fn translate_one(
                 error: format!("翻譯逾時(> {:?})", cfg.mt_timeout),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 依引擎的段首緩衝預設:CPU 引擎 800 ms、Whisper 維持 200 ms
+    #[test]
+    fn pre_pad_default_depends_on_engine() {
+        assert_eq!(AsrEngine::SenseVoice.default_pre_pad_ms(), 800);
+        assert_eq!(AsrEngine::Routed.default_pre_pad_ms(), 800);
+        assert_eq!(AsrEngine::Whisper { base_url: String::new() }.default_pre_pad_ms(), 200);
     }
 }

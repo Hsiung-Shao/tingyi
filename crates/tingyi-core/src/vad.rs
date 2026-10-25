@@ -10,6 +10,9 @@ use std::time::Instant;
 
 use crate::audio::TARGET_SAMPLE_RATE;
 
+/// 沒有指定、也沒有引擎預設時的段首緩衝(毫秒)。
+pub const DEFAULT_PRE_PAD_MS: u32 = 200;
+
 #[derive(Debug, Clone)]
 pub struct VadConfig {
     pub model: PathBuf,
@@ -19,8 +22,9 @@ pub struct VadConfig {
     pub max_speech_sec: f32,
     /// Silero 視窗(16 kHz 時為 512)。
     pub window_size: i32,
-    /// 段首往前補的緩衝(毫秒);不會切進前一段的語音本體。
-    pub pre_pad_ms: u32,
+    /// 段首往前補的緩衝(毫秒);不會切進前一段的語音本體。None = 依辨識引擎的預設
+    /// (`AsrEngine::default_pre_pad_ms`;直接用 Segmenter 時為 `DEFAULT_PRE_PAD_MS`)。
+    pub pre_pad_ms: Option<u32>,
     /// 段尾補的緩衝(毫秒)。
     pub pad_ms: u32,
     pub num_threads: i32,
@@ -37,7 +41,7 @@ impl Default for VadConfig {
             min_speech_sec: 0.25,
             max_speech_sec: 5.0,
             window_size: 512,
-            pre_pad_ms: 200,
+            pre_pad_ms: None,
             pad_ms: 200,
             num_threads: 1,
         }
@@ -107,7 +111,7 @@ impl Segmenter {
         let history_cap = (cfg.max_speech_sec.max(6.0) as usize + 4) * TARGET_SAMPLE_RATE as usize;
         Ok(Self {
             vad,
-            pre_pad: ms_to_samples(cfg.pre_pad_ms),
+            pre_pad: ms_to_samples(cfg.pre_pad_ms.unwrap_or(DEFAULT_PRE_PAD_MS)),
             post_pad: ms_to_samples(cfg.pad_ms),
             last_core_end: None,
             fed: 0,
