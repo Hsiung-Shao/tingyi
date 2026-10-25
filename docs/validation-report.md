@@ -276,7 +276,7 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 
 | 驗證 | 結果 |
 |---|---|
-| 單元測試(手寫 TCP 假伺服器:續傳、307 轉址後帶 Range、伺服器忽略 Range、內容竄改、送一半斷線、取消、404、503 後成功、卡住逾時、合併既有目錄) | 34 個全過 |
+| 單元測試(手寫 TCP 假伺服器:續傳、307 轉址後帶 Range、伺服器忽略 Range、內容竄改、送一半斷線、取消、404、503 後成功、卡住逾時、合併既有目錄;審查後補:每次只給一半時重試有上限、卡住時取消立即生效) | 36 個全過 |
 | 真網路 `tingyi-bench download-model` | 日文 8.2 s、英文 15.0 s,兩者 Ready、8 個檔 SHA256 全符、暫存區清空 |
 | GUI 旅程 `verify_model_download.py`(本機替身 HF,限速 20 MB/s) | 下載 → 取消(`.part` 約 45 MB 保留)→ 繼續送 `Range: bytes=45105152-` → 已下載 → 專用模型可選 → 開始,log「模型載入完成:routed[reazonspeech]」 |
 | 破壞對照(下載完不搬進正式目錄) | 卡在「已下載」那步,exit 1 |

@@ -67,6 +67,7 @@ export default function RoutedModels({
   };
 
   const cancel = async (id: string) => {
+    // 只會在下載剛好結束時回 false,結果由 model-download 事件通知,不需處理
     await invoke("cancel_model_download", { id }).catch(() => {});
   };
 
