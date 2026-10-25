@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
-use crate::audio::capture::{start_loopback, AudioChunk, CaptureConfig, CaptureHandle};
+use crate::audio::capture::{start_capture, AudioChunk, CaptureConfig, CaptureHandle, CaptureTarget};
 use crate::audio::ring::samples_to_ms;
 use crate::audio::wav_sink::WavSink;
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
@@ -346,7 +346,7 @@ pub fn start(
         None => None,
     };
 
-    let capture = start_loopback(cfg.capture.clone(), audio_tx)?;
+    let capture = start_capture(cfg.capture.clone(), CaptureTarget::System, stats.capture.clone(), audio_tx)?;
 
     let vad_thread = {
         let events = events.clone();

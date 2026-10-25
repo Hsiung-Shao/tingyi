@@ -3,8 +3,10 @@
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use crate::audio::capture::CaptureStats;
 
 /// 單句各階段時間戳(以 `Instant` 記錄,序列化時換成毫秒差)。
 #[derive(Debug, Clone)]
@@ -146,6 +148,8 @@ pub struct PipelineStats {
     pub revised_sources: AtomicU64,
     pub recovered: AtomicU64,
     pub refine_mt_done: AtomicU64,
+    /// 擷取執行緒的封包計數(與 capture thread 共用)。
+    pub capture: Arc<CaptureStats>,
     pub speaking: AtomicBool,
     /// 講話狀態最後一次翻轉的時間(算「已靜音多久」用)。
     speech_changed: Mutex<Option<Instant>>,
@@ -253,6 +257,8 @@ impl PipelineStats {
             revised_sources: g(&self.revised_sources),
             recovered: g(&self.recovered),
             refine_mt_done: g(&self.refine_mt_done),
+            capture_discontinuities: g(&self.capture.discontinuities),
+            capture_silent_packets: g(&self.capture.silent_packets),
             e2e_p50: Stats::from_samples(e2e_recent.clone()).p50,
             e2e_recent,
         }
@@ -284,6 +290,9 @@ pub struct StatsSnapshot {
     pub revised_sources: u64,
     pub recovered: u64,
     pub refine_mt_done: u64,
+    /// 擷取緩衝溢位(掉資料)次數;正常應為 0。
+    pub capture_discontinuities: u64,
+    pub capture_silent_packets: u64,
     pub e2e_p50: u32,
     pub e2e_recent: Vec<u32>,
 }

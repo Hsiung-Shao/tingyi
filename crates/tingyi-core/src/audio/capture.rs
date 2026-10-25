@@ -1,18 +1,24 @@
-//! WASAPI loopback 擷取預設輸出裝置,轉成 16 kHz 單聲道 f32 後送進 channel。
+//! WASAPI 擷取(系統 loopback 或指定程式),轉成 16 kHz 單聲道 f32 後送進 channel。
 //!
 //! 設計:
-//! - 專屬 std thread(COM MTA),事件驯動 + 逾時輪詢(loopback 在無播放時事件可能不觸發)。
-//! - 使用裝置 mix format 的取樣率與聲道數,請求 32-bit float 並開 autoconvert。
+//! - 專屬 std thread(COM MTA),事件驅動 + 逾時輪詢(loopback 在無播放時事件可能不觸發)。
+//! - 每次喚醒把待讀封包讀到空:事件是自動重設的,執行緒被延遲時多個封包只換到一次喚醒,
+//!   只讀一包會越積越多,緩衝溢位後靜默掉音。
+//! - 系統:用預設輸出裝置 mix format 的取樣率與聲道數;指定程式(process loopback)沒有
+//!   mix format,固定要求 48 kHz 2ch float,由 autoconvert 轉換。
 //! - 任何 WASAPI 錯誤(裝置拔除、預設裝置切換)→ 記錄後 500 ms 重新建立 session。
 
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::Sender;
+use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
+use wasapi::{
+    AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat,
+};
 
 use super::{bytes_to_f32, downmix_to_mono, TARGET_SAMPLE_RATE};
 
@@ -23,6 +29,8 @@ pub struct CaptureConfig {
     pub min_chunk_samples: usize,
     /// 事件等待逾時(毫秒);逾時後仍嘗試讀取,避免 loopback 無事件卡死。
     pub event_timeout_ms: u32,
+    /// WASAPI 共享緩衝長度(毫秒)。原本用裝置週期(約 10 ms),執行緒稍被延遲就溢位。
+    pub buffer_ms: u32,
 }
 
 impl Default for CaptureConfig {
@@ -30,6 +38,55 @@ impl Default for CaptureConfig {
         Self {
             min_chunk_samples: 480,
             event_timeout_ms: 100,
+            buffer_ms: 200,
+        }
+    }
+}
+
+/// 擷取來源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureTarget {
+    /// 預設輸出裝置的全部聲音。
+    System,
+    /// 指定程式(含子程序)發出的聲音。
+    Process { pid: u32 },
+}
+
+/// 擷取計數(診斷用,原子更新)。
+#[derive(Debug, Default)]
+pub struct CaptureStats {
+    pub packets: AtomicU64,
+    pub frames: AtomicU64,
+    /// 帶 AUDCLNT_BUFFERFLAGS_SILENT 的封包數(內容當靜音處理)。
+    pub silent_packets: AtomicU64,
+    /// 帶 AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY 的封包數(緩衝溢位、掉資料)。
+    pub discontinuities: AtomicU64,
+    /// 已送出的 16 kHz 樣本數。
+    pub samples_out: AtomicU64,
+    /// 建立 session 的次數(重建或切換來源都會加一)。
+    pub sessions: AtomicU64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct CaptureStatsSnapshot {
+    pub packets: u64,
+    pub frames: u64,
+    pub silent_packets: u64,
+    pub discontinuities: u64,
+    pub samples_out: u64,
+    pub sessions: u64,
+}
+
+impl CaptureStats {
+    pub fn snapshot(&self) -> CaptureStatsSnapshot {
+        let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        CaptureStatsSnapshot {
+            packets: g(&self.packets),
+            frames: g(&self.frames),
+            silent_packets: g(&self.silent_packets),
+            discontinuities: g(&self.discontinuities),
+            samples_out: g(&self.samples_out),
+            sessions: g(&self.sessions),
         }
     }
 }
@@ -44,9 +101,14 @@ pub struct AudioChunk {
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    stats: Arc<CaptureStats>,
 }
 
 impl CaptureHandle {
+    pub fn stats(&self) -> Arc<CaptureStats> {
+        self.stats.clone()
+    }
+
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(j) = self.join.take() {
@@ -76,19 +138,34 @@ pub fn default_render_device_name() -> Result<String> {
         .map_err(|e| anyhow!("friendly name: {e}"))
 }
 
-/// 啟動 loopback 擷取執行緒。
+/// 啟動預設輸出裝置的 loopback 擷取執行緒。
 pub fn start_loopback(cfg: CaptureConfig, tx: Sender<AudioChunk>) -> Result<CaptureHandle> {
+    start_capture(cfg, CaptureTarget::System, Arc::new(CaptureStats::default()), tx)
+}
+
+/// 啟動擷取執行緒。
+pub fn start_capture(
+    cfg: CaptureConfig,
+    target: CaptureTarget,
+    stats: Arc<CaptureStats>,
+    tx: Sender<AudioChunk>,
+) -> Result<CaptureHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
+    let stats2 = stats.clone();
     let join = std::thread::Builder::new()
         .name("tingyi-capture".into())
         .spawn(move || {
             let _ = wasapi::initialize_mta();
             while !stop2.load(Ordering::SeqCst) {
-                match run_session(&cfg, &tx, &stop2) {
-                    Ok(()) => break, // stop 要求
+                let r = open_session(&cfg, &target).and_then(|s| {
+                    stats2.sessions.fetch_add(1, Ordering::Relaxed);
+                    pump(&s, &cfg, &tx, &stop2, &stats2)
+                });
+                match r {
+                    Ok(()) => break, // stop 要求或接收端已關閉
                     Err(e) => {
-                        tracing::warn!("WASAPI loopback 中斷,500 ms 後重建:{e:#}");
+                        tracing::warn!("WASAPI 擷取中斷,500 ms 後重建:{e:#}");
                         std::thread::sleep(Duration::from_millis(500));
                     }
                 }
@@ -99,81 +176,153 @@ pub fn start_loopback(cfg: CaptureConfig, tx: Sender<AudioChunk>) -> Result<Capt
     Ok(CaptureHandle {
         stop,
         join: Some(join),
+        stats,
     })
 }
 
-fn run_session(cfg: &CaptureConfig, tx: &Sender<AudioChunk>, stop: &AtomicBool) -> Result<()> {
-    let enumerator = DeviceEnumerator::new().map_err(|e| anyhow!("DeviceEnumerator: {e}"))?;
-    let device = enumerator
-        .get_default_device(&Direction::Render)
-        .map_err(|e| anyhow!("default render device: {e}"))?;
-    let name = device.get_friendlyname().unwrap_or_default();
-    let mut client = device
-        .get_iaudioclient()
-        .map_err(|e| anyhow!("get_iaudioclient: {e}"))?;
+/// 一個已初始化、尚未開始的擷取 session。
+struct Session {
+    client: AudioClient,
+    capture: AudioCaptureClient,
+    event: Handle,
+    rate: u32,
+    channels: usize,
+    blockalign: usize,
+    label: String,
+}
 
-    let mix = client
-        .get_mixformat()
-        .map_err(|e| anyhow!("get_mixformat: {e}"))?;
-    let rate = mix.get_samplespersec();
-    let channels = mix.get_nchannels() as usize;
-    let format = WaveFormat::new(32, 32, &SampleType::Float, rate as usize, channels, None);
-    let blockalign = format.get_blockalign() as usize;
-
-    let (def_period, _min_period) = client
-        .get_device_period()
-        .map_err(|e| anyhow!("get_device_period: {e}"))?;
+fn open_session(cfg: &CaptureConfig, target: &CaptureTarget) -> Result<Session> {
     let mode = StreamMode::EventsShared {
         autoconvert: true,
-        buffer_duration_hns: def_period,
+        buffer_duration_hns: cfg.buffer_ms as i64 * 10_000,
     };
-    // Render 裝置 + Capture 方向 = loopback。
+    let (mut client, rate, channels, label) = match target {
+        CaptureTarget::System => {
+            let enumerator = DeviceEnumerator::new().map_err(|e| anyhow!("DeviceEnumerator: {e}"))?;
+            let device = enumerator
+                .get_default_device(&Direction::Render)
+                .map_err(|e| anyhow!("default render device: {e}"))?;
+            let name = device.get_friendlyname().unwrap_or_default();
+            let client = device
+                .get_iaudioclient()
+                .map_err(|e| anyhow!("get_iaudioclient: {e}"))?;
+            let mix = client
+                .get_mixformat()
+                .map_err(|e| anyhow!("get_mixformat: {e}"))?;
+            (client, mix.get_samplespersec(), mix.get_nchannels() as usize, name)
+        }
+        CaptureTarget::Process { pid } => {
+            // include_tree:瀏覽器由子程序發聲,要連同整棵程序樹一起擷取。
+            let client = AudioClient::new_application_loopback_client(*pid, true)
+                .map_err(|e| anyhow!("process loopback(pid {pid}): {e}"))?;
+            (client, 48_000, 2, format!("程式 pid {pid}"))
+        }
+    };
+    let format = WaveFormat::new(32, 32, &SampleType::Float, rate as usize, channels, None);
+    let blockalign = format.get_blockalign() as usize;
+    // Render 裝置 + Capture 方向 = loopback;process loopback client 也用 Capture 方向。
     client
         .initialize_client(&format, &Direction::Capture, &mode)
-        .map_err(|e| anyhow!("initialize_client(loopback): {e}"))?;
+        .map_err(|e| anyhow!("initialize_client: {e}"))?;
     let event = client
         .set_get_eventhandle()
         .map_err(|e| anyhow!("set_get_eventhandle: {e}"))?;
     let capture = client
         .get_audiocaptureclient()
         .map_err(|e| anyhow!("get_audiocaptureclient: {e}"))?;
+    Ok(Session {
+        client,
+        capture,
+        event,
+        rate,
+        channels,
+        blockalign,
+        label,
+    })
+}
 
-    let resampler = sherpa_onnx::LinearResampler::create(rate as i32, TARGET_SAMPLE_RATE)
-        .ok_or_else(|| anyhow!("LinearResampler::create({rate} → {TARGET_SAMPLE_RATE})"))?;
-
-    client
+/// 開始串流並持續讀取,直到 stop 或接收端關閉(Ok)或 WASAPI 出錯(Err)。
+fn pump(s: &Session, cfg: &CaptureConfig, tx: &Sender<AudioChunk>, stop: &AtomicBool, stats: &CaptureStats) -> Result<()> {
+    let resampler = sherpa_onnx::LinearResampler::create(s.rate as i32, TARGET_SAMPLE_RATE)
+        .ok_or_else(|| anyhow!("LinearResampler::create({} → {TARGET_SAMPLE_RATE})", s.rate))?;
+    s.client
         .start_stream()
         .map_err(|e| anyhow!("start_stream: {e}"))?;
-    tracing::info!("loopback 開始:{name} {rate} Hz {channels} ch → {TARGET_SAMPLE_RATE} Hz mono");
+    tracing::info!(
+        "擷取開始:{} {} Hz {} ch → {TARGET_SAMPLE_RATE} Hz mono",
+        s.label,
+        s.rate,
+        s.channels
+    );
 
-    let mut raw: VecDeque<u8> = VecDeque::with_capacity(blockalign * 4096);
+    let mut raw: VecDeque<u8> = VecDeque::with_capacity(s.blockalign * 4096);
+    let mut first_packet = true;
     let mut pending: Vec<f32> = Vec::with_capacity(cfg.min_chunk_samples * 2);
+    let send = |samples: Vec<f32>| -> bool {
+        stats.samples_out.fetch_add(samples.len() as u64, Ordering::Relaxed);
+        tx.send(AudioChunk { samples }).is_ok()
+    };
 
-    while !stop.load(Ordering::SeqCst) {
+    let result = loop {
+        if stop.load(Ordering::SeqCst) {
+            break Ok(());
+        }
         // 逾時不是錯誤:loopback 在靜音時可能沒有事件,照樣嘗試讀。
-        let _ = event.wait_for_event(cfg.event_timeout_ms);
-        capture
-            .read_from_device_to_deque(&mut raw)
-            .map_err(|e| anyhow!("read_from_device_to_deque: {e}"))?;
+        let _ = s.event.wait_for_event(cfg.event_timeout_ms);
+        if let Err(e) = drain_packets(s, &mut raw, stats, &mut first_packet) {
+            break Err(e);
+        }
 
-        let usable = raw.len() - (raw.len() % blockalign);
+        let usable = raw.len() - (raw.len() % s.blockalign);
         if usable == 0 {
             continue;
         }
         let bytes: Vec<u8> = raw.drain(..usable).collect();
         let interleaved = bytes_to_f32(&bytes);
-        let mono = downmix_to_mono(&interleaved, channels);
-        let out = resampler.resample(&mono, false);
-        pending.extend_from_slice(&out);
+        let mono = downmix_to_mono(&interleaved, s.channels);
+        pending.extend_from_slice(&resampler.resample(&mono, false));
 
-        if pending.len() >= cfg.min_chunk_samples {
-            let samples = std::mem::take(&mut pending);
-            if tx.send(AudioChunk { samples }).is_err() {
-                tracing::info!("接收端已關閉,停止擷取");
-                break;
-            }
+        if pending.len() >= cfg.min_chunk_samples && !send(std::mem::take(&mut pending)) {
+            tracing::info!("接收端已關閉,停止擷取");
+            break Ok(());
         }
+    };
+    // 結束(含出錯重建)前把不到一塊的尾巴送出,避免每次重建掉幾十毫秒。
+    if !pending.is_empty() {
+        send(pending);
     }
-    let _ = client.stop_stream();
-    Ok(())
+    let _ = s.client.stop_stream();
+    result
+}
+
+/// 把目前所有待讀封包讀進 `raw`;SILENT 封包的內容依規格當靜音。
+/// 串流開始的第一個封包本來就帶 DATA_DISCONTINUITY(實測),不計入掉資料。
+fn drain_packets(s: &Session, raw: &mut VecDeque<u8>, stats: &CaptureStats, first_packet: &mut bool) -> Result<()> {
+    loop {
+        let frames = s
+            .capture
+            .get_next_packet_size()
+            .map_err(|e| anyhow!("get_next_packet_size: {e}"))?
+            .unwrap_or(0);
+        if frames == 0 {
+            return Ok(());
+        }
+        let before = raw.len();
+        let info = s
+            .capture
+            .read_from_device_to_deque(raw)
+            .map_err(|e| anyhow!("read_from_device_to_deque: {e}"))?;
+        stats.packets.fetch_add(1, Ordering::Relaxed);
+        stats
+            .frames
+            .fetch_add(((raw.len() - before) / s.blockalign) as u64, Ordering::Relaxed);
+        if info.flags.silent {
+            stats.silent_packets.fetch_add(1, Ordering::Relaxed);
+            raw.range_mut(before..).for_each(|b| *b = 0);
+        }
+        if info.flags.data_discontinuity && !*first_packet {
+            stats.discontinuities.fetch_add(1, Ordering::Relaxed);
+        }
+        *first_packet = false;
+    }
 }

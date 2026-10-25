@@ -2,6 +2,7 @@
 //!
 //! 子命令:
 //! - `devices`           列出預設輸出裝置
+//! - `capture-probe`     擷取探測:每秒封包數、靜音封包、不連續次數、樣本數/實際時間比
 //! - `vad`               播影片,印出 VAD 切段
 //! - `asr`               播影片,印出辨識結果與延遲
 //! - `mt`                固定句子集跑翻譯,輸出對照表(可指定多個模型)
@@ -16,7 +17,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tingyi_core::asr::Lang;
-use tingyi_core::audio::capture::{default_render_device_name, start_loopback, CaptureConfig};
+use tingyi_core::audio::capture::{
+    default_render_device_name, start_capture, start_loopback, CaptureConfig, CaptureStats, CaptureTarget,
+};
 use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec};
 use tingyi_core::metrics::{Summary, TimingSnapshot};
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, TranslateRequest, Translator};
@@ -34,6 +37,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     Devices,
+    /// 擷取探測:每秒印封包、frame、靜音封包、不連續次數與樣本數/實際時間比
+    CaptureProbe {
+        /// `system` 或 `app:<pid>`
+        #[arg(long, default_value = "system")]
+        source: String,
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+    },
     Vad {
         #[arg(long, default_value_t = 60)]
         seconds: u64,
@@ -192,6 +203,7 @@ async fn main() -> Result<()> {
                 println!("GPU:{n} {t} MiB,目前已用 {:?} MiB", gpu::nvidia_used_mib());
             }
         }
+        Cmd::CaptureProbe { source, seconds } => run_capture_probe(&source, seconds)?,
         Cmd::Vad { seconds } => run_vad(seconds)?,
         Cmd::Asr {
             seconds,
@@ -363,6 +375,59 @@ async fn main() -> Result<()> {
             p.shutdown();
         }
     }
+    Ok(())
+}
+
+fn parse_capture_target(source: &str) -> Result<CaptureTarget> {
+    if source == "system" {
+        return Ok(CaptureTarget::System);
+    }
+    let pid = source
+        .strip_prefix("app:")
+        .ok_or_else(|| anyhow!("--source 要是 system 或 app:<pid>:{source}"))?
+        .parse::<u32>()
+        .context("pid 不是數字")?;
+    Ok(CaptureTarget::Process { pid })
+}
+
+fn run_capture_probe(source: &str, seconds: u64) -> Result<()> {
+    let target = parse_capture_target(source)?;
+    let (tx, rx) = crossbeam_channel::bounded(4096);
+    let stats = Arc::new(CaptureStats::default());
+    let cap = start_capture(CaptureConfig::default(), target.clone(), stats.clone(), tx)?;
+    println!("探測 {target:?} {seconds} 秒(每秒一行:封包 / frame / 靜音封包 / 不連續 / 16 kHz 樣本 / 峰值)");
+    let t0 = Instant::now();
+    let mut prev = stats.snapshot();
+    for sec in 1..=seconds {
+        let deadline = t0 + Duration::from_secs(sec);
+        let (mut peak, mut n) = (0f32, 0usize);
+        while let Ok(c) = rx.recv_deadline(deadline) {
+            n += c.samples.len();
+            peak = c.samples.iter().fold(peak, |m, &x| m.max(x.abs()));
+        }
+        let s = stats.snapshot();
+        println!(
+            "{sec:>4}s 封包 {:>4}  frame {:>6}  靜音 {:>4}  不連續 {:>3}  樣本 {:>6}({:>3.0}%)  峰值 {peak:.3}",
+            s.packets - prev.packets,
+            s.frames - prev.frames,
+            s.silent_packets - prev.silent_packets,
+            s.discontinuities - prev.discontinuities,
+            n,
+            n as f64 / 160.0,
+        );
+        prev = s;
+    }
+    let elapsed = t0.elapsed().as_secs_f64();
+    cap.stop();
+    let s = stats.snapshot();
+    println!(
+        "合計:封包 {}、靜音封包 {}、不連續 {}、session {}、樣本/實際時間 {:.3}",
+        s.packets,
+        s.silent_packets,
+        s.discontinuities,
+        s.sessions,
+        s.samples_out as f64 / 16_000.0 / elapsed
+    );
     Ok(())
 }
 
