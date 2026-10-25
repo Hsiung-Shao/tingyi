@@ -495,7 +495,12 @@ pub async fn download_model(app: AppHandle, state: State<'_, AppState>, id: Stri
             let emit = |p: &Progress| {
                 let _ = app.emit_to("main", "model-download", p);
             };
-            let result = md::download_model(spec, &models_dir, &DownloadOptions::default(), &ctl, &mut |p| emit(&p));
+            // Done 由下面解除登記後統一發,core 那則不轉發
+            let result = md::download_model(spec, &models_dir, &DownloadOptions::default(), &ctl, &mut |p| {
+                if p.phase != Phase::Done {
+                    emit(&p);
+                }
+            });
             // 先解除登記再發最後一則事件,前端收到後查狀態才不會看到「下載中」
             drop(guard);
             let (phase, message) = match &result {

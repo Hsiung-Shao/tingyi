@@ -595,15 +595,30 @@ fn fetch_part(
 ) -> Result<(), DownloadError> {
     let base_done = rep.done - file_len(part).unwrap_or(0).min(f.size);
     let mut attempt = 0u32;
+    let mut best = file_len(part).unwrap_or(0); // 暫存檔達過的最大長度:只有超過它才算真的有進度
+    let ctl = rep.ctl;
     let retry = |attempt: &mut u32, err: DownloadError| -> Result<(), DownloadError> {
+        if ctl.cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
         *attempt += 1;
         if *attempt > opts.retries {
             return Err(err);
         }
-        std::thread::sleep(opts.retry_backoff * *attempt);
+        // 退避等待切小段輪詢取消旗標,取消時不必等完
+        let deadline = Instant::now() + opts.retry_backoff * *attempt;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if ctl.cancel.load(Ordering::SeqCst) {
+                return Err(DownloadError::Cancelled);
+            }
+            std::thread::sleep(left.min(Duration::from_millis(50)));
+        }
         Ok(())
     };
     loop {
+        if ctl.cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
         let have = file_len(part).unwrap_or(0);
         if have == f.size {
             return Ok(());
@@ -639,7 +654,6 @@ fn fetch_part(
         };
         let mut written = file.metadata().map_err(io_err)?.len();
         rep.set_done(base_done + written);
-        let started = written;
         let mut reader = resp.into_reader();
         let mut buf = vec![0u8; 64 * 1024];
         let read_result: Result<(), io::Error> = loop {
@@ -662,8 +676,13 @@ fn fetch_part(
         };
         file.sync_data().map_err(io_err)?;
         drop(file);
-        if written > started {
-            attempt = 0; // 重試上限算的是「連續沒有進度」的次數,大檔在弱網路斷幾次仍能下完
+        if written > best {
+            best = written;
+            // 重試上限算的是「連續沒有進度」的次數,大檔在弱網路斷幾次仍能下完;
+            // 伺服器多送內容(InvalidData)或從頭重下(淨進度為 0)都不算進度
+            if !matches!(&read_result, Err(e) if e.kind() == io::ErrorKind::InvalidData) {
+                attempt = 0;
+            }
         }
         match read_result {
             Ok(()) if written == f.size => return Ok(()),
@@ -721,6 +740,9 @@ pub fn download_model(
     rep.set_done(present);
     let mut agent: Option<ureq::Agent> = None;
     for f in spec.files {
+        if ctl.cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
         let committed = staging.join(f.name);
         let part = part_path(&staging, f);
         let committed_len = file_len(&committed);
@@ -746,6 +768,9 @@ pub fn download_model(
                 None => agent.insert(build_agent(opts)?),
             };
             fetch_part(a, &spec.url(&opts.base_url, f), &part, f, opts, &mut rep)?;
+        }
+        if ctl.cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
         }
         rep.emit(Phase::Verifying, Some(f.name.to_string()));
         let ok = sha256_file(&part).map_err(io_err)? == f.sha256 && file_len(&part) == Some(f.size);
@@ -1591,5 +1616,57 @@ mod tests {
             matches!(r, Err(DownloadError::Network(_)) | Err(DownloadError::Io(_))),
             "應為 Network 或 Io 錯誤,實得 {r:?}"
         );
+    }
+
+    // T21:伺服器每次忽略 Range 且送一半就斷線時,重試次數有上限(不因每次有進度而歸零)
+    #[test]
+    fn download_retry_is_bounded_when_server_cuts_half_each_time() {
+        let fx = fx();
+        let big = fx.big.clone();
+        let srv = Server::start(move |_| {
+            move |req: &Req, n: usize, s: &mut TcpStream| {
+                if req.path == BIG_PATH && n < 9 {
+                    // 忽略 Range、宣稱完整大小、只送前一半
+                    send(s, 200, &[], big.len(), &big[..big.len() / 2]);
+                } else {
+                    send(s, 404, &[], 0, b"");
+                }
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let models = tmp.path().join("models");
+        let o = opts(&srv.base);
+        let max_reqs = o.retries as usize + 1;
+        let (r, _) = run(&fx, &models, &o);
+        assert!(matches!(r, Err(DownloadError::Network(_))), "應為 Network 錯誤,實得 {r:?}");
+        let n = srv.requests_for(BIG_PATH).len();
+        assert!(n <= max_reqs, "大檔請求數應 <= {max_reqs},實得 {n}");
+    }
+
+    // T22:伺服器卡住時取消盡快回 Cancelled,且不再重送請求
+    #[test]
+    fn download_cancel_during_hang_returns_cancelled_without_retry() {
+        let fx = fx();
+        let srv = Server::start(|_| |_req: &Req, _n: usize, _s: &mut TcpStream| std::thread::sleep(Duration::from_millis(2000)));
+        let tmp = tempfile::tempdir().unwrap();
+        let models = tmp.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        let mut o = opts(&srv.base);
+        o.read_timeout = Duration::from_millis(300);
+        o.retries = 3;
+        o.retry_backoff = Duration::from_millis(10);
+        let ctl = DownloadCtl::default();
+        let start = std::time::Instant::now();
+        let r = std::thread::scope(|sc| {
+            sc.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                ctl.cancel.store(true, Ordering::SeqCst);
+            });
+            download_model(fx.spec, &models, &o, &ctl, &mut |_p: Progress| {})
+        });
+        let elapsed = start.elapsed();
+        assert_eq!(r, Err(DownloadError::Cancelled), "實得 {r:?}");
+        assert_eq!(srv.requests_for(BIG_PATH).len(), 1, "取消後不應重送請求");
+        assert!(elapsed < Duration::from_secs(1), "應 1 秒內回傳,實得 {elapsed:?}");
     }
 }
