@@ -4,7 +4,9 @@ A. 乾淨資料目錄下載必要項目 + 日文/英文專用模型壓縮包 →
    Python 獨立重算每個下載檔的 SHA256,必須是腳本寫死的值;解壓出的 int8 模型要與 app 內下載規格
    (crates/tingyi-core/src/model_download.rs)的 SHA256 相同。
 B. 同一目錄加 -Verify → exit 0、「全部相符」。
-C. 竄改 silero_vad.onnx 一個位元組後 -Verify → exit 非 0 且點名該檔(之後還原)。
+C. 竄改 silero_vad.onnx 一個位元組後 -Verify → exit 非 0,錯誤段只點名該檔(之後還原)。
+E. 竄改已解壓的 joiner 模型與 llama 的一個 dll 後 -Verify → exit 非 0 並點名兩檔(finally 還原);
+   E2. 還原後 -Verify 恢復通過。
 D. (選用 --existing)對既有資料目錄的全部選配項目跑 -Verify;先 -ListOnly,有「待下載」就不跑(免得下載進使用者目錄)。
 
 用法:python .claude/skills/verify/scripts/verify_download_script.py [--existing D:\\codeproject\\translate\\data]
@@ -53,6 +55,13 @@ def ps(run: Run, name: str, args: list) -> tuple:
     return p.returncode, text
 
 
+def err_section(out: str) -> str:
+    """取第一個「SHA256 不符」之後的文字並移除所有空白換行(PS 5.1 會折行);檔案清單在它之前,不算數。"""
+    squeezed = re.sub(r"\s+", "", out)
+    i = squeezed.find("SHA256不符")
+    return squeezed[i:] if i >= 0 else ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--existing", help="既有資料目錄,對全部選配項目跑 -Verify(不下載)")
@@ -89,7 +98,7 @@ def main() -> int:
                   json.dumps(bad_cross))
 
         code, out = ps(run, "B-verify", ["-DataDir", str(data), "-Verify", *CLEAN])
-        run.check("B -Verify exit 0 且全部相符", code == 0 and "已存在的檔案 SHA256 全部相符" in out)
+        run.check("B -Verify exit 0 且全部相符", code == 0 and "SHA256 全部相符" in out)
 
         vad = data / "models" / "silero_vad.onnx"
         orig = vad.read_bytes()
@@ -98,13 +107,37 @@ def main() -> int:
             code, out = ps(run, "C-tamper", ["-DataDir", str(data), "-Verify"])
         finally:
             vad.write_bytes(orig)
-        run.check("C 竄改後 -Verify 失敗且點名檔案", code != 0 and "SHA256 不符" in out and "silero_vad.onnx" in out, f"exit {code}")
+        sec = err_section(out)
+        others = ["3dspeaker", "model.int8.onnx", "Hy-MT2", "tokens.txt"]
+        leaked = [n for n in others if n in sec]
+        run.check("C 竄改後 -Verify 失敗且錯誤訊息只點名該檔",
+                  code != 0 and "models\\silero_vad.onnx" in sec and not leaked, f"exit {code};多點名 {leaked}")
+
+        joiner = data / "models" / RS_DIR / "joiner-epoch-99-avg-1.int8.onnx"
+        dlls = sorted((data / "bin" / "llama").glob("*.dll"), key=lambda p: p.name)
+        if not dlls:
+            raise RuntimeError("bin/llama 底下找不到 .dll")
+        dll = dlls[0]
+        orig_j, orig_d = joiner.read_bytes(), dll.read_bytes()
+        try:
+            joiner.write_bytes(orig_j[:-1] + bytes([orig_j[-1] ^ 0xFF]))
+            dll.write_bytes(orig_d[:-1] + bytes([orig_d[-1] ^ 0xFF]))
+            code, out = ps(run, "E-tamper-extracted", ["-DataDir", str(data), "-Verify", *CLEAN])
+        finally:
+            joiner.write_bytes(orig_j)
+            dll.write_bytes(orig_d)
+        sec = err_section(out)
+        run.check("E 竄改已解壓的模型與 llama 執行檔後 -Verify 失敗並點名兩檔",
+                  code != 0 and joiner.name in sec and dll.name in sec, f"exit {code};dll {dll.name}")
+
+        code, out = ps(run, "E2-verify-restored", ["-DataDir", str(data), "-Verify", *CLEAN])
+        run.check("E2 還原後 -Verify 恢復通過", code == 0 and "SHA256 全部相符" in out, f"exit {code}")
 
         if a.existing:
             code, out = ps(run, "D-list", ["-DataDir", a.existing, "-Verify", "-ListOnly", *ALL])
             if run.check("D 既有目錄沒有待下載項目", code == 0 and "待下載" not in out):
                 code, out = ps(run, "D-existing", ["-DataDir", a.existing, "-Verify", *ALL])
-                run.check("D 既有目錄全部選配項目 SHA256 相符", code == 0 and "已存在的檔案 SHA256 全部相符" in out)
+                run.check("D 既有目錄全部選配項目 SHA256 相符", code == 0 and "SHA256 全部相符" in out)
         ok = all(c["ok"] for c in run.result["checks"])
         return 0 if ok else 1
     except Exception as e:  # 驗證腳本本身出錯也要留下紀錄並判失敗

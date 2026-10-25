@@ -10,7 +10,7 @@
 #   ... -WithParakeet 加英文專用辨識模型 Parakeet TDT 0.6B v2 int8(CC-BY-4.0;引擎「專用模型」用)
 #   ... -WithCandidates 加 Seed-X-PPO-7B、LMT-60 4B/8B、TranslateGemma 4B/12B 的 Q4_K_M(翻譯模型對照用,約 22 GB)
 #   ... -DataDir <目錄>  下載到指定的資料目錄
-#   ... -Verify    已存在的檔案也重新校驗 SHA256(不重新下載;壓縮檔每次都校驗)
+#   ... -Verify    已存在的檔案也重新校驗 SHA256(含已解壓的專用模型與 llama 執行檔;不重新下載;壓縮檔每次都校驗)
 #   ... -ListOnly  只列清單不下載
 param(
     [switch]$With7B,
@@ -90,17 +90,25 @@ $archives = @()
 if ($WithReazonSpeech) {
     $archives += @{ Name = 'sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01'; Size = '713 MB';
        Source = 'k2-fsa/sherpa-onnx (GitHub Releases);reazon-research/reazonspeech-k2-v2,Apache-2.0';
-       Sha256 = 'e0981d0d5d7b446d41010831b59091ebf57d2aa7b79980f67ca37af460b5842d' }
+       Sha256 = 'e0981d0d5d7b446d41010831b59091ebf57d2aa7b79980f67ca37af460b5842d';
+       Files = @(@('encoder-epoch-99-avg-1.int8.onnx', '2c7bd08a8a99f9ddd0d9e458456577b1f6279214e51426f114f9eced44c54e1d'),
+                 @('decoder-epoch-99-avg-1.int8.onnx', '8f0bff94d38797b03b762634ed03211a8e303d06cc4603cdd0cf4199d6eb1485'),
+                 @('joiner-epoch-99-avg-1.int8.onnx', '49cc7ea1d3d35a40a27442db5e89996da64bf0e683a903dce76e99e57a12e4de'),
+                 @('tokens.txt', '2c3ac659818a48a0c04010e0593bbc4d7c8a24a054340b01131499c05fd52def')) }
 }
 if ($WithParakeet) {
     $archives += @{ Name = 'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8'; Size = '482 MB';
        Source = 'k2-fsa/sherpa-onnx (GitHub Releases);NVIDIA parakeet-tdt-0.6b-v2,CC-BY-4.0';
-       Sha256 = '157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad' }
+       Sha256 = '157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad';
+       Files = @(@('encoder.int8.onnx', 'a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab'),
+                 @('decoder.int8.onnx', 'b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e'),
+                 @('joiner.int8.onnx', '7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2'),
+                 @('tokens.txt', 'ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d')) }
 }
 foreach ($a in $archives) {
     $items += @{ Name = "$($a.Name).tar.bz2"; Size = $a.Size; Dest = (Join-Path $models "$($a.Name).tar.bz2");
        Url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$($a.Name).tar.bz2"; Source = $a.Source;
-       Extracted = (Join-Path $models $a.Name); Sha256 = $a.Sha256 }
+       Extracted = (Join-Path $models $a.Name); Sha256 = $a.Sha256; Files = $a.Files }
 }
 if ($With7B) {
     $items += @{ Name = 'Hy-MT2-7B-Q4_K_M.gguf'; Size = '4.62 GB'; Dest = (Join-Path $models 'Hy-MT2-7B-Q4_K_M.gguf');
@@ -114,7 +122,7 @@ function Test-Sha256($Path, $Expected) {
 
 Write-Host "將下載以下檔案到 $root :"
 foreach ($i in $items) {
-    $state = if ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt'))) { '已存在,略過' }
+    $state = if ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt'))) { if ($Verify) { '已解壓,校驗' } else { '已存在,略過' } }
              elseif (Test-Path $i.Dest) { if ($Verify) { '已存在,校驗' } else { '已存在,略過' } }
              else { '待下載' }
     Write-Host ("  [{0}] {1,-32} {2,8}  來源:{3}" -f $state, $i.Name, $i.Size, $i.Source)
@@ -123,7 +131,16 @@ if ($ListOnly) { exit 0 }
 
 $bad = @()
 foreach ($i in $items) {
-    if ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt'))) { continue }
+    if ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt'))) {
+        # 已解壓:-Verify 時逐一校驗 app 實際使用的檔案(壓縮檔解壓後已刪除)
+        if ($Verify) {
+            foreach ($f in $i.Files) {
+                $p = Join-Path $i.Extracted $f[0]
+                if (-not (Test-Path -LiteralPath $p) -or -not (Test-Sha256 $p $f[1])) { $bad += $p }
+            }
+        }
+        continue
+    }
     if (Test-Path $i.Dest) {
         # 壓縮檔接著要解壓成模型或執行檔,每次都校驗;其他檔案指定 -Verify 才校驗
         if (($Verify -or $i.Name -match '\.(zip|tar\.bz2)$') -and -not (Test-Sha256 $i.Dest $i.Sha256)) { $bad += $i.Dest }
@@ -139,10 +156,33 @@ foreach ($i in $items) {
     }
     Move-Item -Force $tmp $i.Dest
 }
+# 回傳 zip 內每個檔案與 $Dir 內對應檔 SHA256 缺漏或不符的完整路徑
+function Get-ZipMismatch($Zip, $Dir) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    # .NET 的工作目錄可能與 PowerShell 位置不同,先轉成絕對路徑
+    $zipFull = (Resolve-Path -LiteralPath $Zip).ProviderPath
+    $out = @()
+    $z = [IO.Compression.ZipFile]::OpenRead($zipFull)
+    try {
+        foreach ($e in $z.Entries) {
+            if (-not $e.Name) { continue }  # 目錄條目
+            $p = Join-Path $Dir $e.FullName
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $out += $p; continue }
+            $s = $e.Open()
+            try { $h = (Get-FileHash -Algorithm SHA256 -InputStream $s).Hash } finally { $s.Dispose() }
+            if (-not (Test-Sha256 $p $h)) { $out += $p }
+        }
+    } finally { $z.Dispose() }
+    $out
+}
+# 實際當 sidecar 用的 llama 執行檔已解壓時,與 zip 內容比對(zip 本身上面已校驗)
+if ($Verify -and (Test-Path (Join-Path $bin 'llama\llama-server.exe'))) {
+    $bad += @(Get-ZipMismatch (Join-Path $bin "llama-$llamaBuild-bin-win-vulkan-x64.zip") (Join-Path $bin 'llama'))
+}
 if ($bad) {
     throw "以下已存在的檔案 SHA256 不符,請刪除後重跑:`n  $($bad -join "`n  ")"
 }
-if ($Verify) { Write-Host '已存在的檔案 SHA256 全部相符。' }
+if ($Verify) { Write-Host '已存在的檔案(含已解壓的專用模型與 llama 執行檔)SHA256 全部相符。' }
 
 foreach ($i in $items | Where-Object { $_.Extracted }) {
     # 以 tokens.txt 當完成標記:解壓中斷留下的半套目錄不算完成
