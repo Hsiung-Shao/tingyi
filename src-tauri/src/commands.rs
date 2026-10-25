@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tingyi_core::asr::Lang;
+use tingyi_core::audio::source::{self, AppAudio, AudioSource};
 use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec, WhisperServerProcess, WhisperServerSpec};
 use tingyi_core::pipeline::AsrEngine;
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
@@ -273,6 +274,7 @@ pub async fn start_session(
 
     // 2. 管線
     cfg.seg_control = state.seg_control.clone();
+    cfg.audio_source = state.audio_source.clone();
     cfg.speaker_id = opts.speaker_id.unwrap_or(true);
     cfg.refine.enabled = refine_on;
     cfg.lock_lang = opts.lang.as_deref().and_then(parse_lang);
@@ -378,6 +380,38 @@ fn ensure_sampler(state: &AppState) {
             150,
             state.watched.clone(),
         ));
+    }
+}
+
+/// 目前有音訊 session 的程式(排除本程式)。列舉裝置與程序要數百毫秒,放到背景執行緒。
+#[tauri::command]
+pub async fn list_audio_apps() -> Result<Vec<AppAudio>, String> {
+    tokio::task::spawn_blocking(source::list_app_audio)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[derive(Serialize)]
+pub struct AudioSourceState {
+    pub source: AudioSource,
+    /// 指定程式已結束,等它重新開啟中。
+    pub waiting: bool,
+}
+
+/// 切換音訊來源;執行中由擷取執行緒在下一輪(約 100 ms 內)重建 session。
+#[tauri::command]
+pub fn set_audio_source(state: State<'_, AppState>, source: AudioSource) {
+    tracing::info!("音訊來源 → {source:?}");
+    state.audio_source.set_waiting(false);
+    state.audio_source.set(source);
+}
+
+#[tauri::command]
+pub fn get_audio_source(state: State<'_, AppState>) -> AudioSourceState {
+    AudioSourceState {
+        source: state.audio_source.get().0,
+        waiting: state.audio_source.waiting(),
     }
 }
 

@@ -32,6 +32,9 @@ pub fn run() {
             commands::set_overlay_mode,
             commands::show_overlay,
             commands::export_transcript,
+            commands::list_audio_apps,
+            commands::set_audio_source,
+            commands::get_audio_source,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。

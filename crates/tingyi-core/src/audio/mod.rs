@@ -1,7 +1,8 @@
-//! 音訊擷取:WASAPI loopback → 16 kHz 單聲道 f32。
+//! 音訊擷取:WASAPI loopback(系統或指定程式)→ 16 kHz 單聲道 f32。
 
 pub mod capture;
 pub mod ring;
+pub mod source;
 pub mod wav_sink;
 
 /// 管線內部統一取樣率(SenseVoice、Silero VAD 共通)。

@@ -90,6 +90,8 @@ pub enum RefineMsg {
     Translated { id: u64, text: String },
     /// 翻譋失敗/逾時(視為已結案)。
     Failed { id: u64 },
+    /// 音訊來源在此切換(緊接在切換靜音之後送出):回修不跨過這一點。
+    Boundary,
 }
 
 /// refine thread → refine_mt task。
@@ -415,6 +417,8 @@ pub(crate) fn refine_loop(
                     l.settled = true;
                 }
             }
+            // 切換點之前尚未回修的句子放棄回修:跨來源的視窗會把兩邊的聲音拼在一起辨識
+            Ok(RefineMsg::Boundary) => refined_until = refined_until.max(ring.end()),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }

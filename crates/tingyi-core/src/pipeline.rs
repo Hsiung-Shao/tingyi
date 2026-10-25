@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, Transcriber, WhisperServer, WhisperServerConfig};
-use crate::audio::capture::{start_capture, AudioChunk, CaptureConfig, CaptureHandle, CaptureTarget};
+use crate::audio::capture::{start_capture, AudioChunk, CaptureConfig, CaptureHandle};
+use crate::audio::source::SourceControl;
 use crate::audio::ring::samples_to_ms;
 use crate::audio::wav_sink::WavSink;
 use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
@@ -119,6 +120,8 @@ pub enum PipelineEvent {
 #[derive(Clone)]
 pub struct PipelineConfig {
     pub capture: CaptureConfig,
+    /// 音訊來源(系統或指定程式);Tauri 持有同一個 Arc,執行中切換即時生效。
+    pub audio_source: Arc<SourceControl>,
     pub vad: VadConfig,
     pub asr: SenseVoiceConfig,
     pub asr_engine: AsrEngine,
@@ -169,6 +172,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             capture: CaptureConfig::default(),
+            audio_source: Arc::new(SourceControl::default()),
             vad: VadConfig::default(),
             asr: SenseVoiceConfig::default(),
             asr_engine: AsrEngine::SenseVoice,
@@ -346,7 +350,7 @@ pub fn start(
         None => None,
     };
 
-    let capture = start_capture(cfg.capture.clone(), CaptureTarget::System, stats.capture.clone(), audio_tx)?;
+    let capture = start_capture(cfg.capture.clone(), cfg.audio_source.clone(), stats.capture.clone(), audio_tx)?;
 
     let vad_thread = {
         let events = events.clone();
@@ -432,6 +436,37 @@ pub fn start(
     })
 }
 
+/// 切換音訊來源時插入的靜音:比斷句靜音上限(600 ms)長,讓進行中的語音在切換點收尾。
+const SWITCH_SILENCE_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 7 / 10;
+
+/// 同一批樣本餵給回修環形緩衝、整段錄音與 Segmenter(三者時鐘一致)。
+/// 回傳是否切出段落;下游已關閉回 None。
+fn feed_samples(
+    samples: &[f32],
+    segmenter: &mut Segmenter,
+    seg_tx: &crossbeam_channel::Sender<Segment>,
+    refine_tx: &Option<crossbeam_channel::Sender<RefineMsg>>,
+    wav_sink: &mut Option<WavSink>,
+    stats: &PipelineStats,
+) -> Option<bool> {
+    if let Some(tx) = refine_tx {
+        let _ = tx.send(RefineMsg::Audio(samples.to_vec()));
+    }
+    if let Some(w) = wav_sink.as_mut() {
+        if let Err(e) = w.write(samples) {
+            tracing::warn!("整段錄音寫入失敗:{e:#}");
+            *wav_sink = None;
+        }
+    }
+    let segs = segmenter.push(samples);
+    stats.set_speaking(segmenter.speaking());
+    let had_segment = !segs.is_empty();
+    for seg in segs {
+        seg_tx.send(seg).ok()?;
+    }
+    Some(had_segment)
+}
+
 fn send_segmentation(events: &mpsc::UnboundedSender<PipelineEvent>, segmenter: &mut Segmenter, p: crate::tuner::SegParams) {
     segmenter.set_params(p.min_silence_ms as f32 / 1000.0, p.max_speech_ms as f32 / 1000.0);
     let _ = events.send(PipelineEvent::Segmentation {
@@ -466,6 +501,7 @@ fn vad_loop(
     }
     let mut last_preview = Instant::now();
     let mut preview_shown = false;
+    let mut cur_gen: Option<u64> = None;
     let min_preview_samples = (cfg.preview_min.as_millis() as usize) * TARGET_SAMPLE_RATE as usize / 1000;
 
     while !stop.load(Ordering::SeqCst) {
@@ -487,24 +523,20 @@ fn vad_loop(
                 }
 
                 stats.set_backlog(audio_rx.len());
-                // 回修環形緩衝與整段錄音:與 Segmenter 吃同一批樣本,時鐘一致
-                if let Some(tx) = &refine_tx {
-                    let _ = tx.send(RefineMsg::Audio(chunk.samples.clone()));
-                }
-                if let Some(w) = wav_sink.as_mut() {
-                    if let Err(e) = w.write(&chunk.samples) {
-                        tracing::warn!("整段錄音寫入失敗:{e:#}");
-                        wav_sink = None;
+                let mut had_segment = false;
+                if cur_gen.is_some_and(|g| g != chunk.gen) {
+                    // 切換來源:先插一段靜音讓進行中的語音收尾,再告訴回修不要跨過切換點
+                    let zeros = vec![0.0f32; SWITCH_SILENCE_SAMPLES];
+                    let Some(h) = feed_samples(&zeros, &mut segmenter, &seg_tx, &refine_tx, &mut wav_sink, &stats) else { return };
+                    had_segment |= h;
+                    if let Some(tx) = &refine_tx {
+                        let _ = tx.send(RefineMsg::Boundary);
                     }
+                    let _ = events.send(PipelineEvent::Status { message: "音訊來源已切換".into() });
                 }
-                let segs = segmenter.push(&chunk.samples);
-                stats.set_speaking(segmenter.speaking());
-                let had_segment = !segs.is_empty();
-                for seg in segs {
-                    if seg_tx.send(seg).is_err() {
-                        return;
-                    }
-                }
+                cur_gen = Some(chunk.gen);
+                let Some(h) = feed_samples(&chunk.samples, &mut segmenter, &seg_tx, &refine_tx, &mut wav_sink, &stats) else { return };
+                had_segment |= h;
                 if had_segment && preview_shown {
                     // 正式 Transcript 事件會直接取代預覽,不另送清空事件(避免閃動)
                     preview_shown = false;

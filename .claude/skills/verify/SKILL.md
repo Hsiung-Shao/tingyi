@@ -1,0 +1,75 @@
+---
+name: verify
+description: 聽譯 tingyi(Tauri 2 Windows 桌面 app,即時字幕翻譯)的實跑驗證。啟動 `pnpm tauri dev`,以 WebView2 遠端除錯埠(CDP)在頁面內操作主視窗,用自己啟動的 TTS 程式供音,驗證指定程式音訊來源、執行中切換與字幕產生;留截圖、run.log、exit_code.txt。宣稱 UI/擷取/管線行為正確前、/handoff-check 第 7 段使用。
+---
+
+# 聽譯 verify
+
+表面:Tauri 2 桌面程式(主視窗 `main` + 懸浮字幕 `overlay`),前端 Vite dev server `http://localhost:1420/`。
+驅動:WebView2 環境變數 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9339` 開 CDP,在頁面內執行 JS(點按鈕、改下拉、讀 DOM)。**不送任何 OS 鍵鼠輸入**,不搶使用者前景視窗。截圖用 `scripts/shot-windows.ps1`(PrintWindow,視窗被蓋住也拍得到)。
+
+## Launch
+
+一鍵(含 Doctor、Drive、Evidence、Cleanup):
+
+```bash
+python .claude/skills/verify/scripts/verify_audio_source.py
+```
+
+選項:`--data-dir <模型資料目錄>`(預設 `D:\codeproject\translate\data`;worktree 沒有 `data/`,不設會退回 `%LOCALAPPDATA%\tingyi` 而找不到模型)、`--launch-timeout 600`。
+
+腳本內部的啟動方式(手動除錯時照做):
+
+```powershell
+$env:TINGYI_DATA_DIR = 'D:\codeproject\translate\data'
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9339'
+pnpm tauri dev
+```
+
+「可用」的判準不是行程在跑,而是:CDP `http://127.0.0.1:9339/json` 出現 url 為 `http://localhost:1420/` 的 page,且頁面上「開始」按鈕存在且未 disabled(代表 `get_info` 已回來、模型檔就緒)。首次編譯約 1–5 分鐘,之後約 50 秒。
+
+## Doctor(唯讀,決定值不值得驅動)
+
+- 1420、9339 埠都沒被占用,且沒有 `tingyi.exe` 在跑 → 否則**拒絕雙開**(安裝版 tingyi 與 dev 版共用 WebView2 使用者資料夾,雙開會互相干擾)。9222 常被 Chrome 除錯埠占用,所以不用。
+- `<data-dir>\models\silero_vad.onnx` 與 `<data-dir>\models\sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17\model.int8.onnx` 存在。
+
+## Drive
+
+穩定把手(都在 `src/App.tsx`、`src/AudioSourcePicker.tsx`):
+
+| 對象 | 選擇器 |
+|---|---|
+| 開始 / 停止 | `button` 文字剛好是 `開始` / `停止` |
+| 翻譯開關 | 文字含 `啟用本機翻譯` 的 `label` 內的 checkbox |
+| 音訊來源下拉 | `select[aria-label="音訊來源"]`,值 `system` 或 `app:<pid>` |
+| 重新整理程式清單 | `button[aria-label="重新整理程式清單"]` |
+| 字幕列 | `[data-sentence-id]`(`data-lang`),原文在 `[data-role=source]` |
+| 來源狀態(只讀觀察) | `window.__TAURI_INTERNALS__.invoke('get_audio_source')` |
+
+React 受控 `select` 要用原生 setter + `change` 事件才會觸發 onChange(見 `scripts/verify_audio_source.py` 的 `JS_HELPERS.choose`)。
+
+單次查詢頁面:`python .claude/skills/verify/scripts/cdp.py "document.title"`(app 需已用上面方式啟動)。
+
+## Evidence
+
+`evidence/<yyyyMMdd-HHmmss>/`:`run.log`(每一步與 PASS/FAIL)、`exit_code.txt`(0/1)、`app.log`(tauri dev 與 Rust log)、`result.json`(各階段字幕內容)、`1-tts/`、`2-silent/`、`3-back/` 截圖、`tts-lines.txt`、`silence.wav`。證據目錄已列入 `.gitignore`(截圖可能含個人畫面),不入庫。
+
+驗證完跑:
+
+```bash
+python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evidence/<時間> --source-root .
+```
+
+## Cleanup
+
+腳本只關閉自己啟動的行程:`taskkill /PID <pid> /T /F` 依序關 TTS、靜音播放器、`pnpm tauri dev` 的 cmd 外殼(連同 node/cargo/tingyi.exe 子樹),再以 PID 確認 `tingyi.exe` 已結束,仍活著才依 PID 補關。**不按名稱殺**(使用者可能同時開著其他 powershell 或安裝版 tingyi)。證據不刪。
+
+## Helpers
+
+- `scripts/cdp.py`:最小 CDP 用戶端(`connect(port, url_prefix)` → `Page.eval(js)`;也可命令列單次執行)。依賴 Python `websockets`。
+- `scripts/verify_audio_source.py`:指定程式音訊來源旅程(見 `features/audio-source.md`)。
+- 專案腳本:`scripts/tts-smoke.ps1`(TTS 供音)、`scripts/shot-windows.ps1`(截圖)。
+
+## 破壞對照紀錄
+
+2026-10-25:把 `capture.rs` 的世代號檢查改成 `if false && ...`(UI 顯示已切換但擷取不換),驗證在「切到靜音播放器後 12 秒內沒有新字幕」FAIL、exit 1(證據 `evidence/20261025-132442-neg/negative/`);以事前備份逐位元組還原(sha256 5e2d2cf3…)後恢復 PASS。

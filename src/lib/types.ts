@@ -152,6 +152,9 @@ export interface StatsSnapshot {
   revised_sources: number;
   recovered: number;
   refine_mt_done: number;
+  /** 擷取緩衝溢位(掉資料)次數;正常為 0 */
+  capture_discontinuities: number;
+  capture_silent_packets: number;
   e2e_p50: number;
   e2e_recent: number[];
 }
@@ -162,3 +165,23 @@ export interface Metrics {
 }
 
 export type OverlayMode = "bilingual" | "translation";
+
+/** 音訊來源(對應 Rust `AudioSource`,serde tag = kind)。 */
+export type AudioSource =
+  | { kind: "system" }
+  | { kind: "app"; pid: number; exe: string; start_time: number };
+
+/** 有音訊 session 的程式(已依最上層程序去重)。 */
+export interface AppAudio {
+  pid: number;
+  exe: string;
+  name: string;
+  active: boolean;
+  start_time: number;
+}
+
+export interface AudioSourceState {
+  source: AudioSource;
+  /** 指定程式已關閉,等它重新開啟中 */
+  waiting: boolean;
+}

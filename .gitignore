@@ -29,3 +29,7 @@ dist-ssr
 
 # 量測輸出
 /bench-out/
+
+# 實跑驗證證據(截圖可能含個人畫面,不入庫)
+/.claude/skills/verify/evidence/
+__pycache__/

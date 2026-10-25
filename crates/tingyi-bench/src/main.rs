@@ -1,7 +1,7 @@
 //! tingyi-bench:技術驗證週的量測 CLI。
 //!
 //! 子命令:
-//! - `devices`           列出預設輸出裝置
+//! - `devices`           列出預設輸出裝置與有音訊 session 的程式
 //! - `capture-probe`     擷取探測:每秒封包數、靜音封包、不連續次數、樣本數/實際時間比
 //! - `vad`               播影片,印出 VAD 切段
 //! - `asr`               播影片,印出辨識結果與延遲
@@ -17,9 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tingyi_core::asr::Lang;
-use tingyi_core::audio::capture::{
-    default_render_device_name, start_capture, start_loopback, CaptureConfig, CaptureStats, CaptureTarget,
-};
+use tingyi_core::audio::capture::{default_render_device_name, start_capture, start_loopback, CaptureConfig, CaptureStats};
+use tingyi_core::audio::source::{self, AudioSource, SourceControl};
 use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec};
 use tingyi_core::metrics::{Summary, TimingSnapshot};
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, TranslateRequest, Translator};
@@ -199,6 +198,10 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Devices => {
             println!("預設輸出裝置:{}", default_render_device_name()?);
+            for a in source::list_app_audio()? {
+                let state = if a.active { "播放中" } else { "閒置" };
+                println!("  程式 pid {:>6}  {:<24} {} [{state}]", a.pid, a.exe, a.name);
+            }
             if let Some((n, t)) = gpu::nvidia_info() {
                 println!("GPU:{n} {t} MiB,目前已用 {:?} MiB", gpu::nvidia_used_mib());
             }
@@ -378,23 +381,31 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn parse_capture_target(source: &str) -> Result<CaptureTarget> {
-    if source == "system" {
-        return Ok(CaptureTarget::System);
+/// `system`、`app:<pid>` 或 `app:<exe>`(取該程式的最上層程序)。
+fn parse_audio_source(spec: &str) -> Result<AudioSource> {
+    if spec == "system" {
+        return Ok(AudioSource::System);
     }
-    let pid = source
+    let arg = spec
         .strip_prefix("app:")
-        .ok_or_else(|| anyhow!("--source 要是 system 或 app:<pid>:{source}"))?
-        .parse::<u32>()
-        .context("pid 不是數字")?;
-    Ok(CaptureTarget::Process { pid })
+        .ok_or_else(|| anyhow!("來源要是 system、app:<pid> 或 app:<exe>:{spec}"))?;
+    let table = source::snapshot_processes();
+    let pid = match arg.parse::<u32>() {
+        Ok(pid) => pid,
+        Err(_) => source::rebind(arg, &table, &source::enumerate_sessions().unwrap_or_default())
+            .map(|(pid, _)| pid)
+            .ok_or_else(|| anyhow!("找不到程式 {arg}"))?,
+    };
+    let info = table.get(&pid).ok_or_else(|| anyhow!("pid {pid} 不存在"))?;
+    Ok(AudioSource::App { pid, exe: info.exe.clone(), start_time: info.start_time })
 }
 
 fn run_capture_probe(source: &str, seconds: u64) -> Result<()> {
-    let target = parse_capture_target(source)?;
+    let target = parse_audio_source(source)?;
     let (tx, rx) = crossbeam_channel::bounded(4096);
     let stats = Arc::new(CaptureStats::default());
-    let cap = start_capture(CaptureConfig::default(), target.clone(), stats.clone(), tx)?;
+    let control = Arc::new(SourceControl::new(target.clone()));
+    let cap = start_capture(CaptureConfig::default(), control.clone(), stats.clone(), tx)?;
     println!("探測 {target:?} {seconds} 秒(每秒一行:封包 / frame / 靜音封包 / 不連續 / 16 kHz 樣本 / 峰值)");
     let t0 = Instant::now();
     let mut prev = stats.snapshot();
@@ -406,8 +417,9 @@ fn run_capture_probe(source: &str, seconds: u64) -> Result<()> {
             peak = c.samples.iter().fold(peak, |m, &x| m.max(x.abs()));
         }
         let s = stats.snapshot();
+        let waiting = if control.waiting() { "  等待程式重開" } else { "" };
         println!(
-            "{sec:>4}s 封包 {:>4}  frame {:>6}  靜音 {:>4}  不連續 {:>3}  樣本 {:>6}({:>3.0}%)  峰值 {peak:.3}",
+            "{sec:>4}s{waiting} 封包 {:>4}  frame {:>6}  靜音 {:>4}  不連續 {:>3}  樣本 {:>6}({:>3.0}%)  峰值 {peak:.3}",
             s.packets - prev.packets,
             s.frames - prev.frames,
             s.silent_packets - prev.silent_packets,

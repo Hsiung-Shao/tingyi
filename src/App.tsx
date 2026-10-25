@@ -6,6 +6,7 @@ import { useSubtitles } from "./lib/useSubtitles";
 import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
+import AudioSourcePicker from "./AudioSourcePicker";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -244,6 +245,8 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         {/* 左:控制 */}
         <aside className="w-[320px] shrink-0 border-r border-neutral-800 p-4 flex flex-col gap-4 overflow-y-auto">
+          <AudioSourcePicker running={running} />
+
           <section className="flex flex-col gap-2">
             <label className="text-neutral-400">翻譯模型</label>
             <label className="flex items-center gap-2">
@@ -505,7 +508,7 @@ function Metric({ label, value, unit, warn }: { label: string; value: number | n
 function SentenceRow({ s, speakers }: { s: Sentence; speakers: string[] }) {
   const t = s.timing;
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+    <div className="rounded border border-neutral-800 bg-neutral-900/60 px-3 py-2" data-sentence-id={s.id} data-lang={s.lang}>
       <div className="flex items-baseline gap-2 text-xs text-neutral-500">
         <span>#{s.id}</span>
         {s.revised && (
@@ -532,7 +535,7 @@ function SentenceRow({ s, speakers }: { s: Sentence; speakers: string[] }) {
         {s.state === "failed" && <span className="text-amber-400">翻譯失敗:{s.error}</span>}
         {s.state === "no_translate" && <span>不翻譯</span>}
       </div>
-      <div className="text-neutral-300">{s.source}</div>
+      <div className="text-neutral-300" data-role="source">{s.source}</div>
       {s.state !== "no_translate" && (
         <div className={`text-base ${s.state === "translating" ? "text-neutral-400" : "text-white"}`}>
           {s.translation || (s.state === "translating" ? "…" : "")}

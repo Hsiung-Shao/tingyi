@@ -1,6 +1,7 @@
 //! 全域狀態:目前的 llama-server 子程序與管線句柄。
 
 use std::sync::{Arc, Mutex};
+use tingyi_core::audio::source::SourceControl;
 use tingyi_core::llama::{LlamaServerProcess, WhisperServerProcess};
 use tingyi_core::pipeline::PipelineHandle;
 use tingyi_core::sysmon::{Sampler, Watched};
@@ -15,6 +16,8 @@ pub struct AppState {
     pub whisper: Mutex<Option<WhisperServerProcess>>,
     /// 斷句控制面;跨回合保留使用者的偏移與自動開關,start_session 時交給管線。
     pub seg_control: Arc<SegControl>,
+    /// 音訊來源;跨回合保留,執行中切換由擷取執行緒即時套用。
+    pub audio_source: Arc<SourceControl>,
     pub pipeline: Mutex<Option<PipelineHandle>>,
     pub forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }

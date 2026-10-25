@@ -7,6 +7,8 @@
 //! - 系統:用預設輸出裝置 mix format 的取樣率與聲道數;指定程式(process loopback)沒有
 //!   mix format,固定要求 48 kHz 2ch float,由 autoconvert 轉換。
 //! - 任何 WASAPI 錯誤(裝置拔除、預設裝置切換)→ 記錄後 500 ms 重新建立 session。
+//! - 來源由 `SourceControl` 決定:世代號一變(使用者切換、程式重開重綁)就送出尾巴、立即重建;
+//!   指定程式每秒檢查還活著沒,結束就依執行檔名重綁,找不到則等待並標記 waiting。
 
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::Sender;
@@ -15,11 +17,12 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wasapi::{
     AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat,
 };
 
+use super::source::{AudioSource, ProcWatch, SourceControl};
 use super::{bytes_to_f32, downmix_to_mono, TARGET_SAMPLE_RATE};
 
 /// 擷取設定。
@@ -43,9 +46,9 @@ impl Default for CaptureConfig {
     }
 }
 
-/// 擷取來源。
+/// 一個 session 實際要開的對象。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CaptureTarget {
+enum CaptureTarget {
     /// 預設輸出裝置的全部聲音。
     System,
     /// 指定程式(含子程序)發出的聲音。
@@ -95,6 +98,8 @@ impl CaptureStats {
 #[derive(Debug, Clone)]
 pub struct AudioChunk {
     pub samples: Vec<f32>,
+    /// 來源世代號;變了代表來源已切換,下游在切換點插入靜音、回修不跨切換點。
+    pub gen: u64,
 }
 
 /// 擷取執行緒句柄;drop 或呼叫 `stop()` 結束。
@@ -140,13 +145,13 @@ pub fn default_render_device_name() -> Result<String> {
 
 /// 啟動預設輸出裝置的 loopback 擷取執行緒。
 pub fn start_loopback(cfg: CaptureConfig, tx: Sender<AudioChunk>) -> Result<CaptureHandle> {
-    start_capture(cfg, CaptureTarget::System, Arc::new(CaptureStats::default()), tx)
+    start_capture(cfg, Arc::new(SourceControl::default()), Arc::new(CaptureStats::default()), tx)
 }
 
-/// 啟動擷取執行緒。
+/// 啟動擷取執行緒;來源隨 `control` 即時切換。
 pub fn start_capture(
     cfg: CaptureConfig,
-    target: CaptureTarget,
+    control: Arc<SourceControl>,
     stats: Arc<CaptureStats>,
     tx: Sender<AudioChunk>,
 ) -> Result<CaptureHandle> {
@@ -157,19 +162,7 @@ pub fn start_capture(
         .name("tingyi-capture".into())
         .spawn(move || {
             let _ = wasapi::initialize_mta();
-            while !stop2.load(Ordering::SeqCst) {
-                let r = open_session(&cfg, &target).and_then(|s| {
-                    stats2.sessions.fetch_add(1, Ordering::Relaxed);
-                    pump(&s, &cfg, &tx, &stop2, &stats2)
-                });
-                match r {
-                    Ok(()) => break, // stop 要求或接收端已關閉
-                    Err(e) => {
-                        tracing::warn!("WASAPI 擷取中斷,500 ms 後重建:{e:#}");
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                }
-            }
+            capture_thread(&cfg, &control, &stats2, &tx, &stop2);
             tracing::info!("capture thread 結束");
         })
         .context("spawn capture thread")?;
@@ -178,6 +171,71 @@ pub fn start_capture(
         join: Some(join),
         stats,
     })
+}
+
+/// pump 結束的原因。
+enum PumpExit {
+    /// stop 要求或接收端已關閉。
+    Stop,
+    /// 來源世代號變了。
+    Switched,
+    /// 指定程式已結束。
+    TargetGone,
+}
+
+fn capture_thread(
+    cfg: &CaptureConfig,
+    control: &SourceControl,
+    stats: &CaptureStats,
+    tx: &Sender<AudioChunk>,
+    stop: &AtomicBool,
+) {
+    let mut watch = ProcWatch::new();
+    while !stop.load(Ordering::SeqCst) {
+        let (source, gen) = control.get();
+        let target = match &source {
+            AudioSource::System => CaptureTarget::System,
+            AudioSource::App { pid, exe, start_time } => {
+                if !watch.alive(*pid, *start_time) {
+                    match watch.rebind(exe) {
+                        Some((pid, start_time)) => {
+                            tracing::info!("{exe} 重新開啟,改綁 pid {pid}");
+                            control.set_waiting(false);
+                            control.set(AudioSource::App { pid, exe: exe.clone(), start_time });
+                        }
+                        None => {
+                            control.set_waiting(true);
+                            sleep_unless_changed(Duration::from_secs(1), control, gen, stop);
+                        }
+                    }
+                    continue;
+                }
+                CaptureTarget::Process { pid: *pid }
+            }
+        };
+        control.set_waiting(false);
+        let r = open_session(cfg, &target).and_then(|s| {
+            stats.sessions.fetch_add(1, Ordering::Relaxed);
+            pump(&s, cfg, tx, stop, stats, control, gen, &source, &mut watch)
+        });
+        match r {
+            Ok(PumpExit::Stop) => break,
+            Ok(PumpExit::Switched) => tracing::info!("音訊來源切換"),
+            Ok(PumpExit::TargetGone) => tracing::info!("指定程式已結束"),
+            Err(e) => {
+                tracing::warn!("WASAPI 擷取中斷,500 ms 後重建:{e:#}");
+                sleep_unless_changed(Duration::from_millis(500), control, gen, stop);
+            }
+        }
+    }
+}
+
+/// 睡 `dur`,但 stop 或來源切換時提早醒來。
+fn sleep_unless_changed(dur: Duration, control: &SourceControl, gen: u64, stop: &AtomicBool) {
+    let t0 = Instant::now();
+    while t0.elapsed() < dur && !stop.load(Ordering::SeqCst) && control.gen() == gen {
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// 一個已初始化、尚未開始的擷取 session。
@@ -241,8 +299,19 @@ fn open_session(cfg: &CaptureConfig, target: &CaptureTarget) -> Result<Session> 
     })
 }
 
-/// 開始串流並持續讀取,直到 stop 或接收端關閉(Ok)或 WASAPI 出錯(Err)。
-fn pump(s: &Session, cfg: &CaptureConfig, tx: &Sender<AudioChunk>, stop: &AtomicBool, stats: &CaptureStats) -> Result<()> {
+/// 開始串流並持續讀取,直到 stop、來源切換、指定程式結束(Ok)或 WASAPI 出錯(Err)。
+#[allow(clippy::too_many_arguments)]
+fn pump(
+    s: &Session,
+    cfg: &CaptureConfig,
+    tx: &Sender<AudioChunk>,
+    stop: &AtomicBool,
+    stats: &CaptureStats,
+    control: &SourceControl,
+    gen: u64,
+    source: &AudioSource,
+    watch: &mut ProcWatch,
+) -> Result<PumpExit> {
     let resampler = sherpa_onnx::LinearResampler::create(s.rate as i32, TARGET_SAMPLE_RATE)
         .ok_or_else(|| anyhow!("LinearResampler::create({} → {TARGET_SAMPLE_RATE})", s.rate))?;
     s.client
@@ -260,12 +329,25 @@ fn pump(s: &Session, cfg: &CaptureConfig, tx: &Sender<AudioChunk>, stop: &Atomic
     let mut pending: Vec<f32> = Vec::with_capacity(cfg.min_chunk_samples * 2);
     let send = |samples: Vec<f32>| -> bool {
         stats.samples_out.fetch_add(samples.len() as u64, Ordering::Relaxed);
-        tx.send(AudioChunk { samples }).is_ok()
+        tx.send(AudioChunk { samples, gen }).is_ok()
     };
+    let mut last_alive_check = Instant::now();
 
     let result = loop {
         if stop.load(Ordering::SeqCst) {
-            break Ok(());
+            break Ok(PumpExit::Stop);
+        }
+        if control.gen() != gen {
+            break Ok(PumpExit::Switched);
+        }
+        // 程式結束時 process loopback 不報錯、只送靜音(實測),要自己輪詢。
+        if let AudioSource::App { pid, start_time, .. } = source {
+            if last_alive_check.elapsed() >= Duration::from_secs(1) {
+                last_alive_check = Instant::now();
+                if !watch.alive(*pid, *start_time) {
+                    break Ok(PumpExit::TargetGone);
+                }
+            }
         }
         // 逾時不是錯誤:loopback 在靜音時可能沒有事件,照樣嘗試讀。
         let _ = s.event.wait_for_event(cfg.event_timeout_ms);
@@ -284,7 +366,7 @@ fn pump(s: &Session, cfg: &CaptureConfig, tx: &Sender<AudioChunk>, stop: &Atomic
 
         if pending.len() >= cfg.min_chunk_samples && !send(std::mem::take(&mut pending)) {
             tracing::info!("接收端已關閉,停止擷取");
-            break Ok(());
+            break Ok(PumpExit::Stop);
         }
     };
     // 結束(含出錯重建)前把不到一塊的尾巴送出,避免每次重建掉幾十毫秒。
