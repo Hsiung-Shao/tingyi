@@ -44,6 +44,11 @@ def pe_subsystem(path: Path) -> int:
     return struct.unpack_from("<H", b, pe + 24 + 68)[0]
 
 
+def llama_alive(pids) -> set:
+    """pids 中仍是 llama-server.exe 的(PID 被別的程序重用不算)。"""
+    return set(pids) & image_pids("llama-server.exe")
+
+
 def log_llama_pids(log_path: Path) -> list:
     """app log 裡 `llama-server 啟動 pid=N` 的 PID(只認 app 自己啟動的)。"""
     text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -85,7 +90,7 @@ async def drive(run: Run, app_log) -> bool:
         app_log_path = Path(app_log.name)
         pids = await wait_for(log_pids, 60) or []
         run.result["llama_pids"] = pids
-        run.check("llama-server 子程序已啟動(app log 有 pid 且存活)", bool(pids) and all(pid_alive(p) for p in pids), str(pids))
+        run.check("llama-server 子程序已啟動(app log 有 pid 且存活)", bool(pids) and llama_alive(pids) == set(pids), str(pids))
         await asyncio.sleep(3)
         screenshot(run, "2-running")
         await js("window.__m.btnText('停止').click(), true")
@@ -93,7 +98,7 @@ async def drive(run: Run, app_log) -> bool:
         run.check("停止後回到可開始狀態", bool(stopped))
 
         async def llama_gone():
-            return not any(pid_alive(p) for p in pids)
+            return not llama_alive(pids)
 
         gone = await wait_for(llama_gone, 15)
         run.check("停止後 llama-server 已由 app 結束", bool(pids) and bool(gone), str(pids))
@@ -180,7 +185,7 @@ def main() -> int:
                 app_log.flush()
                 llama_pids |= set(log_llama_pids(Path(app_log.name)))
             left_app = pid_alive(proc.pid)
-            left_llama = {p for p in llama_pids if pid_alive(p)}
+            left_llama = llama_alive(llama_pids)
             for pid in left_llama:
                 kill_tree(run, pid, "llama-server.exe(殘留)")
             run.check("關閉後沒有殘留的 tingyi.exe / llama-server.exe", not left_app and not left_llama,
