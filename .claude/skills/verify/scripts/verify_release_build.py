@@ -63,7 +63,9 @@ async def drive(run: Run, app_log) -> bool:
         both = await wait_for(lambda: js("window.__m.ready('reazonspeech') && window.__m.ready('parakeet')"), 30)
         run.check("資料目錄的日文、英文專用模型顯示已下載", bool(both),
                   await js("window.__m.text('reazonspeech') + ' / ' + window.__m.text('parakeet')"))
-        run.check("專用模型引擎可選", bool(await js("window.__m.routedEnabled()")))
+        # 引擎選項依主視窗的 get_info,比模型卡的狀態晚到,要等
+        enabled = await wait_for(lambda: js("window.__m.routedEnabled()"), 15)
+        run.check("專用模型引擎可選", bool(enabled))
         screenshot(run, "1-ready")
 
         translate_on = await js("window.__m.setChecked('啟用本機翻譯', true)")
