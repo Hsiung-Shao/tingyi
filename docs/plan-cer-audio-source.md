@@ -1,5 +1,7 @@
 # 任務目標
 
+完成日期:2026-10-25
+
 參考 hayamimi 提高辨識正確率(CER)與效能,並新增「指定程式」音訊來源(執行中可即時切換)。計畫:`C:\Users\jerry\.claude\plans\lively-sniffing-shannon.md`(2026-10-25 核准)。
 
 為什麼不能靠刪除達成:指定程式擷取、CER 量測、專用模型路由都是現有程式沒有的能力(原本只有預設輸出裝置 loopback、沒有任何評測工具);擷取迴圈本身是就地改寫(逐包讀取 → 讀到空),沒有新增並行路徑。
@@ -11,7 +13,7 @@
 - [x] B. CER 量測:`scripts/fetch-eval.py`、`eval.rs`、bench `asr-eval`(逐句、串流)、基準數字(4ca200f)
 - [x] C. 低成本修補:C1 preroll(依引擎 800/200 ms)、C2 清理(保留)、C3 短稿補救(A/B 無益,已刪除)(4ca200f、b1adc35、c73a00f、c26e6b4)
 - [x] D. 專用模型:ReazonSpeech、Parakeet、路由;合成靜音 350 ms;不取代 Whisper,當 CPU 選項(4ca200f、f26fe4a、c73a00f)
-- [ ] E. verify skill、實跑 E2E、報告、決策紀錄、審查、/handoff-check
+- [x] E. verify skill、實跑 E2E、報告、決策紀錄、審查、/handoff-check
 
 # 相關檔案
 
@@ -35,5 +37,5 @@
 - [x] `cargo test --workspace`、`pnpm build`
 - [x] capture-probe 實測數字
 - [x] asr-eval 數字表寫入 `docs/validation-report.md`(6h、6i)
-- [ ] 指定程式 E2E(tts-smoke + 切換)證據過 evidence gate
-- [ ] `/handoff-check` 全 PASS
+- [x] 指定程式 E2E(tts-smoke + 切換)證據過 evidence gate
+- [x] `/handoff-check` 全 PASS
