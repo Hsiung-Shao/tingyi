@@ -177,6 +177,9 @@ enum Cmd {
         /// 不調的話會和底噪一樣小聲,不像真實播放
         #[arg(long, default_value_t = -26.0, allow_hyphen_values = true)]
         level_dbfs: f32,
+        /// 串流模式:專用模型段首段尾墊的合成靜音毫秒(routed 引擎)
+        #[arg(long)]
+        transducer_pad_ms: Option<u32>,
     },
 }
 
@@ -208,7 +211,7 @@ fn make_engine(
             let t0 = Instant::now();
             let load = [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect();
             let sv = SenseVoiceConfig { num_threads: threads, language: lock, ..Default::default() };
-            let r = tingyi_core::route::RoutedTranscriber::new(&sv, &load, paths::REAZONSPEECH_JA_DIR_NAME)?;
+            let r = tingyi_core::route::RoutedTranscriber::new(&sv, &load, paths::REAZONSPEECH_JA_DIR_NAME, 0)?;
             println!("routed 載入 {} ms({:?})", t0.elapsed().as_millis(), r.available());
             Ok((Box::new(r), None))
         }
@@ -377,6 +380,7 @@ struct StreamOpts {
     max_speech_sec: Option<f32>,
     tuning: bool,
     level_dbfs: f32,
+    transducer_pad_ms: Option<u32>,
 }
 
 /// 把整段縮放到指定 RMS(dBFS),clip 在 ±1。
@@ -407,6 +411,8 @@ struct StreamSummary {
     asr_ms: tingyi_core::metrics::Stats,
     /// VAD 切出的段落總長 ÷ 參考句總長(含補白,> 1 代表多切了靜音;明顯 < 1 代表語音沒進辨識)
     vad_coverage: f64,
+    /// 辨識段時間戳比前一段早(VAD 重建原點錯誤的回歸檢查,應為 0)
+    ts_backwards: usize,
 }
 
 /// 串流評測:句子接成長音訊走完整管線,主指標是整條 session 串接後的錯誤率(不受切段影響)。
@@ -434,8 +440,9 @@ async fn run_stream_eval(
             (other, None) => return Err(anyhow!("串流模式不支援引擎 {other}(可用 sensevoice、whisper、routed)")),
         };
         let tag = format!(
-            "{engine}{}{}{}{}{}{}",
+            "{engine}{}{}{}{}{}{}{}",
             if opts.level_dbfs == -26.0 { String::new() } else { format!("-lv{}", opts.level_dbfs) },
+            opts.transducer_pad_ms.map(|ms| format!("-tpad{ms}")).unwrap_or_default(),
             opts.pre_pad_ms.map(|ms| format!("-pre{ms}")).unwrap_or_default(),
             if opts.rescue { "-rescue" } else { "" },
             if opts.cleanup { "" } else { "-nocleanup" },
@@ -470,6 +477,9 @@ async fn run_stream_eval(
                     cfg.vad.max_speech_sec = s;
                 }
                 cfg.seg_tuning = opts.tuning;
+                if let Some(ms) = opts.transducer_pad_ms {
+                    cfg.transducer_pad_ms = ms;
+                }
                 cfg.lock_lang = (!auto).then_some(lang);
                 if cfg.lock_lang.is_some() {
                     cfg.allowed_langs = HashSet::new();
@@ -512,6 +522,7 @@ async fn run_stream_eval(
                 let ops = score(&reference, &hyp, lang);
                 corpus.add(&ops);
                 let hyp_spans: Vec<(usize, usize)> = hyps.iter().map(|h| h.1).collect();
+                s.ts_backwards += hyp_spans.windows(2).filter(|w| w[1].0 < w[0].0).count();
                 let groups = group_alignment(&spans, &hyp_spans, 3_200);
                 for g in &groups {
                     match g.kind {
@@ -536,11 +547,12 @@ async fn run_stream_eval(
             s.asr_ms = tingyi_core::metrics::Stats::from_samples(asr_ms);
             s.vad_coverage = seg_audio_ms as f64 / ref_audio_ms.max(1) as f64;
             println!(
-                "[串流] {tag:<16} {set:<10} {} 條/{} 句 → {} 段(覆蓋 {:.0}%)  {}={:>6.2}%(替換 {} 刪除 {} 插入 {} / {})  一對一 {} 切開 {} 合併 {} 漏掉 {} 多出 {}  辨識 p50 {} ms",
+                "[串流] {tag:<16} {set:<10} {} 條/{} 句 → {} 段(覆蓋 {:.0}%、時間倒退 {})  {}={:>6.2}%(替換 {} 刪除 {} 插入 {} / {})  一對一 {} 切開 {} 合併 {} 漏掉 {} 多出 {}  辨識 p50 {} ms",
                 s.sessions,
                 s.utts,
                 s.segments,
                 s.vad_coverage * 100.0,
+                s.ts_backwards,
                 if lang == Lang::En { "WER" } else { "CER" },
                 s.error_rate * 100.0,
                 s.ops.sub,
@@ -711,10 +723,12 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::AsrEval {
-            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, rescue, no_cleanup, max_speech_sec, no_tuning, level_dbfs,
+            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, rescue, no_cleanup, max_speech_sec, no_tuning, level_dbfs, transducer_pad_ms,
         } => {
             if stream {
-                let opts = StreamOpts { session_size, pre_pad_ms, rescue, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs };
+                let opts = StreamOpts {
+                    session_size, pre_pad_ms, rescue, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs, transducer_pad_ms,
+                };
                 run_stream_eval(&sets, &engines, limit, threads, auto, &opts, &out).await?
             } else {
                 run_asr_eval(&sets, &engines, limit, threads, auto, !no_normalize, &out)?

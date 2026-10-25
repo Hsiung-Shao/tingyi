@@ -70,9 +70,10 @@ pub struct RoutedTranscriber {
 impl RoutedTranscriber {
     /// 只載入 `load` 裡語言的專用模型;模型目錄不存在就略過(該語言退回 SenseVoice)。
     /// `sv.language` 有值時 SenseVoice 鎖定該語言(鎖定韓文等沒有專用模型的語言時才會用到)。
-    pub fn new(sv: &SenseVoiceConfig, load: &HashSet<Lang>, reazonspeech_dir: &str) -> Result<Self> {
-        let ja = TransducerConfig::reazonspeech(reazonspeech_dir, sv.num_threads);
-        let en = TransducerConfig::parakeet(sv.num_threads);
+    /// `pad_ms`:送專用模型前段首段尾墊的合成靜音(見 `TransducerConfig::pad_ms`)。
+    pub fn new(sv: &SenseVoiceConfig, load: &HashSet<Lang>, reazonspeech_dir: &str, pad_ms: u32) -> Result<Self> {
+        let ja = TransducerConfig { pad_ms, ..TransducerConfig::reazonspeech(reazonspeech_dir, sv.num_threads) };
+        let en = TransducerConfig { pad_ms, ..TransducerConfig::parakeet(sv.num_threads) };
         let build = |want: bool, cfg: TransducerConfig| -> Result<Option<SherpaTransducer>> {
             Ok(if want && cfg.dir.exists() { Some(SherpaTransducer::new(&cfg)?) } else { None })
         };

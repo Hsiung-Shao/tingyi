@@ -140,6 +140,8 @@ pub struct PipelineConfig {
     pub cleanup: bool,
     /// 短稿補救(字數明顯太少時切兩半重解);bench A/B 後決定預設。
     pub rescue: bool,
+    /// 專用模型(ReazonSpeech、Parakeet)段首段尾墊的合成靜音毫秒;bench A/B 後決定預設。
+    pub transducer_pad_ms: u32,
     /// 前文採「累加式」:舊句固定不動、只在尾端加新句,讓 llama-server 的提示快取命中;
     /// 累計字元超過 `context_max_chars` 時整批清到剩最近 `context_sentences` 句(快取失效一次後重建)。
     pub context_sentences: usize,
@@ -194,6 +196,7 @@ impl Default for PipelineConfig {
             replacements: Vec::new(),
             cleanup: true,
             rescue: false,
+            transducer_pad_ms: 0,
             context_sentences: 6,
             context_max_chars: 1600,
             incomplete_wait: Duration::from_millis(2500),
@@ -360,6 +363,7 @@ fn start_inner(
             &sv_cfg,
             &resolve_load_set(cfg.lock_lang, &cfg.allowed_langs),
             crate::paths::REAZONSPEECH_JA_DIR_NAME,
+            cfg.transducer_pad_ms,
         )?),
     };
     let segmenter = Segmenter::new(&cfg.vad)?;
