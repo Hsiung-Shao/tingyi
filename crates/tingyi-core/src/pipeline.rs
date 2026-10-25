@@ -138,9 +138,8 @@ pub struct PipelineConfig {
     pub replacements: Vec<Replacement>,
     /// 幻聽式重複壓縮 + 取代表;bench A/B 可關。
     pub cleanup: bool,
-    /// 短稿補救(字數明顯太少時切兩半重解);bench A/B 後決定預設。
-    pub rescue: bool,
-    /// 專用模型(ReazonSpeech、Parakeet)段首段尾墊的合成靜音毫秒;bench A/B 後決定預設。
+    /// 專用模型(ReazonSpeech、Parakeet)段首段尾墊的合成靜音毫秒。
+    /// 2026-10-25 串流評測:ReazonSpeech 遇到段首直接是語音會吞第一個詞,墊 350 ms 後 FLEURS 日文 10.79% → 7.13%。
     pub transducer_pad_ms: u32,
     /// 前文採「累加式」:舊句固定不動、只在尾端加新句,讓 llama-server 的提示快取命中;
     /// 累計字元超過 `context_max_chars` 時整批清到剩最近 `context_sentences` 句(快取失效一次後重建)。
@@ -195,8 +194,7 @@ impl Default for PipelineConfig {
             glossary: Glossary::default(),
             replacements: Vec::new(),
             cleanup: true,
-            rescue: false,
-            transducer_pad_ms: 0,
+            transducer_pad_ms: 350,
             context_sentences: 6,
             context_max_chars: 1600,
             incomplete_wait: Duration::from_millis(2500),
@@ -664,31 +662,6 @@ pub(crate) fn clean(cfg: &PipelineConfig, text: String) -> Option<String> {
     }
 }
 
-/// 短稿補救:字數明顯太少時在段內低能量處切兩半各自重解(兩側墊 0.35 s 合成靜音;以段落語言作提示:專用模型/Whisper 會固定語言,
-/// SenseVoice 的語言只能在建立時鎖定,未鎖定時兩半仍自動判斷),
-/// 重解更長、字速正常且保留原結果尾段才採用。
-fn rescue_text(asr: &dyn Transcriber, pcm: &[f32], text: &str, speech_ms: u32, lang: Lang, cfg: &PipelineConfig) -> Option<String> {
-    if !crate::rescue::should_rescue(text, speech_ms, lang) {
-        return None;
-    }
-    let at = crate::rescue::find_split(pcm, TARGET_SAMPLE_RATE as u32)?;
-    let pad = vec![0.0f32; TARGET_SAMPLE_RATE as usize * 35 / 100];
-    let mut parts = Vec::new();
-    for half in [&pcm[..at], &pcm[at..]] {
-        let mut padded = pad.clone();
-        padded.extend_from_slice(half);
-        padded.extend_from_slice(&pad);
-        let t = asr.transcribe(&padded, Some(lang)).ok()?;
-        if let Some(s) = clean(cfg, t.text).filter(|s| !s.is_empty()) {
-            parts.push(s);
-        }
-    }
-    let retry = parts.join(if lang.is_cjk() { "" } else { " " });
-    let accepted = crate::rescue::accept_retry(text, &retry, speech_ms, lang);
-    tracing::debug!("短稿補救({}):{text} → {retry}", if accepted { "採用" } else { "放棄" });
-    accepted.then_some(retry)
-}
-
 /// 正式辨識 + 說話者 + 斷句觀察值回饋。
 #[allow(clippy::too_many_arguments)]
 fn asr_loop(
@@ -735,12 +708,6 @@ fn asr_loop(
         match clean(&cfg, std::mem::take(&mut t.text)) {
             Some(text) => t.text = text,
             None => tracing::debug!("丟棄幻聽段落 #{id}"),
-        }
-        if cfg.rescue && !t.text.is_empty() {
-            let lang = cfg.lock_lang.unwrap_or(t.lang);
-            if let Some(text) = rescue_text(asr.as_ref(), &pcm, &t.text, core_ms, lang, &cfg) {
-                t.text = text;
-            }
         }
         timing.asr_done = Some(Instant::now());
         stats.record_asr(t.asr_ms);

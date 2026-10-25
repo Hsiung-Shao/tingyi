@@ -19,7 +19,7 @@
 |------|------|------|
 | crates/tingyi-core/src/audio/{capture,source}.rs | 修改/新增 | 擷取、程式來源 |
 | crates/tingyi-core/src/{pipeline,vad,refine,asr,metrics,lib}.rs | 修改 | 熱切換、preroll、路由 |
-| crates/tingyi-core/src/{eval,cleanup,rescue}.rs | 新增 | 評測、清理、補救 |
+| crates/tingyi-core/src/{eval,cleanup,route}.rs | 新增 | 評測、清理、路由(短稿補救 A/B 無益已刪除) |
 | crates/tingyi-bench/src/main.rs | 修改 | capture-probe、asr-eval |
 | src-tauri/src/{commands,state,lib}.rs | 修改 | 來源命令、引擎選項 |
 | src/App.tsx、src/lib/types.ts | 修改 | 來源下拉、取代表、引擎 |

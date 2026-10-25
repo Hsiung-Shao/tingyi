@@ -161,9 +161,6 @@ enum Cmd {
         /// 串流模式:段首往前補的緩衝(毫秒,預設沿用 VadConfig)
         #[arg(long)]
         pre_pad_ms: Option<u32>,
-        /// 串流模式:開啟短稿補救
-        #[arg(long)]
-        rescue: bool,
         /// 串流模式:關閉幻聽重複壓縮
         #[arg(long)]
         no_cleanup: bool,
@@ -375,7 +372,6 @@ fn run_asr_eval(sets: &[String], engines: &[String], limit: usize, threads: i32,
 struct StreamOpts {
     session_size: usize,
     pre_pad_ms: Option<u32>,
-    rescue: bool,
     cleanup: bool,
     max_speech_sec: Option<f32>,
     tuning: bool,
@@ -440,11 +436,10 @@ async fn run_stream_eval(
             (other, None) => return Err(anyhow!("串流模式不支援引擎 {other}(可用 sensevoice、whisper、routed)")),
         };
         let tag = format!(
-            "{engine}{}{}{}{}{}{}{}",
+            "{engine}{}{}{}{}{}{}",
             if opts.level_dbfs == -26.0 { String::new() } else { format!("-lv{}", opts.level_dbfs) },
             opts.transducer_pad_ms.map(|ms| format!("-tpad{ms}")).unwrap_or_default(),
             opts.pre_pad_ms.map(|ms| format!("-pre{ms}")).unwrap_or_default(),
-            if opts.rescue { "-rescue" } else { "" },
             if opts.cleanup { "" } else { "-nocleanup" },
             opts.max_speech_sec.map(|s| format!("-max{s}")).unwrap_or_default(),
             if opts.tuning { "" } else { "-notune" }
@@ -468,7 +463,6 @@ async fn run_stream_eval(
                 cfg.preview = false;
                 cfg.speaker_id = false;
                 cfg.refine.enabled = false;
-                cfg.rescue = opts.rescue;
                 cfg.cleanup = opts.cleanup;
                 if let Some(ms) = opts.pre_pad_ms {
                     cfg.vad.pre_pad_ms = ms;
@@ -723,11 +717,11 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::AsrEval {
-            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, rescue, no_cleanup, max_speech_sec, no_tuning, level_dbfs, transducer_pad_ms,
+            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, no_cleanup, max_speech_sec, no_tuning, level_dbfs, transducer_pad_ms,
         } => {
             if stream {
                 let opts = StreamOpts {
-                    session_size, pre_pad_ms, rescue, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs, transducer_pad_ms,
+                    session_size, pre_pad_ms, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs, transducer_pad_ms,
                 };
                 run_stream_eval(&sets, &engines, limit, threads, auto, &opts, &out).await?
             } else {

@@ -13,7 +13,6 @@ pub mod sysmon;
 pub mod asr;
 pub mod route;
 pub mod cleanup;
-pub mod rescue;
 pub mod mt;
 pub mod postprocess;
 pub mod metrics;

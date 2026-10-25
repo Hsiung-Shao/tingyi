@@ -20,7 +20,7 @@
 
 | 目錄 | 內容 |
 |---|---|
-| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`cleanup`、`rescue`(短稿補救)、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`paths` |
+| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`cleanup`、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`paths` |
 | `crates/tingyi-bench` | 量測 CLI:`devices` / `capture-probe` / `vad` / `asr` / `asr-file` / `asr-eval` / `mt` / `live` / `serve` |
 | `src-tauri` | Tauri 2 後端:命令、狀態、事件轉發 |
 | `src` | React 19 + Tailwind 4 前端:`App.tsx` 主視窗、`Overlay.tsx` 懸浮字幕 |
