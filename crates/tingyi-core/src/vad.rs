@@ -81,9 +81,8 @@ pub struct Segmenter {
     vad: VoiceActivityDetector,
     pre_pad: i64,
     post_pad: i64,
-    /// 上一段語音本體的結尾與是否被強制切開(補白不切進前一段、強制切段不補白)。
+    /// 上一段語音本體的結尾(補白不切進前一段)。
     last_core_end: Option<i64>,
-    last_forced: bool,
     /// 已餵進 Segmenter 的總樣本數。
     fed: i64,
     /// 目前這個 VAD 建立時的 `fed`:sherpa VAD 回傳的 start 從建立時起算,換參數重建後要加回原點。
@@ -111,7 +110,6 @@ impl Segmenter {
             pre_pad: ms_to_samples(cfg.pre_pad_ms),
             post_pad: ms_to_samples(cfg.pad_ms),
             last_core_end: None,
-            last_forced: false,
             fed: 0,
             vad_origin: 0,
             history: VecDeque::with_capacity(history_cap),
@@ -258,9 +256,8 @@ impl Segmenter {
         let forced = n as f32 >= max_n * 0.95;
         let hist = (self.history_start, self.history_start + self.history.len() as i64);
         let (want_start, want_end) =
-            pad_bounds(start, start + n, self.pre_pad, self.post_pad, hist, self.last_core_end, self.last_forced, forced);
+            pad_bounds(start, start + n, self.pre_pad, self.post_pad, hist, self.last_core_end, forced);
         self.last_core_end = Some(start + n);
-        self.last_forced = forced;
         let core = (start, start + n);
         // history 可能已不含這段(極端情況),就退回 VAD 給的原始樣本。
         if want_start >= want_end || start < self.history_start {
@@ -287,7 +284,6 @@ impl Segmenter {
 /// 段落補白後的範圍 [start, end)(樣本索引)。
 /// - 前段補 `pre`、後段補 `post`,都夾在 history 範圍 `hist` 內;
 /// - 前段不得早於前一段語音本體的結尾 `prev_core_end`(避免邊界字在兩段各出現一次);
-/// - 前一段是撞上限被強制切開的(`prev_forced`):話沒停,這段前面不補;
 /// - 這段自己是強制切開的(`forced`):後面不補,下一段會從語音本體接著開始。
 #[allow(clippy::too_many_arguments)]
 pub fn pad_bounds(
@@ -297,10 +293,9 @@ pub fn pad_bounds(
     post: i64,
     hist: (i64, i64),
     prev_core_end: Option<i64>,
-    prev_forced: bool,
     forced: bool,
 ) -> (i64, i64) {
-    let start = (core_start - if prev_forced { 0 } else { pre })
+    let start = (core_start - pre)
         .max(prev_core_end.unwrap_or(i64::MIN))
         .max(hist.0);
     let end = (core_end + if forced { 0 } else { post }).min(hist.1);
@@ -363,30 +358,36 @@ mod tests {
     // T17:沒有前段時前後都補白
     #[test]
     fn pad_bounds_no_prev_pads_both_sides() {
-        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, false, false), (8000, 35200));
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, false), (8000, 35200));
     }
 
     // T17:前一段本體結尾在補白範圍內時,起點不得早於它
     #[test]
     fn pad_bounds_start_not_before_prev_core_end() {
-        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), Some(12000), false, false), (12000, 35200));
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), Some(12000), false), (12000, 35200));
     }
 
-    // T17:前一段是強制切開時,這段前面不補白
+    // T17:前一段語音本體結尾遠於 pre 範圍時,起點照補 preroll
     #[test]
-    fn pad_bounds_prev_forced_no_pre_pad() {
-        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, true, false), (16000, 35200));
+    fn pad_bounds_far_prev_core_still_pre_pads() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), Some(4000), false), (8000, 35200));
+    }
+
+    // T17:前一段語音本體結尾緊接本段起點時,起點不重疊
+    #[test]
+    fn pad_bounds_contiguous_prev_core_no_overlap() {
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), Some(16000), false), (16000, 35200));
     }
 
     // T17:這段是強制切開時,後面不補白
     #[test]
     fn pad_bounds_forced_no_post_pad() {
-        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, false, true), (8000, 32000));
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (0, 100000), None, true), (8000, 32000));
     }
 
     // T17:補白超出 history 範圍時夾在範圍內
     #[test]
     fn pad_bounds_clamped_to_history() {
-        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (10000, 33000), None, false, false), (10000, 33000));
+        assert_eq!(pad_bounds(16000, 32000, 8000, 3200, (10000, 33000), None, false), (10000, 33000));
     }
 }

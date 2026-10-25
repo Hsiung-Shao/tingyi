@@ -660,7 +660,8 @@ pub(crate) fn clean(cfg: &PipelineConfig, text: String) -> Option<String> {
     }
 }
 
-/// 短稿補救:字數明顯太少時在段內低能量處切兩半各自重解(兩側墊 0.35 s 合成靜音、語言固定),
+/// 短稿補救:字數明顯太少時在段內低能量處切兩半各自重解(兩側墊 0.35 s 合成靜音;以段落語言作提示:專用模型/Whisper 會固定語言,
+/// SenseVoice 的語言只能在建立時鎖定,未鎖定時兩半仍自動判斷),
 /// 重解更長、字速正常且保留原結果尾段才採用。
 fn rescue_text(asr: &dyn Transcriber, pcm: &[f32], text: &str, speech_ms: u32, lang: Lang, cfg: &PipelineConfig) -> Option<String> {
     if !crate::rescue::should_rescue(text, speech_ms, lang) {

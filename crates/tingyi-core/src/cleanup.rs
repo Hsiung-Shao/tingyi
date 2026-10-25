@@ -38,7 +38,7 @@ pub fn apply_replacements(text: &str, rules: &[Replacement]) -> String {
 const MAX_UNIT: usize = 4;
 const MIN_REPEATS: usize = 5;
 
-/// 壓縮幻聽式重複:1–4 字的單位連續出現 ≥ 5 次時只保留 2 次。
+/// 壓縮幻聽式重複:1–4 字的單位連續出現 ≥ 5 次時只保留 2 次(單位含數字者不壓)。
 /// 壓縮後整段只剩那個重複單位(忽略標點空白)代表是幻聽,回 None。
 pub fn collapse_repeats(text: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -55,7 +55,8 @@ pub fn collapse_repeats(text: &str) -> Option<String> {
             while i + (n + 1) * l <= chars.len() && &chars[i + n * l..i + (n + 1) * l] == unit {
                 n += 1;
             }
-            if n >= MIN_REPEATS {
+            // 含數字的單位(如 100000 的 0)是金額/數量,不是幻聽,不壓縮
+            if n >= MIN_REPEATS && !unit.iter().any(|c| c.is_numeric()) {
                 out.extend(unit.iter().chain(unit));
                 units.push(unit);
                 i += n * l;
@@ -103,6 +104,13 @@ mod tests {
     #[test]
     fn collapse_repeats_trailing_repeat_keeps_two() {
         assert_eq!(collapse_repeats("あはははははは"), Some("あはは".to_string()));
+    }
+
+    // T18:數字連續重複(金額、零)不壓縮,原樣輸出
+    #[test]
+    fn collapse_repeats_keeps_digit_runs() {
+        assert_eq!(collapse_repeats("100000円"), Some("100000円".to_string()));
+        assert_eq!(collapse_repeats("1000000"), Some("1000000".to_string()));
     }
 
     // T18:英文詞重複 6 次壓成 2 次(前面有其他詞所以不算整段幻聽)

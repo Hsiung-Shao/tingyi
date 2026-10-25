@@ -129,8 +129,9 @@ export default function App() {
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("#"))
       .map((l) => {
-        const [from, to] = l.split(/\t|=|→/).map((x) => x?.trim() ?? "");
-        return { from, to };
+        // 只切第一個分隔符;沒有分隔符的行略過,右側留空才是明確的刪除規則
+        const m = l.match(/^(.*?)(?:\t|=|→)(.*)$/);
+        return m ? { from: m[1].trim(), to: m[2].trim() } : { from: "", to: "" };
       })
       .filter((r) => r.from);
 
@@ -333,7 +334,7 @@ export default function App() {
               value={replaceText}
               onChange={(e) => setReplaceText(e.target.value)}
               disabled={running}
-              placeholder={"(辨識常錯的人名、專有名詞)\n騎士=棋士"}
+              placeholder={"(辨識常錯的人名、專有名詞)\n騎士=棋士\n錯字=(留空代表刪除)"}
             />
           </section>
 
