@@ -4,6 +4,7 @@ use crate::asr::{Lang, SenseVoice, SenseVoiceConfig, SherpaTransducer, Transduce
 use anyhow::Result;
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::path::Path;
 
 /// 正式辨識用哪個模型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +58,26 @@ pub fn resolve_load_set(lock: Option<Lang>, allowed: &HashSet<Lang>) -> HashSet<
     }
 }
 
+/// 載入選用的專用模型:檔案未就緒回 (None, None);建立失敗回 (None, 錯誤訊息),該語言退回 SenseVoice,
+/// 不讓整個 session 啟動失敗。
+pub fn load_optional<T>(label: &str, ready: bool, build: impl FnOnce() -> Result<T>) -> (Option<T>, Option<String>) {
+    if !ready {
+        return (None, None);
+    }
+    match build() {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(format!("{label}專用模型載入失敗,改用 SenseVoice:{e:#}"))),
+    }
+}
+
+/// 模型目錄可用:在下載規格表裡要每個檔案大小正確,不在表裡(bench 的其他版本)只看目錄存在。
+fn transducer_ready(dir: &Path) -> bool {
+    match (dir.parent(), dir.file_name().and_then(|n| n.to_str())) {
+        (Some(models_dir), Some(name)) => crate::model_download::dir_ready(models_dir, name),
+        _ => dir.exists(),
+    }
+}
+
 /// 依語言路由的正式辨識:鎖定語言直接路由;自動模式先用 SenseVoice 判語言(結果也當後備),
 /// 再交給該語言的專用模型。專用模型回空字串時退回 SenseVoice 的結果。
 pub struct RoutedTranscriber {
@@ -65,28 +86,37 @@ pub struct RoutedTranscriber {
     parakeet: Option<SherpaTransducer>,
     /// 上一句的語言(全漢字短句判斷用)。
     prev: Cell<Option<Lang>>,
+    load_errors: Vec<String>,
 }
 
 impl RoutedTranscriber {
-    /// 只載入 `load` 裡語言的專用模型;模型目錄不存在就略過(該語言退回 SenseVoice)。
+    /// 只載入 `load` 裡語言的專用模型;模型檔不齊就略過,建立失敗記進 `load_errors`(兩者都退回 SenseVoice)。
     /// `sv.language` 有值時 SenseVoice 鎖定該語言(鎖定韓文等沒有專用模型的語言時才會用到)。
     /// `pad_ms`:送專用模型前段首段尾墊的合成靜音(見 `TransducerConfig::pad_ms`)。
     pub fn new(sv: &SenseVoiceConfig, load: &HashSet<Lang>, reazonspeech_dir: &str, pad_ms: u32) -> Result<Self> {
         let ja = TransducerConfig { pad_ms, ..TransducerConfig::reazonspeech(reazonspeech_dir, sv.num_threads) };
         let en = TransducerConfig { pad_ms, ..TransducerConfig::parakeet(sv.num_threads) };
-        let build = |want: bool, cfg: TransducerConfig| -> Result<Option<SherpaTransducer>> {
-            Ok(if want && cfg.dir.exists() { Some(SherpaTransducer::new(&cfg)?) } else { None })
+        let build = |label: &str, want: bool, cfg: TransducerConfig| {
+            load_optional(label, want && transducer_ready(&cfg.dir), || SherpaTransducer::new(&cfg))
         };
+        let (reazonspeech, ja_err) = build("日文", load.contains(&Lang::Ja), ja);
+        let (parakeet, en_err) = build("英文", load.contains(&Lang::En), en);
         Ok(Self {
             sensevoice: SenseVoice::new(sv)?,
-            reazonspeech: build(load.contains(&Lang::Ja), ja)?,
-            parakeet: build(load.contains(&Lang::En), en)?,
+            reazonspeech,
+            parakeet,
             prev: Cell::new(None),
+            load_errors: ja_err.into_iter().chain(en_err).collect(),
         })
     }
 
     pub fn available(&self) -> Available {
         Available { reazonspeech: self.reazonspeech.is_some(), parakeet: self.parakeet.is_some() }
+    }
+
+    /// 建立失敗而退回 SenseVoice 的專用模型(給 UI 顯示)。
+    pub fn load_errors(&self) -> &[String] {
+        &self.load_errors
     }
 }
 
@@ -222,5 +252,36 @@ mod tests {
     #[test]
     fn load_set_default_en_ja_ko() {
         assert_eq!(resolve_load_set(None, &HashSet::new()), set(&[Lang::En, Lang::Ja, Lang::Ko]));
+    }
+
+    // T20:專用模型建立失敗時回 (None, 含標籤與原因的訊息)
+    #[test]
+    fn load_optional_build_failure_reports_error() {
+        let (v, err) = load_optional("日文", true, || -> anyhow::Result<u8> { Err(anyhow::anyhow!("壞檔")) });
+        assert_eq!(v, None);
+        let msg = err.expect("建立失敗應回錯誤訊息");
+        assert!(msg.contains("日文"), "實得 {msg:?}");
+        assert!(msg.contains("壞檔"), "實得 {msg:?}");
+    }
+
+    // T20:檔案未就緒時回 (None, None) 且不呼叫 build
+    #[test]
+    fn load_optional_not_ready_skips_build() {
+        let calls = std::cell::Cell::new(0u32);
+        let (v, err) = load_optional("日文", false, || -> anyhow::Result<u8> {
+            calls.set(calls.get() + 1);
+            Ok(1)
+        });
+        assert_eq!(v, None);
+        assert_eq!(err, None);
+        assert_eq!(calls.get(), 0, "未就緒不應呼叫 build");
+    }
+
+    // T20:建立成功時回 (Some(值), None)
+    #[test]
+    fn load_optional_success_returns_value() {
+        let (v, err) = load_optional("日文", true, || -> anyhow::Result<u8> { Ok(7) });
+        assert_eq!(v, Some(7));
+        assert_eq!(err, None);
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use tingyi_core::audio::source::SourceControl;
+use tingyi_core::model_download::DownloadRegistry;
 use tingyi_core::llama::{LlamaServerProcess, WhisperServerProcess};
 use tingyi_core::pipeline::PipelineHandle;
 use tingyi_core::sysmon::{Sampler, Watched};
@@ -18,6 +19,8 @@ pub struct AppState {
     pub seg_control: Arc<SegControl>,
     /// 音訊來源;跨回合保留,執行中切換由擷取執行緒即時套用。
     pub audio_source: Arc<SourceControl>,
+    /// 進行中的專用模型下載(同一個模型同時只能一個)。
+    pub downloads: Arc<DownloadRegistry>,
     pub pipeline: Mutex<Option<PipelineHandle>>,
     pub forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -29,6 +32,8 @@ impl AppState {
 
     /// 關閉時同步清理(視窗關閉事件沒有 async 環境)。
     pub fn shutdown_blocking(&self) {
+        // 下載執行緒會在下一次讀取後停下,暫存檔保留供下次續傳
+        self.downloads.cancel_all();
         if let Ok(mut p) = self.pipeline.lock() {
             // drop 即釋放擷取執行緒;worker 會隨 channel 斷線結束。
             p.take();

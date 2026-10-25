@@ -90,13 +90,13 @@ if ($With7B) {
 
 Write-Host "將下載以下檔案到 $root :"
 foreach ($i in $items) {
-    $state = if ((Test-Path $i.Dest) -or ($i.Extracted -and (Test-Path $i.Extracted))) { '已存在,略過' } else { '待下載' }
+    $state = if ((Test-Path $i.Dest) -or ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt')))) { '已存在,略過' } else { '待下載' }
     Write-Host ("  [{0}] {1,-32} {2,8}  來源:{3}" -f $state, $i.Name, $i.Size, $i.Source)
 }
 if ($ListOnly) { exit 0 }
 
 foreach ($i in $items) {
-    if ((Test-Path $i.Dest) -or ($i.Extracted -and (Test-Path $i.Extracted))) { continue }
+    if ((Test-Path $i.Dest) -or ($i.Extracted -and (Test-Path (Join-Path $i.Extracted 'tokens.txt')))) { continue }
     Write-Host "下載 $($i.Name) ..."
     $tmp = "$($i.Dest).part"
     & curl.exe -L --retry 3 --progress-bar -o $tmp $i.Url
@@ -105,7 +105,8 @@ foreach ($i in $items) {
 }
 
 foreach ($i in $items | Where-Object { $_.Extracted }) {
-    if (Test-Path $i.Extracted) { continue }
+    # 以 tokens.txt 當完成標記:解壓中斷留下的半套目錄不算完成
+    if (Test-Path (Join-Path $i.Extracted 'tokens.txt')) { continue }
     Write-Host "解壓 $($i.Name) ..."
     & tar.exe -xjf $i.Dest -C $models
     if ($LASTEXITCODE -ne 0) { throw "解壓失敗:$($i.Dest)" }

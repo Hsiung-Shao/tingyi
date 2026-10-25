@@ -14,6 +14,7 @@ use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
 use tingyi_core::pipeline::{self, PipelineConfig};
 use tingyi_core::postprocess::{Glossary, GlossaryEntry};
 use tingyi_core::export::{self, ExportSentence};
+use tingyi_core::model_download::{self as md, DownloadError, DownloadOptions, ModelStatus, Phase, Progress};
 use tingyi_core::{gpu, paths};
 
 use crate::state::AppState;
@@ -111,9 +112,8 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
             id: "routed".into(),
             label: "專用模型(CPU,日文 ReazonSpeech / 英文 Parakeet)".into(),
             present: paths::sensevoice_model().exists()
-                && (paths::models_dir().join(paths::REAZONSPEECH_JA_DIR_NAME).exists()
-                    || paths::models_dir().join(paths::PARAKEET_DIR_NAME).exists()),
-            note: "不佔顯示記憶體;韓文仍用 SenseVoice;需 download-models.ps1 -WithReazonSpeech / -WithParakeet".into(),
+                && md::MODELS.iter().any(|m| md::model_status(m, &paths::models_dir()) == ModelStatus::Ready),
+            note: "不佔顯示記憶體;韓文仍用 SenseVoice;模型在下方下載".into(),
         },
         AsrEngineInfo {
             id: "whisper-turbo".into(),
@@ -430,6 +430,99 @@ pub fn get_audio_source(state: State<'_, AppState>) -> AudioSourceState {
         source: state.audio_source.get().0,
         waiting: state.audio_source.waiting(),
     }
+}
+
+/// 一個專用模型的狀態(下載卡用)。
+#[derive(Serialize)]
+pub struct RoutedModelState {
+    pub id: String,
+    pub label: String,
+    pub lang: Lang,
+    pub size_bytes: u64,
+    pub ready: bool,
+    pub downloading: bool,
+    /// 已下載位元組:下載中為即時進度;中斷過則是可續傳的起點。
+    pub done: u64,
+    pub license: String,
+    pub license_url: String,
+}
+
+/// 專用模型的就緒與下載狀態;只讀檔案大小,不呼叫 nvidia-smi(前端掛載與重載時查一次)。
+#[tauri::command]
+pub async fn routed_models_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
+    let registry = state.downloads.clone();
+    tokio::task::spawn_blocking(move || {
+        let dir = paths::models_dir();
+        md::MODELS
+            .iter()
+            .map(|m| {
+                let total = m.total_size();
+                let snapshot = registry.snapshot(m.id);
+                RoutedModelState {
+                    id: m.id.into(),
+                    label: m.label.into(),
+                    lang: m.lang,
+                    size_bytes: total,
+                    ready: md::model_status(m, &dir) == ModelStatus::Ready,
+                    downloading: snapshot.is_some(),
+                    done: snapshot.map(|(d, _)| d).unwrap_or_else(|| total.saturating_sub(md::bytes_needed(m, &dir))),
+                    license: m.license.into(),
+                    license_url: m.license_url.into(),
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 開始下載一個專用模型(背景執行緒;進度以 `model-download` 事件推給主視窗)。
+/// 同一個模型已在下載中或磁碟空間不足時立即回錯;日文與英文可同時下載。
+#[tauri::command]
+pub async fn download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let spec = md::spec(&id).ok_or_else(|| format!("未知的模型:{id}"))?;
+    let guard = state.downloads.try_begin(spec.id).ok_or("此模型已在下載中")?;
+    let models_dir = paths::models_dir();
+    let dir2 = models_dir.clone();
+    tokio::task::spawn_blocking(move || md::check_disk_space(spec, &dir2))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    std::thread::Builder::new()
+        .name(format!("tingyi-download-{id}"))
+        .spawn(move || {
+            let ctl = guard.ctl();
+            let emit = |p: &Progress| {
+                let _ = app.emit_to("main", "model-download", p);
+            };
+            let result = md::download_model(spec, &models_dir, &DownloadOptions::default(), &ctl, &mut |p| emit(&p));
+            // 先解除登記再發最後一則事件,前端收到後查狀態才不會看到「下載中」
+            drop(guard);
+            let (phase, message) = match &result {
+                Ok(()) => (Phase::Done, None),
+                Err(DownloadError::Cancelled) => (Phase::Cancelled, None),
+                Err(e) => (Phase::Error, Some(e.to_string())),
+            };
+            if let Err(e) = &result {
+                tracing::warn!("下載 {} 未完成:{e}", spec.id);
+            }
+            emit(&Progress {
+                id: spec.id.into(),
+                phase,
+                done: ctl.done.load(std::sync::atomic::Ordering::Relaxed),
+                total: spec.total_size(),
+                bps: 0,
+                message,
+            });
+        })
+        .map_err(|e| format!("無法開始下載:{e}"))?;
+    Ok(())
+}
+
+/// 取消下載;暫存檔保留,下次從斷點續傳。
+#[tauri::command]
+pub fn cancel_model_download(state: State<'_, AppState>, id: String) -> bool {
+    state.downloads.cancel(&id)
 }
 
 /// 效能指標:系統 / 子程序資源 + 管線計數。前端每 2 s 拉一次;第一次呼叫才啟動取樣器。

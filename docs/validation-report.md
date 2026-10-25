@@ -270,6 +270,19 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 
 實跑驗證(`.claude/skills/verify`,CDP 操作 WebView2、不送鍵鼠):指定 TTS 程式 → 出現 TTS 字幕;執行中切到靜音播放器 → 12 秒內無新字幕(TTS 仍在唸);切回 → 再出現。破壞對照(擷取忽略世代號)會在負向那步失敗。未驗:有版權保護的串流(可能只有靜音)、裝置上完全沒有串流時的系統模式、Windows 10 2004 以前。
 
+## 6j. 安裝版內建專用模型下載(2026-10-25 加入)
+
+主視窗「辨識引擎」下方的小卡可分別下載日文 ReazonSpeech k2 v2(160 MB)與英文 Parakeet TDT 0.6B v2(661 MB):Hugging Face 固定 commit 逐檔下載(int8 + tokens),Range 續傳、整檔 SHA256 校驗,暫存在 `models/.download/` 全部通過才搬進正式目錄。就緒改為「每個檔案大小正確」(原本只看目錄存在);專用模型建立失敗時該語言退回 SenseVoice 並顯示錯誤,不再讓整個 session 啟動失敗。
+
+| 驗證 | 結果 |
+|---|---|
+| 單元測試(手寫 TCP 假伺服器:續傳、307 轉址後帶 Range、伺服器忽略 Range、內容竄改、送一半斷線、取消、404、503 後成功、卡住逾時、合併既有目錄) | 34 個全過 |
+| 真網路 `tingyi-bench download-model` | 日文 8.2 s、英文 15.0 s,兩者 Ready、8 個檔 SHA256 全符、暫存區清空 |
+| GUI 旅程 `verify_model_download.py`(本機替身 HF,限速 20 MB/s) | 下載 → 取消(`.part` 約 45 MB 保留)→ 繼續送 `Range: bytes=45105152-` → 已下載 → 專用模型可選 → 開始,log「模型載入完成:routed[reazonspeech]」 |
+| 破壞對照(下載完不搬進正式目錄) | 卡在「已下載」那步,exit 1 |
+
+實跑時發現並修正:下載在按「開始」前就完成,開始後仍顯示「下次按「開始」時生效」(舊的完成進度被誤判),旅程已加反向檢查。未驗:英文模型的 GUI 下載(程式路徑相同,只跑真網路 CLI)、需要代理的網路(不讀系統代理)、Hugging Face 限流與 CDN 網址過期(GUI 用本機替身)、磁碟不足與防毒鎖檔(只以錯誤碼單元測試)。
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。

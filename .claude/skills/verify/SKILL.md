@@ -14,7 +14,10 @@ description: 聽譯 tingyi(Tauri 2 Windows 桌面 app,即時字幕翻譯)的實�
 
 ```bash
 python .claude/skills/verify/scripts/verify_audio_source.py
+python .claude/skills/verify/scripts/verify_model_download.py
 ```
+
+第二支驗專用模型的 app 內下載(見 `features/routed-models.md`):自己架假 Hugging Face(本機 Range 伺服器,提供 `data/models` 的真實檔、限速),`TINGYI_DATA_DIR` 指向證據目錄裡的臨時資料目錄,結束後刪掉臨時資料目錄(只留檔案清單)。選項 `--source-data`、`--rate-mbps`。
 
 選項:`--data-dir <模型資料目錄>`(預設 `D:\codeproject\translate\data`;worktree 沒有 `data/`,不設會退回 `%LOCALAPPDATA%\tingyi` 而找不到模型)、`--launch-timeout 600`。
 
@@ -68,8 +71,11 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 
 - `scripts/cdp.py`:最小 CDP 用戶端(`connect(port, url_prefix)` → `Page.eval(js)`;也可命令列單次執行)。依賴 Python `websockets`。
 - `scripts/verify_audio_source.py`:指定程式音訊來源旅程(見 `features/audio-source.md`)。
+- `scripts/verify_model_download.py`:專用模型下載旅程(見 `features/routed-models.md`)。
 - 專案腳本:`scripts/tts-smoke.ps1`(TTS 供音)、`scripts/shot-windows.ps1`(截圖)。
 
 ## 破壞對照紀錄
 
 2026-10-25:把 `capture.rs` 的世代號檢查改成 `if false && ...`(UI 顯示已切換但擷取不換),驗證在「切到靜音播放器後 12 秒內沒有新字幕」FAIL、exit 1(證據 `evidence/20261025-132442-neg/negative/`);以事前備份逐位元組還原(sha256 5e2d2cf3…)後恢復 PASS。
+
+2026-10-25:把 `model_download.rs` 的 `install(...)` 換成不執行(下載完不搬進正式目錄),`verify_model_download.py` 在「下載完成顯示「已下載」」FAIL、exit 1(證據 `evidence/20261025-164513-neg/negative/`);以事前備份逐位元組還原(sha256 b23b9a4d…)後恢復 PASS(`evidence/20261025-164856/`)。

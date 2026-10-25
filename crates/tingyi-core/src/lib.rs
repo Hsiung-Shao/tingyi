@@ -20,6 +20,7 @@ pub mod pipeline;
 pub mod refine;
 pub mod export;
 pub mod eval;
+pub mod model_download;
 pub mod paths;
 pub mod llama;
 pub mod gpu;

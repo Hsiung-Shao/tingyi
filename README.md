@@ -20,11 +20,11 @@
 
 | 目錄 | 內容 |
 |---|---|
-| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`cleanup`、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`paths` |
-| `crates/tingyi-bench` | 量測 CLI:`devices` / `capture-probe` / `vad` / `asr` / `asr-file` / `asr-eval` / `mt` / `live` / `serve` |
+| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`model_download`(專用模型下載)、`cleanup`、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`paths` |
+| `crates/tingyi-bench` | 量測 CLI:`devices` / `capture-probe` / `vad` / `asr` / `asr-file` / `asr-eval` / `mt` / `live` / `serve` / `download-model` |
 | `src-tauri` | Tauri 2 後端:命令、狀態、事件轉發 |
 | `src` | React 19 + Tailwind 4 前端:`App.tsx` 主視窗、`Overlay.tsx` 懸浮字幕 |
-| `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄(`-WithWhisper` 加 Whisper 模型;`-WithReazonSpeech`、`-WithParakeet` 加專用辨識模型) |
+| `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄(`-WithWhisper` 加 Whisper 模型;`-WithReazonSpeech`、`-WithParakeet` 加專用辨識模型;安裝版也能在主視窗「辨識引擎」下方直接下載專用模型) |
 | `scripts/fetch-eval.py` | 從 Hugging Face parquet 抓 CER 評測集(ReazonSpeech test、JSUT、FLEURS ja/en/ko)到 `data/eval/` |
 | `scripts/build-whisper.ps1` | 以 CUDA 自行編譯 whisper.cpp 的 whisper-server(官方無 Windows Vulkan 版;需 CUDA 12.8+、Ninja) |
 | `scripts/tts-smoke.ps1` | 用 Windows TTS 透過喇叭唸句子,自動化測試整條管線 |

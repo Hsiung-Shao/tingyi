@@ -180,6 +180,30 @@ export interface AppAudio {
   start_time: number;
 }
 
+/** 專用模型的就緒與下載狀態(`routed_models_status`)。 */
+export interface RoutedModelState {
+  id: string;
+  label: string;
+  lang: Lang;
+  size_bytes: number;
+  ready: boolean;
+  downloading: boolean;
+  /** 已下載位元組:下載中為即時進度;中斷過則是可續傳的起點 */
+  done: number;
+  license: string;
+  license_url: string;
+}
+
+/** `model-download` 事件。 */
+export interface ModelDownloadProgress {
+  id: string;
+  phase: "downloading" | "verifying" | "done" | "error" | "cancelled";
+  done: number;
+  total: number;
+  bps: number;
+  message: string | null;
+}
+
 export interface AudioSourceState {
   source: AudioSource;
   /** 指定程式已關閉,等它重新開啟中 */

@@ -20,8 +20,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 futures-util = "0.3"
 regex = "1"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
+sha2 = "0.10"
 opencc-fmmseg = "0.12"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+tempfile = "3"

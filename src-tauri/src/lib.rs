@@ -35,6 +35,9 @@ pub fn run() {
             commands::list_audio_apps,
             commands::set_audio_source,
             commands::get_audio_source,
+            commands::routed_models_status,
+            commands::download_model,
+            commands::cancel_model_download,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。

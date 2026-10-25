@@ -361,6 +361,8 @@ fn start_inner(
     // 鎖定語言要在建立 SenseVoice 時就設好(之後每次呼叫傳的語言提示不會生效)
     let sv_cfg = SenseVoiceConfig { language: cfg.lock_lang, ..cfg.asr.clone() };
     let preview_asr = SenseVoice::new(&sv_cfg)?;
+    // 專用模型實際載入了哪些(使用者看得到哪個語言退回 SenseVoice)
+    let mut asr_detail = String::new();
     let final_asr: Box<dyn Transcriber> = match &cfg.asr_engine {
         AsrEngine::SenseVoice => Box::new(SenseVoice::new(&sv_cfg)?),
         AsrEngine::Whisper { base_url } => Box::new(WhisperServer::new(WhisperServerConfig {
@@ -368,12 +370,24 @@ fn start_inner(
             language: cfg.lock_lang,
             ..Default::default()
         })),
-        AsrEngine::Routed => Box::new(RoutedTranscriber::new(
-            &sv_cfg,
-            &resolve_load_set(cfg.lock_lang, &cfg.allowed_langs),
-            crate::paths::REAZONSPEECH_JA_DIR_NAME,
-            cfg.transducer_pad_ms,
-        )?),
+        AsrEngine::Routed => {
+            let r = RoutedTranscriber::new(
+                &sv_cfg,
+                &resolve_load_set(cfg.lock_lang, &cfg.allowed_langs),
+                crate::paths::REAZONSPEECH_JA_DIR_NAME,
+                cfg.transducer_pad_ms,
+            )?;
+            for message in r.load_errors() {
+                let _ = events.send(PipelineEvent::Error { message: message.clone() });
+            }
+            let av = r.available();
+            let loaded: Vec<&str> = [(av.reazonspeech, "reazonspeech"), (av.parakeet, "parakeet")]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name))
+                .collect();
+            asr_detail = if loaded.is_empty() { "[僅 SenseVoice]".into() } else { format!("[{}]", loaded.join("+")) };
+            Box::new(r)
+        }
     };
     let vad_cfg = VadConfig {
         pre_pad_ms: cfg.vad.pre_pad_ms.or(Some(cfg.asr_engine.default_pre_pad_ms())),
@@ -394,14 +408,14 @@ fn start_inner(
             }
         }
     }
-    let _ = events.send(PipelineEvent::Status {
-        message: format!(
-            "模型載入完成:{}(預覽 {}){}",
-            final_asr.name(),
-            preview_asr.name(),
-            if speakers.lock().unwrap().is_some() { "、說話者辨識" } else { "" }
-        ),
-    });
+    let loaded_msg = format!(
+        "模型載入完成:{}{asr_detail}(預覽 {}){}",
+        final_asr.name(),
+        preview_asr.name(),
+        if speakers.lock().unwrap().is_some() { "、說話者辨識" } else { "" }
+    );
+    tracing::info!("{loaded_msg}");
+    let _ = events.send(PipelineEvent::Status { message: loaded_msg });
 
     let (seg_tx, seg_rx) = crossbeam_channel::bounded::<Segment>(64);
     let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<SegObservation>();

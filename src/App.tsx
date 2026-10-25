@@ -7,6 +7,7 @@ import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
+import RoutedModels from "./RoutedModels";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -296,6 +297,7 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
           </section>
 
           <section className="flex flex-col gap-2">

@@ -4,6 +4,7 @@
 //! - `devices`           列出預設輸出裝置與有音訊 session 的程式
 //! - `capture-probe`     擷取探測:每秒封包數、靜音封包、不連續次數、樣本數/實際時間比
 //! - `asr-eval`          CER/WER 評測(scripts/fetch-eval.py 下載的評測集):逐句或串流模式
+//! - `download-model`    下載專用模型(與 app 內下載同一套:固定 commit、續傳、SHA256 校驗)
 //! - `vad`               播影片,印出 VAD 切段
 //! - `asr`               播影片,印出辨識結果與延遲
 //! - `mt`                固定句子集跑翻譯,輸出對照表(可指定多個模型)
@@ -131,6 +132,14 @@ enum Cmd {
     },
     /// 說話者 embedding 驗證:印相似度矩陣與分群結果(不同檔應為不同人)
     Speakers { files: Vec<PathBuf> },
+    /// 下載專用模型(與 app 內下載同一套:固定 commit、續傳、SHA256 校驗)
+    DownloadModel {
+        /// reazonspeech 或 parakeet
+        id: String,
+        /// 模型目錄(預設為資料目錄的 models)
+        #[arg(long)]
+        models_dir: Option<PathBuf>,
+    },
     /// CER/WER 評測:每集 micro 錯誤率、語言判斷正確率、延遲、RTF;逐句結果寫 JSONL
     AsrEval {
         /// 評測集(資料目錄 eval/<名>/manifest.tsv)
@@ -242,6 +251,24 @@ fn make_engine(
             Ok((Box::new(s), None))
         }
     }
+}
+
+fn run_download_model(id: &str, models_dir: Option<PathBuf>) -> Result<()> {
+    use tingyi_core::model_download::{self as md, DownloadCtl, DownloadOptions};
+    let spec = md::spec(id).ok_or_else(|| anyhow!("未知的模型 {id}(可用:reazonspeech、parakeet)"))?;
+    let dir = models_dir.unwrap_or_else(paths::models_dir);
+    std::fs::create_dir_all(&dir)?;
+    println!("下載 {}({} MB)到 {}", spec.label, spec.total_size() / 1_000_000, dir.display());
+    md::check_disk_space(spec, &dir).map_err(|e| anyhow!("{e}"))?;
+    let t0 = Instant::now();
+    let ctl = DownloadCtl::default();
+    md::download_model(spec, &dir, &DownloadOptions::default(), &ctl, &mut |p| {
+        println!("  {:?} {:>5.1}% {:>7.1} MB/s{}", p.phase, p.done as f64 * 100.0 / p.total.max(1) as f64, p.bps as f64 / 1e6,
+            p.message.map(|m| format!("  {m}")).unwrap_or_default());
+    })
+    .map_err(|e| anyhow!("{e}"))?;
+    println!("完成,{:.1} s;狀態:{:?}", t0.elapsed().as_secs_f32(), md::model_status(spec, &dir));
+    Ok(())
 }
 
 /// 評測集的一句。
@@ -728,6 +755,7 @@ async fn main() -> Result<()> {
                 run_asr_eval(&sets, &engines, limit, threads, auto, !no_normalize, &out)?
             }
         }
+        Cmd::DownloadModel { id, models_dir } => run_download_model(&id, models_dir)?,
         Cmd::Speakers { files } => {
             use tingyi_core::speaker::{SpeakerConfig, SpeakerIdentifier};
             let t0 = Instant::now();
