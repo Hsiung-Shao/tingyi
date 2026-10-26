@@ -7,7 +7,7 @@
 ## 架構
 
 ```
-音訊來源(WASAPI loopback:系統全部聲音,或指定程式含子程序,執行中可切換)
+音訊來源(WASAPI loopback:系統全部聲音,或像 OBS 選一個視窗、擷取該程式含子程序,執行中可切換)
   → 16 kHz mono → Silero VAD 切段 → 音量正規化
   → 辨識:SenseVoice-Small int8(sherpa-onnx,CPU;也負責講話中的即時預覽)
         或 專用模型(CPU:日文 ReazonSpeech k2 v2、英文 Parakeet TDT v2,其餘 SenseVoice)

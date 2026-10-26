@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tingyi_core::asr::Lang;
-use tingyi_core::audio::source::{self, AppAudio, AudioSource};
+use tingyi_core::audio::source::{self, AudioSource, SourceEntry};
 use tingyi_core::cleanup::Replacement;
 use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec, WhisperServerProcess, WhisperServerSpec};
 use tingyi_core::pipeline::AsrEngine;
@@ -402,8 +402,8 @@ fn ensure_sampler(state: &AppState) {
 
 /// 目前有音訊 session 的程式(排除本程式)。列舉裝置與程序要數百毫秒,放到背景執行緒。
 #[tauri::command]
-pub async fn list_audio_apps() -> Result<Vec<AppAudio>, String> {
-    tokio::task::spawn_blocking(source::list_app_audio)
+pub async fn list_audio_apps() -> Result<Vec<SourceEntry>, String> {
+    tokio::task::spawn_blocking(source::list_audio_sources)
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))

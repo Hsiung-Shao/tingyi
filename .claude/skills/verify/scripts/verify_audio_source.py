@@ -34,6 +34,7 @@ CDP_PORT = 9339  # 9222 常被 Chrome 除錯埠占用
 DEV_PORT = 1420
 URL_PREFIX = f"http://localhost:{DEV_PORT}/"
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
+TTS_TITLE = "tingyi verify TTS"  # tts-window.ps1 的最小化視窗標題(不搶前景)
 
 TTS_LINES = [
     "The weather today is sunny with a light breeze from the west.",
@@ -71,6 +72,8 @@ window.__v = {
   })),
   select: () => document.querySelector('select[aria-label="音訊來源"]'),
   options: () => { const s = window.__v.select(); return s ? [...s.options].map(o => o.value) : []; },
+  optionsDetail: () => { const s = window.__v.select(); return s ? [...s.options].map(o => ({
+    value: o.value, text: o.textContent, group: o.parentElement.tagName === 'OPTGROUP' ? o.parentElement.label : '' })) : []; },
   choose: (value) => {
     const s = window.__v.select();
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, value);
@@ -195,22 +198,36 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         translate_on = await js("window.__v.setChecked('啟用本機翻譯', false)")
         run.log(f"翻譯勾選狀態:{translate_on}(只驗擷取,不啟動 llama-server)")
 
-        want = {f"app:{tts_pid}", f"app:{silent_pid}"}
+        # TTS 程序有一個最小化的視窗:清單要像 OBS 那樣列出「[powershell.exe]: <標題>」,唸的時候在「播放中」
+        tts_text = f"[powershell.exe]: {TTS_TITLE}"
 
         async def listed():
             await js("(() => { const b = document.querySelector('button[aria-label=\"重新整理程式清單\"]'); b && b.click(); return true; })()")
             await asyncio.sleep(1.5)
-            return want <= set(await js("window.__v.options()"))
-        ok = await wait_for(listed, 30, 0.5)
-        if not run.check("程式清單列出 TTS 與靜音播放器", bool(ok), str(await js("window.__v.options()"))):
+            opts = await js("window.__v.optionsDetail()")
+            tts = [o for o in opts if o["text"] == tts_text and o["value"].startswith("win:")]
+            silent = [o for o in opts if o["value"] == f"app:{silent_pid}"]
+            return (tts[0], silent[0]) if tts and silent else None
+        found = await wait_for(listed, 30, 0.5)
+        if not run.check("清單以「[exe]: 視窗標題」列出 TTS 視窗,靜音播放器列在沒有視窗的程式",
+                         bool(found), json.dumps(await js("window.__v.optionsDetail()"), ensure_ascii=False)[:600]):
             return False
+        tts_value = found[0]["value"]
 
-        async def choose(pid: int, label: str) -> bool:
-            await js(f"window.__v.choose('app:{pid}')")
+        async def tts_playing():
+            await js("(() => { const b = document.querySelector('button[aria-label=\"重新整理程式清單\"]'); b && b.click(); return true; })()")
+            await asyncio.sleep(1.5)
+            opts = await js("window.__v.optionsDetail()")
+            return any(o["text"] == tts_text and o["group"] == "播放中" for o in opts)
+        run.check("TTS 視窗在「播放中」分組", bool(await wait_for(tts_playing, 20, 0.5)))
+
+        async def choose(value: str, pid: int, label: str) -> bool:
+            await js(f"window.__v.choose('{value}')")
             st = await wait_for(lambda: js(f"window.__v.state().then(s => s.source.kind === 'app' && s.source.pid === {pid} ? s : null)"), 5)
-            return run.check(f"來源切到{label}", bool(st), json.dumps(st, ensure_ascii=False))
+            shown = await js("window.__v.select().value")
+            return run.check(f"來源切到{label}", bool(st) and shown == value, f"{json.dumps(st, ensure_ascii=False)};下拉顯示 {shown}")
 
-        if not await choose(tts_pid, " TTS"):
+        if not await choose(tts_value, tts_pid, " TTS 視窗"):
             return False
         await js("window.__v.btn('開始').click(), true")
         running = await wait_for(lambda: js("!!window.__v.btn('停止')"), 120)
@@ -229,7 +246,7 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         screenshot(run, "1-tts")
 
         # 2) 執行中切到靜音播放器:不得新增字幕
-        if not await choose(silent_pid, "靜音播放器"):
+        if not await choose(f"app:{silent_pid}", silent_pid, "靜音播放器"):
             return False
         await asyncio.sleep(3)  # 切換前已在辨識/合併中的句子可能晚到
         before = await sentences()
@@ -245,7 +262,7 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
 
         # 3) 切回 TTS:應再出現(正向對照)
         last_id = max([y["id"] for y in after], default=0)
-        if not await choose(tts_pid, "回 TTS"):
+        if not await choose(tts_value, tts_pid, "回 TTS 視窗"):
             return False
         hits3 = await wait_for(lambda: tts_hits(last_id), 30, 1.0)
         run.result["phase3"] = hits3
@@ -309,8 +326,8 @@ def main() -> int:
         silent = evidence / "silence.wav"
         write_silent_wav(silent)
         procs["TTS"] = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                                         str(ROOT / "scripts" / "tts-smoke.ps1"), "-Lines", str(lines),
-                                         "-NoWait", "-GapMs", "1200"],
+                                         str(SKILL / "scripts" / "tts-window.ps1"), "-Lines", str(lines),
+                                         "-GapMs", "1200", "-Title", TTS_TITLE],
                                         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                         creationflags=NO_WINDOW)
         procs["靜音播放器"] = subprocess.Popen(["powershell", "-NoProfile", "-Command",

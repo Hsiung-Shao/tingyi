@@ -77,6 +77,7 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 
 - `scripts/cdp.py`:最小 CDP 用戶端(`connect(port, url_prefix)` → `Page.eval(js)`;也可命令列單次執行)。依賴 Python `websockets`。
 - `scripts/verify_audio_source.py`:指定程式音訊來源旅程(見 `features/audio-source.md`)。
+- `scripts/tts-window.ps1`:驗證用 TTS,同一程序開一個最小化、不搶前景的視窗(標題 `-Title`),讓清單以 `[powershell.exe]: <標題>` 列出。
 - `scripts/verify_model_download.py`:專用模型下載旅程(見 `features/routed-models.md`)。
 - `scripts/verify_download_script.py`:開發用下載腳本的 SHA256 校驗(見上方說明)。
 - `scripts/verify_release_build.py`:正式版執行檔與安裝檔的實跑(見上方說明)。

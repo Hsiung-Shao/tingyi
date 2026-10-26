@@ -4,6 +4,7 @@ pub mod capture;
 pub mod ring;
 pub mod source;
 pub mod wav_sink;
+pub mod window_list;
 
 /// 管線內部統一取樣率(SenseVoice、Silero VAD 共通)。
 pub const TARGET_SAMPLE_RATE: i32 = 16_000;

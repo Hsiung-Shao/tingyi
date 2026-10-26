@@ -171,14 +171,18 @@ export type AudioSource =
   | { kind: "system" }
   | { kind: "app"; pid: number; exe: string; start_time: number };
 
-/** 有音訊 session 的程式(已依最上層程序去重)。 */
-export interface AppAudio {
+/** 音訊來源清單的分組(對應 Rust `SourceGroup`)。 */
+export type SourceGroup = "playing" | "windowed" | "background";
+
+/** 音訊來源清單的一項(對應 Rust `SourceEntry`);選它就是擷取 `pid` 的整棵程序樹。 */
+export type SourceEntry = {
+  group: SourceGroup;
+  /** 最上層程序 */
   pid: number;
   exe: string;
-  name: string;
-  active: boolean;
   start_time: number;
-}
+  active: boolean;
+} & ({ kind: "window"; hwnd: number; title: string } | { kind: "background"; name: string });
 
 /** 專用模型的就緒與下載狀態(`routed_models_status`)。 */
 export interface RoutedModelState {

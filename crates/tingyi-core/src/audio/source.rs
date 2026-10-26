@@ -153,6 +153,155 @@ pub fn group_sessions(sessions: &[SessionObs], table: &ProcTable, self_pid: u32)
     out
 }
 
+const FRAME_HOST_EXE: &str = "ApplicationFrameHost.exe";
+
+/// 一個頂層視窗的原始屬性(Win32 列舉結果;過濾與歸屬交給純函式,方便測試)。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RawWindow {
+    pub hwnd: isize,
+    pub pid: u32,
+    pub title: String,
+    pub class: String,
+    pub visible: bool,
+    /// 有 owner(對話框、浮動面板)。
+    pub owned: bool,
+    /// `WS_EX_TOOLWINDOW`。
+    pub tool_window: bool,
+    /// DWM 隱藏(其他虛擬桌面、背景 UWP)。
+    pub cloaked: bool,
+    /// 子視窗所屬的 pid(只對 ApplicationFrameHost 收集,UWP 的實際程序在子視窗)。
+    pub child_pids: Vec<u32>,
+}
+
+/// 清單分組。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceGroup {
+    /// 程式樹有正在播放的 session。
+    Playing,
+    /// 有視窗但沒在播放。
+    Windowed,
+    /// 只有音訊 session、沒有視窗。
+    Background,
+}
+
+/// 清單項目的種類。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SourceKind {
+    /// 一個可見視窗(同程式多視窗各一項,擷取的都是整個程式)。
+    Window { hwnd: isize, title: String },
+    /// 沒有視窗的程式;名稱規則同 `group_sessions`。
+    Background { name: String },
+}
+
+/// 音訊來源清單的一項;選它就是擷取 `pid` 的整棵程序樹。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceEntry {
+    #[serde(flatten)]
+    pub kind: SourceKind,
+    pub group: SourceGroup,
+    /// 最上層程序。
+    pub pid: u32,
+    pub exe: String,
+    pub start_time: u64,
+    pub active: bool,
+}
+
+/// 使用者看得到的頂層視窗:可見、有標題、沒有 owner、不是工具視窗、沒被 DWM 隱藏,且不是桌面。
+pub fn keep_window(w: &RawWindow) -> bool {
+    w.visible
+        && !w.title.trim().is_empty()
+        && !w.owned
+        && !w.tool_window
+        && !w.cloaked
+        && !matches!(w.class.as_str(), "Progman" | "WorkerW")
+}
+
+/// 視窗所屬程序;ApplicationFrameHost 的視窗改用第一個不同 pid 的子視窗(UWP 實際程序)。
+pub fn window_pid(w: &RawWindow, table: &ProcTable) -> u32 {
+    let frame_host = table.get(&w.pid).is_some_and(|p| exe_eq(&p.exe, FRAME_HOST_EXE));
+    if frame_host {
+        w.child_pids.iter().copied().find(|&c| c != w.pid).unwrap_or(w.pid)
+    } else {
+        w.pid
+    }
+}
+
+/// 視窗(依 Z 順序,最上層在前)+ 音訊 session → 清單。內部套用 `keep_window`、`window_pid`、`find_root`;
+/// 排除 pid 0 與 `self_pid` 整棵樹。順序:播放中(視窗依 Z 順序,其後沒有視窗的程式依名稱)、
+/// 有視窗的程式(依 exe、再依標題)、背景程式(依名稱)。
+pub fn build_source_list(windows: &[RawWindow], sessions: &[SessionObs], table: &ProcTable, self_pid: u32) -> Vec<SourceEntry> {
+    let excluded = |pid: u32| pid == 0 || in_tree(pid, self_pid, table);
+    let playing_pids: Vec<u32> = sessions.iter().filter(|s| s.active && !excluded(s.pid)).map(|s| s.pid).collect();
+    // 擷取的是整棵程序樹:子孫(即使執行檔名不同,例如 LINE 的 LineCall)在播放也算這個視窗在播放
+    let tree_playing = |root: u32| playing_pids.iter().any(|&p| in_tree(p, root, table));
+
+    let (mut playing, mut windowed) = (Vec::new(), Vec::new());
+    let mut window_roots = HashSet::new();
+    for w in windows.iter().filter(|w| keep_window(w)) {
+        let pid = window_pid(w, table);
+        let root = find_root(pid, table);
+        if excluded(pid) || excluded(root) {
+            continue;
+        }
+        let Some(info) = table.get(&root) else { continue };
+        window_roots.insert(root);
+        let active = tree_playing(root);
+        let entry = SourceEntry {
+            kind: SourceKind::Window { hwnd: w.hwnd, title: w.title.clone() },
+            group: if active { SourceGroup::Playing } else { SourceGroup::Windowed },
+            pid: root,
+            exe: info.exe.clone(),
+            start_time: info.start_time,
+            active,
+        };
+        if active {
+            playing.push(entry);
+        } else {
+            windowed.push(entry);
+        }
+    }
+    let title = |e: &SourceEntry| match &e.kind {
+        SourceKind::Window { title, .. } => title.to_lowercase(),
+        SourceKind::Background { name } => name.to_lowercase(),
+    };
+    windowed.sort_by(|a, b| a.exe.to_lowercase().cmp(&b.exe.to_lowercase()).then_with(|| title(a).cmp(&title(b))));
+
+    // 沒有視窗的程式:沿用 group_sessions 的去重與命名(已依播放中、名稱排序)
+    let mut background = Vec::new();
+    for a in group_sessions(sessions, table, self_pid) {
+        if window_roots.contains(&a.pid) {
+            continue;
+        }
+        let entry = SourceEntry {
+            kind: SourceKind::Background { name: a.name },
+            group: if a.active { SourceGroup::Playing } else { SourceGroup::Background },
+            pid: a.pid,
+            exe: a.exe,
+            start_time: a.start_time,
+            active: a.active,
+        };
+        if a.active {
+            playing.push(entry);
+        } else {
+            background.push(entry);
+        }
+    }
+    playing.extend(windowed);
+    playing.extend(background);
+    playing
+}
+
+/// 音訊來源清單:可見視窗 + 音訊 session(排除本程式)。
+pub fn list_audio_sources() -> Result<Vec<SourceEntry>> {
+    let sessions = enumerate_sessions()?;
+    let table = snapshot_processes();
+    let frame_hosts: HashSet<u32> = table.values().filter(|p| exe_eq(&p.exe, FRAME_HOST_EXE)).map(|p| p.pid).collect();
+    let windows = super::window_list::enumerate_windows(&frame_hosts);
+    Ok(build_source_list(&windows, &sessions, &table, std::process::id()))
+}
+
 /// 綁定的程式是否仍是同一個程序(pid 存在且 start_time 相同)。
 pub fn still_alive(pid: u32, start_time: u64, table: &ProcTable) -> bool {
     table.get(&pid).is_some_and(|p| p.start_time == start_time)
@@ -231,12 +380,6 @@ pub fn enumerate_sessions() -> Result<Vec<SessionObs>> {
         }
     }
     Ok(out)
-}
-
-/// 目前有音訊 session 的程式清單(排除本程式)。
-pub fn list_app_audio() -> Result<Vec<AppAudio>> {
-    let sessions = enumerate_sessions()?;
-    Ok(group_sessions(&sessions, &snapshot_processes(), std::process::id()))
 }
 
 /// 擷取執行緒用:重用同一個 `System` 輪詢目標程式是否還活著。
@@ -568,5 +711,208 @@ mod tests {
             p(51, Some(50), "helper.exe", 160),
         ]);
         assert_eq!(rebind("helper.exe", &only_self, &[], 50), None);
+    }
+
+    fn win(hwnd: isize, pid: u32, title: &str) -> RawWindow {
+        RawWindow {
+            hwnd,
+            pid,
+            title: title.to_string(),
+            class: "Chrome_WidgetWin_1".to_string(),
+            visible: true,
+            ..Default::default()
+        }
+    }
+
+    fn chrome_table() -> ProcTable {
+        table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(10, Some(1), "chrome.exe", 200),
+            p(11, Some(10), "chrome.exe", 201),
+            p(12, Some(10), "chrome.exe", 202),
+        ])
+    }
+
+    // T1:同程式多視窗各一項且指向最上層程序
+    #[test]
+    fn build_source_list_multi_windows_one_entry_each() {
+        let t = chrome_table();
+        let wins = vec![win(100, 10, "YouTube - Google Chrome"), win(101, 11, "Gmail - Google Chrome")];
+        let out = build_source_list(&wins, &[], &t, 9999);
+        assert_eq!(out.len(), 2, "兩個視窗應各一項,實得 {out:?}");
+        for (hwnd, title) in [(100, "YouTube - Google Chrome"), (101, "Gmail - Google Chrome")] {
+            let e = out
+                .iter()
+                .find(|e| matches!(&e.kind, SourceKind::Window { hwnd: h, .. } if *h == hwnd))
+                .unwrap_or_else(|| panic!("缺 hwnd {hwnd} 的項目:{out:?}"));
+            assert_eq!(e.kind, SourceKind::Window { hwnd, title: title.to_string() });
+            assert_eq!(e.pid, 10);
+            assert_eq!(e.exe, "chrome.exe");
+            assert_eq!(e.start_time, 200);
+        }
+    }
+
+    // T2:視窗所屬程式有播放中 session 時歸播放中且依 Z 順序
+    #[test]
+    fn build_source_list_playing_windows_keep_z_order() {
+        let t = chrome_table();
+        let wins = vec![win(100, 10, "YouTube - Google Chrome"), win(101, 11, "Gmail - Google Chrome")];
+        let out = build_source_list(&wins, &[obs(12, true, "")], &t, 9999);
+        assert_eq!(out.len(), 2, "應有兩項,實得 {out:?}");
+        assert!(out.iter().all(|e| e.group == SourceGroup::Playing && e.active), "應都為播放中且 active:{out:?}");
+        let hwnds: Vec<isize> = out
+            .iter()
+            .map(|e| match &e.kind {
+                SourceKind::Window { hwnd, .. } => *hwnd,
+                other => panic!("應為視窗項,實得 {other:?}"),
+            })
+            .collect();
+        assert_eq!(hwnds, vec![100, 101]);
+    }
+
+    // T3:有視窗沒聲音歸有視窗的程式並依 exe、標題排序
+    #[test]
+    fn build_source_list_windowed_sorted_by_exe_then_title() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(20, Some(1), "steam.exe", 200),
+            p(30, Some(1), "LINE.exe", 300),
+        ]);
+        let wins = vec![win(200, 20, "好友"), win(201, 30, "LINE"), win(202, 20, "Steam")];
+        let out = build_source_list(&wins, &[], &t, 9999);
+        assert_eq!(out.len(), 3, "應有三項,實得 {out:?}");
+        assert!(out.iter().all(|e| e.group == SourceGroup::Windowed && !e.active), "應都為有視窗且非 active:{out:?}");
+        let titles: Vec<String> = out
+            .iter()
+            .map(|e| match &e.kind {
+                SourceKind::Window { title, .. } => title.clone(),
+                other => panic!("應為視窗項,實得 {other:?}"),
+            })
+            .collect();
+        assert_eq!(titles, vec!["LINE", "Steam", "好友"]);
+    }
+
+    // T4:只有 session 沒視窗的程式歸背景,播放中的提到播放中
+    #[test]
+    fn build_source_list_background_apps_and_playing_first() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(40, Some(1), "RtkUWP.exe", 400),
+            p(41, Some(1), "Genesis.exe", 410),
+        ]);
+        let sessions = vec![obs(40, false, ""), obs(41, true, "Genesis")];
+        let out = build_source_list(&[], &sessions, &t, 9999);
+        assert_eq!(out.len(), 2, "應有兩項,實得 {out:?}");
+        assert_eq!(out[0].kind, SourceKind::Background { name: "Genesis".to_string() });
+        assert_eq!(out[0].group, SourceGroup::Playing);
+        assert_eq!(out[1].kind, SourceKind::Background { name: "RtkUWP".to_string() });
+        assert_eq!(out[1].group, SourceGroup::Background);
+    }
+
+    // T5:排除本程式樹與系統音效
+    #[test]
+    fn build_source_list_excludes_self_tree_and_system_sounds() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(50, Some(1), "tingyi.exe", 300),
+            p(51, Some(50), "msedgewebview2.exe", 301),
+            p(60, Some(1), "spotify.exe", 400),
+        ]);
+        let wins = vec![win(500, 50, "聽譯 tingyi")];
+        let sessions = vec![obs(51, true, ""), obs(0, true, "System Sounds"), obs(60, false, "")];
+        let out = build_source_list(&wins, &sessions, &t, 50);
+        assert_eq!(out.len(), 1, "應只剩 spotify,實得 {out:?}");
+        assert!(out.iter().all(|e| e.pid != 0 && e.pid != 50 && e.pid != 51), "不得含 pid 0、50、51:{out:?}");
+        assert_eq!(out[0].pid, 60);
+        assert_eq!(out[0].group, SourceGroup::Background);
+        assert!(matches!(out[0].kind, SourceKind::Background { .. }), "應為背景項:{out:?}");
+    }
+
+    // T6:視窗過濾規則,每個情境只改一個欄位
+    #[test]
+    fn keep_window_filters_each_rule() {
+        assert!(keep_window(&win(1, 10, "正常視窗")), "正常視窗應保留");
+        let mut w = win(1, 10, "x");
+        w.visible = false;
+        assert!(!keep_window(&w), "不可見應過濾");
+        assert!(!keep_window(&win(1, 10, "")), "標題空應過濾");
+        let mut w = win(1, 10, "x");
+        w.owned = true;
+        assert!(!keep_window(&w), "有 owner 應過濾");
+        let mut w = win(1, 10, "x");
+        w.tool_window = true;
+        assert!(!keep_window(&w), "工具視窗應過濾");
+        let mut w = win(1, 10, "x");
+        w.cloaked = true;
+        assert!(!keep_window(&w), "DWM 隱藏應過濾");
+        let mut w = win(1, 10, "x");
+        w.class = "Progman".to_string();
+        assert!(!keep_window(&w), "Progman 桌面應過濾");
+        let mut w = win(1, 10, "x");
+        w.class = "WorkerW".to_string();
+        assert!(!keep_window(&w), "WorkerW 桌面應過濾");
+    }
+
+    // T7:UWP 視窗改用實際程序
+    #[test]
+    fn window_pid_uwp_uses_real_process() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(60, Some(1), "ApplicationFrameHost.exe", 200),
+            p(61, Some(1), "Calculator.exe", 210),
+            p(70, Some(1), "foo.exe", 300),
+            p(71, Some(1), "bar.exe", 310),
+        ]);
+        let mut frame = win(600, 60, "計算機");
+        frame.child_pids = vec![60, 61];
+        assert_eq!(window_pid(&frame, &t), 61, "frame host 應改用第一個不同 pid 的子視窗");
+        let mut foo = win(700, 70, "foo");
+        foo.child_pids = vec![71];
+        assert_eq!(window_pid(&foo, &t), 70, "非 frame host 不得改用子視窗 pid");
+        let mut frame_self = win(601, 60, "空殼");
+        frame_self.child_pids = vec![60];
+        assert_eq!(window_pid(&frame_self, &t), 60, "子視窗都同 pid 時維持原 pid");
+    }
+
+    // T8:同時有視窗與 session 的程式不重複出背景項
+    #[test]
+    fn build_source_list_window_and_session_no_duplicate_background() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(80, Some(1), "Discord.exe", 500),
+        ]);
+        let wins = vec![win(800, 80, "Discord - #一般")];
+        let out = build_source_list(&wins, &[obs(80, true, "Discord")], &t, 9999);
+        assert_eq!(out.len(), 1, "不得重複出背景項,實得 {out:?}");
+        assert!(matches!(out[0].kind, SourceKind::Window { .. }), "應為視窗項:{out:?}");
+        assert_eq!(out[0].group, SourceGroup::Playing);
+    }
+
+    // T9:不同執行檔的子程序在播放時父程式的視窗也算播放中
+    #[test]
+    fn build_source_list_child_exe_playing_marks_parent_window_playing() {
+        let t = table(vec![
+            p(1, None, "explorer.exe", 100),
+            p(30, Some(1), "LINE.exe", 300),
+            p(31, Some(30), "LineCall.exe", 310),
+        ]);
+        let wins = vec![win(300, 30, "LINE")];
+        let out = build_source_list(&wins, &[obs(31, true, "")], &t, 9999);
+        assert_eq!(out.len(), 2, "應有 LINE 視窗與 LineCall 背景兩項,實得 {out:?}");
+
+        let line = out
+            .iter()
+            .find(|e| matches!(&e.kind, SourceKind::Window { hwnd: 300, .. }))
+            .unwrap_or_else(|| panic!("缺 LINE 視窗項:{out:?}"));
+        assert_eq!(line.group, SourceGroup::Playing, "子程序播放時 LINE 視窗應歸播放中");
+        assert!(line.active, "LINE 視窗項應為 active");
+        assert_eq!(line.pid, 30);
+
+        let call = out
+            .iter()
+            .find(|e| e.kind == SourceKind::Background { name: "LineCall".to_string() })
+            .unwrap_or_else(|| panic!("缺 LineCall 背景項:{out:?}"));
+        assert_eq!(call.group, SourceGroup::Playing);
+        assert_eq!(call.pid, 31);
     }
 }

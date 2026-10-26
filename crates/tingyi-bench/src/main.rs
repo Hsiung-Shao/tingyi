@@ -620,9 +620,17 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Devices => {
             println!("預設輸出裝置:{}", default_render_device_name()?);
-            for a in source::list_app_audio()? {
-                let state = if a.active { "播放中" } else { "閒置" };
-                println!("  程式 pid {:>6}  {:<24} {} [{state}]", a.pid, a.exe, a.name);
+            for e in source::list_audio_sources()? {
+                let group = match e.group {
+                    source::SourceGroup::Playing => "播放中",
+                    source::SourceGroup::Windowed => "有視窗",
+                    source::SourceGroup::Background => "背景",
+                };
+                let label = match &e.kind {
+                    source::SourceKind::Window { title, .. } => format!("[{}]: {title}", e.exe),
+                    source::SourceKind::Background { name } => format!("{name}({})", e.exe),
+                };
+                println!("  [{group}] pid {:>6}  {label}", e.pid);
             }
             if let Some((n, t)) = gpu::nvidia_info() {
                 println!("GPU:{n} {t} MiB,目前已用 {:?} MiB", gpu::nvidia_used_mib());
