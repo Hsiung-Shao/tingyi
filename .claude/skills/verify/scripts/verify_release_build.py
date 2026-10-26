@@ -7,7 +7,9 @@ tauri 會改寫打包類型標記,位元組不一定相同),WebView2 開 CDP(正
 3. 選專用模型、鎖日文(找不到 ja 鈕判 FAIL)、開本機翻譯 → 開始 → 出現「停止」、
    llama-server 子程序啟動(PID 取自 app log `llama-server 啟動 pid=N`)、
    app log 有「模型載入完成:routed[reazonspeech](」→ 停止 → llama-server 由 app 結束。
-4. 溫和關閉主視窗(taskkill 不加 /F,送 WM_CLOSE),app 30 秒內自行結束;沒結束才強制補殺並判 FAIL。
+   另有回歸檢查:列舉音訊來源清單(list_audio_apps)與 PrintWindow 截圖重繪同時進行 N 輪(`--stress-rounds`,預設 20),app 仍存活
+   (曾在 tao flush_paint_messages assertion 當掉,exit code 101)。
+4. 溫和關閉主視窗(taskkill 不加 /F,送 WM_CLOSE),app 30 秒內自行結束且 returncode 為 0;沒結束才強制補殺並判 FAIL。
    之後只看自己的 tingyi PID 與 llama-server PID 有無殘留(使用者另有同名安裝版,不能用名稱判斷)。
 沒帶 --data-dir 且專案 data/ 不存在時直接判 FAIL(正式版會退回使用者的 %LOCALAPPDATA%\\tingyi)。
 證據寫到 evidence/<時間>-release/:run.log、exit_code.txt、app.log、截圖、result.json。
@@ -21,9 +23,11 @@ import datetime
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -55,7 +59,7 @@ def log_llama_pids(log_path: Path) -> list:
     return sorted({int(m) for m in re.findall(r"llama-server 啟動 pid=(\d+)", text)})
 
 
-async def drive(run: Run, app_log) -> bool:
+async def drive(run: Run, app_log, proc, rounds: int) -> bool:
     ws, page = await connect(CDP_PORT, URL_PREFIX)
     try:
         async def js(expr, timeout=30.0):
@@ -71,6 +75,36 @@ async def drive(run: Run, app_log) -> bool:
         # 引擎選項依主視窗的 get_info,比模型卡的狀態晚到,要等
         enabled = await wait_for(lambda: js("window.__m.routedEnabled()"), 15)
         run.check("專用模型引擎可選", bool(enabled))
+
+        # 回歸:清單列舉與視窗重繪(PrintWindow)同時進行,app 不得當掉
+        loop = asyncio.get_running_loop()
+        shots_root = tempfile.mkdtemp()
+        stress_fail = None
+        try:
+            for i in range(1, rounds + 1):
+                shot = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                     str(ROOT / "scripts" / "shot-windows.ps1"), "-OutDir", os.path.join(shots_root, str(i))],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    for _ in range(3):
+                        await page.eval("window.__TAURI_INTERNALS__.invoke('list_audio_apps').then(r => r.length)", 15)
+                except Exception as e:
+                    stress_fail = f"第 {i} 輪 CDP 例外:{e!r};proc.poll()={proc.poll()}"
+                finally:
+                    try:
+                        await loop.run_in_executor(None, lambda: shot.wait(timeout=60))
+                    except subprocess.TimeoutExpired:
+                        shot.kill()
+                if stress_fail is None and proc.poll() is not None:
+                    stress_fail = f"第 {i} 輪後 app 已結束(returncode {proc.returncode})"
+                if stress_fail:
+                    break
+        finally:
+            shutil.rmtree(shots_root, ignore_errors=True)
+        if not run.check(f"清單列舉與重繪同時進行 {rounds} 輪後 app 仍存活", stress_fail is None,
+                         stress_fail or f"{rounds} 輪皆正常"):
+            return False
         screenshot(run, "1-ready")
 
         translate_on = await js("window.__m.setChecked('啟用本機翻譯', true)")
@@ -139,7 +173,7 @@ def execute(run: Run, a, evidence: Path, state: dict) -> bool:
         time.sleep(1)
     if not run.check("主視窗頁面出現在 CDP", find_page(CDP_PORT, URL_PREFIX) is not None, f"{time.monotonic() - t0:.0f} s"):
         return False
-    ok = asyncio.run(drive(run, app_log))
+    ok = asyncio.run(drive(run, app_log, proc, a.stress_rounds))
     app_log.flush()
     text = (evidence / "app.log").read_text(encoding="utf-8", errors="replace")
     # 自動語言會是 routed[reazonspeech+parakeet],所以要精確比對只載入日文專用模型
@@ -153,6 +187,7 @@ def execute(run: Run, a, evidence: Path, state: dict) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", help="覆寫 TINGYI_DATA_DIR(預設不設,正式版在本機會用專案內 data/)")
+    ap.add_argument("--stress-rounds", type=int, default=20, help="清單列舉與重繪同時進行的輪數(當機機率約每百輪 1 次,要有把握就加大)")
     a = ap.parse_args()
     evidence = SKILL / "evidence" / (datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-release")
     evidence.mkdir(parents=True)
@@ -168,14 +203,19 @@ def main() -> int:
         proc, app_log = state["proc"], state["app_log"]
         if proc:
             # 溫和關閉:不加 /F,對視窗送 WM_CLOSE,app 要自己 shutdown 並結束
-            if proc.poll() is None:
+            alive_before = proc.poll() is None
+            if alive_before:
                 subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True)
             try:
                 proc.wait(timeout=30)
                 exited = True
             except subprocess.TimeoutExpired:
                 exited = False
-            run.check("關閉主視窗後 app 自行結束", exited, f"pid {proc.pid}")
+            if not alive_before:
+                detail = f"關閉前已結束(returncode {proc.returncode})"
+            else:
+                detail = f"pid {proc.pid};returncode {proc.returncode}"
+            run.check("關閉主視窗後 app 自行結束", alive_before and exited and proc.returncode == 0, detail)
             if not exited:
                 kill_tree(run, proc.pid, "tingyi.exe(正式版,強制補殺)")
             time.sleep(1)

@@ -19,6 +19,7 @@ pub fn enumerate_windows(frame_hosts: &HashSet<u32>) -> Vec<RawWindow> {
     struct Ctx<'a> {
         out: Vec<RawWindow>,
         frame_hosts: &'a HashSet<u32>,
+        self_pid: u32,
     }
 
     fn pid_of(hwnd: HWND) -> u32 {
@@ -47,7 +48,12 @@ pub fn enumerate_windows(frame_hosts: &HashSet<u32>) -> Vec<RawWindow> {
                 return BOOL(1);
             }
             let pid = pid_of(hwnd);
-            // 別的程序的視窗不會送 WM_GETTEXT(只讀快取的標題),對方沒回應也不會卡住
+            // 自己的視窗一律跳過(反正會被排除):對同程序的視窗,GetWindowText 會跨執行緒送 WM_GETTEXT 給
+            // UI 執行緒,剛好在 tao 清 WM_PAINT 時送到會觸發 tao 的 assertion 而整個程式當掉(實測)。
+            // 別的程序的視窗不會送訊息(只讀快取的標題),對方沒回應也不會卡住。
+            if pid == ctx.self_pid {
+                return BOOL(1);
+            }
             let len = GetWindowTextLengthW(hwnd).max(0) as usize;
             let mut title = vec![0u16; len + 1];
             let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
@@ -75,7 +81,7 @@ pub fn enumerate_windows(frame_hosts: &HashSet<u32>) -> Vec<RawWindow> {
         BOOL(1)
     }
 
-    let mut ctx = Ctx { out: Vec::new(), frame_hosts };
+    let mut ctx = Ctx { out: Vec::new(), frame_hosts, self_pid: std::process::id() };
     // SAFETY:回呼只在 EnumWindows 執行期間被呼叫,ctx 活得比它久
     if let Err(e) = unsafe { EnumWindows(Some(on_window), LPARAM(&mut ctx as *mut Ctx as isize)) } {
         tracing::debug!("EnumWindows 失敗:{e}");
