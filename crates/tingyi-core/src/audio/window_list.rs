@@ -49,7 +49,7 @@ pub fn enumerate_windows(frame_hosts: &HashSet<u32>) -> Vec<RawWindow> {
             }
             let pid = pid_of(hwnd);
             // 自己的視窗一律跳過(反正會被排除):對同程序的視窗,GetWindowText 會跨執行緒送 WM_GETTEXT 給
-            // UI 執行緒,剛好在 tao 清 WM_PAINT 時送到會觸發 tao 的 assertion 而整個程式當掉(實測)。
+            // UI 執行緒,要等 UI 執行緒處理;先跳過就不會多一條等待 UI 執行緒的路徑。
             // 別的程序的視窗不會送訊息(只讀快取的標題),對方沒回應也不會卡住。
             if pid == ctx.self_pid {
                 return BOOL(1);
