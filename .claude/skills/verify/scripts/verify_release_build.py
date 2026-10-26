@@ -2,7 +2,8 @@
 
 不安裝(不動使用者已安裝的版本),直接啟動 `target/release/tingyi.exe`(與安裝檔內的執行檔同一次建置;
 tauri 會改寫打包類型標記,位元組不一定相同),WebView2 開 CDP(正式版頁面是 `http://tauri.localhost/`):
-1. 安裝檔與執行檔修改時間相差 120 秒內(同一次建置);執行檔是 GUI 子系統(正式版不開主控台)。
+1. 安裝檔與執行檔修改時間相差 120 秒內(同一次建置);執行檔是 GUI 子系統(正式版不開主控台);
+   執行檔含 tao 修補(位元組有 `(tingyi patch)`;沒有代表 patch 沒被使用,用到了 crates.io 帶 assert 的 tao)。
 2. 主視窗載入、資料目錄的專用模型顯示「已下載」、專用模型引擎可選。
 3. 選專用模型、鎖日文(找不到 ja 鈕判 FAIL)、開本機翻譯 → 開始 → 出現「停止」、
    llama-server 子程序啟動(PID 取自 app log `llama-server 啟動 pid=N`)、
@@ -10,6 +11,7 @@ tauri 會改寫打包類型標記,位元組不一定相同),WebView2 開 CDP(正
    壓力回歸檢查(`--stress-rounds N`,預設 20;0 = 不做):列舉音訊來源清單(list_audio_apps)與 PrintWindow 截圖重繪
    同時進行 N 輪,app 仍存活。2026-10-26:原版 tao 0.37.1 在這個情境下會偶發 panic(flush_paint_messages assertion,
    exit code 101,約每 3–31 輪一次),已以內嵌修補的 tao 修正(third_party/tao-0.37.1/TINGYI-PATCH.md)。
+   收尾時統計 app.log 中修補路徑(`re-entered while redrawing`)觸發次數,只記錄(run.log、result.json 的 tao_patch_hits),不判 PASS/FAIL。
 4. 溫和關閉主視窗(taskkill 不加 /F,送 WM_CLOSE),app 30 秒內自行結束且 returncode 為 0;沒結束才強制補殺並判 FAIL。
    之後只看自己的 tingyi PID 與 llama-server PID 有無殘留(使用者另有同名安裝版,不能用名稱判斷)。
 沒帶 --data-dir 且專案 data/ 不存在時直接判 FAIL(正式版會退回使用者的 %LOCALAPPDATA%\\tingyi)。
@@ -160,6 +162,8 @@ def execute(run: Run, a, evidence: Path, state: dict) -> bool:
     run.check("NSIS 安裝檔與執行檔是同一次建置", gap is not None and gap < 120,
               f"{newest.name if newest else '-'} {newest.stat().st_size if newest else 0} bytes;相差 {gap} s")
     run.check("執行檔是 GUI 子系統(正式版)", pe_subsystem(EXE) == 2, f"subsystem {pe_subsystem(EXE)}")
+    # log 字串字面值會編進執行檔;找不到代表 [patch.crates-io] 沒生效
+    run.check("正式版執行檔含 tao 修補", b"(tingyi patch)" in EXE.read_bytes(), "找不到 `(tingyi patch)` 字串則是用到了帶 assert 的 tao")
     run.result["exe"] = {"path": str(EXE), "size": EXE.stat().st_size, "mtime": time.ctime(EXE.stat().st_mtime)}
 
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={CDP_PORT}")
@@ -235,6 +239,10 @@ def main() -> int:
             run.check("關閉後沒有殘留的 tingyi.exe / llama-server.exe", not left_app and not left_llama,
                       f"tingyi {proc.pid if left_app else '-'}、llama-server {sorted(left_llama)}")
         if app_log:
+            app_log.flush()
+            hits = len(re.findall(r"re-entered while redrawing", Path(app_log.name).read_text(encoding="utf-8", errors="replace")))
+            run.result["tao_patch_hits"] = hits
+            run.log(f"tao 修補路徑觸發 {hits} 次(重入被跳過)")
             app_log.close()
         ok = ok and all(c["ok"] for c in run.result["checks"])
         code = 0 if ok else 1

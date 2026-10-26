@@ -28,8 +28,9 @@
   - 2026-10-26 也有一次 300 輪都沒當,觸發還依賴環境條件。
   - OBS 的視窗擷取與部分截圖工具也會用 PrintWindow。
 - **機制**(依原始碼推論,沒有拿到 backtrace):
-  - `flush_paint_messages` 把狀態設成 `HandlingRedrawEvents`,再用 `PeekMessageW` 清其他視窗的 WM_PAINT。
-  - `PeekMessageW` 會順便處理送入的同步訊息,thread event target 的 WM_PAINT 因此在重繪階段被巢狀派送。
+  - `flush_paint_messages` 把狀態設成 `HandlingRedrawEvents`,再用 `PeekMessageW` 清其他視窗的 WM_PAINT。WM_PAINT 是佇列合成訊息,`PeekMessageW(hwnd, WM_PAINT, WM_PAINT)` 不會直接派送 thread event target 的 WM_PAINT。
+  - `PeekMessageW` 會順便處理送入的同步訊息(例如外部 PrintWindow 的 WM_PRINT)。該訊息的處理端(推測是 WebView2/COM)又跑了巢狀訊息迴圈。
+  - 同時 IPC 等路徑(例如 `execute_in_thread` 的 `EXEC_MSG_ID` 分支呼叫 `RedrawWindow(RDW_INTERNALPAINT)`)把 thread event target 重新標為待重繪,它的 WM_PAINT 就在巢狀迴圈中被派送。這也解釋為何要「截圖 + IPC」同時發生。
   - 這時 `redrawing()` 為真,`flush_paint_messages` 回傳 false,assert 失敗。
 - **為什麼跳過是安全的**:
   - 外層的 WM_PAINT(一般視窗的 `public_window_callback`,或 thread event target 自己)離開時,會自行呼叫 `redraw_events_cleared` 與 `process_control_flow` 完成這一輪。
@@ -42,5 +43,5 @@
 ## 何時移除
 
 - **上游已修**:tao 釋出移除這個 assert 的版本後,刪掉這個目錄與根目錄 `Cargo.toml` 的 `[patch.crates-io]`、`exclude`,改用官方版。
-- **tauri 升到 tao 0.38+**:這時 cargo 會警告 patch 沒被使用,要在新版重做同樣的修改,或確認上游已修。
+- **tauri 升級後 tao 版本變了**:只要 tauri-runtime-wry 要求的 tao 版本高於 0.37.1(例如 `>=0.37.2` 或 0.38),cargo 就只會警告 `Patch tao v0.37.1 was not used` 並改用 crates.io 帶 assert 的版本。升級 tauri 後要看 cargo 有沒有這個警告;`verify_release_build.py` 的「正式版執行檔含 tao 修補」檢查也會抓到。這時要在新版重做同樣的修改,或確認上游已修。
 - **對照原版**:`Cargo.toml.orig`、`Cargo.lock` 等都保留 crates.io 原樣,方便逐檔比對。只有 `event_loop.rs` 與本檔不同。

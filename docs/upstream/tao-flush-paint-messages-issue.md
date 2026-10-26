@@ -20,12 +20,12 @@ and exits with code 101. This is the same assert as #1140, but this app does **n
 **Steps to reproduce (stress, not deterministic)**
 
 1. Release build (`tauri build`), main window open.
-2. Loop: another process takes a screenshot of the app's top-level windows with `PrintWindow` (we use a small PowerShell script that calls `PrintWindow(hwnd, hdc, 0)` on every visible top-level window of the process), while the page concurrently invokes a Tauri command a few times (`window.__TAURI_INTERNALS__.invoke(...)`).
+2. Loop: another process takes a screenshot of the app's top-level windows with `PrintWindow` (we use a small PowerShell script that calls `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT /* 2 */)` on every visible top-level window of the process, skipping windows whose width or height is 0), while the page concurrently invokes a Tauri command a few times (`window.__TAURI_INTERNALS__.invoke(...)`).
 3. In our runs the panic happened after 3–31 rounds of this loop (seen ~6 times on two different builds of the app); one 300-round run did not reproduce it, so it seems timing/environment dependent.
 
 **Analysis (from reading the source, not confirmed with a backtrace)**
 
-`flush_paint_messages` moves the runner to `HandlingRedrawEvents` and then calls `PeekMessageW(..., WM_PAINT, WM_PAINT, PM_REMOVE | PM_QS_PAINT)` for every owned window. `PeekMessageW` also delivers pending *sent* (non-queued) messages, e.g. the `WM_PRINT` from another process's `PrintWindow`. While that happens, the thread event target's `WM_PAINT` handler can run nested; at that point `runner.redrawing()` is already true, `flush_paint_messages(None, ...)` returns `false`, and the `assert!` fires.
+`flush_paint_messages` moves the runner to `HandlingRedrawEvents` and then calls `PeekMessageW(..., WM_PAINT, WM_PAINT, PM_REMOVE | PM_QS_PAINT)` for every owned window. `WM_PAINT` is a synthesized queue message, so `PeekMessageW(hwnd, WM_PAINT, WM_PAINT)` on the other windows does not itself dispatch the thread event target's `WM_PAINT`. But `PeekMessageW` also delivers pending *sent* (non-queued) messages, e.g. the `WM_PRINT` from another process's `PrintWindow`. Our guess (no backtrace): the handler of that message (probably WebView2/COM) runs a nested message loop, and meanwhile IPC paths such as the `EXEC_MSG_ID` branch of `execute_in_thread` (which calls `RedrawWindow(RDW_INTERNALPAINT)` on the thread event target) mark it as needing a repaint again, so its `WM_PAINT` is dispatched inside that nested loop. This would also explain why the screenshot and the IPC calls have to happen at the same time. At that point `runner.redrawing()` is already true, `flush_paint_messages(None, ...)` returns `false`, and the `assert!` fires.
 
 The outer `WM_PAINT` handler (either `public_window_callback` or the thread event target itself) calls `redraw_events_cleared()` and `process_control_flow()` when it finishes, so skipping the nested call looks safe.
 

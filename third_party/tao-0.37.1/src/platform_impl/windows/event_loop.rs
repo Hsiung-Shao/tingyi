@@ -2293,9 +2293,9 @@ unsafe extern "system" fn thread_event_target_callback<T: 'static>(
           userdata.event_loop_runner.redraw_events_cleared();
           process_control_flow(&userdata.event_loop_runner);
         } else {
-          // tingyi patch(見 TINGYI-PATCH.md):原本假設這裡不會重入而 `assert!`,但 `flush_paint_messages`
-          // 以 PeekMessageW 清其他視窗的 WM_PAINT 時會處理送入的同步訊息(例如外部程式 PrintWindow),
-          // 本視窗的 WM_PAINT 因此在重繪階段被巢狀派送,assert 失敗會讓整個程式 panic。
+          // tingyi patch(見 TINGYI-PATCH.md):原本假設這裡不會重入而 `assert!`。推測(無 backtrace):
+          // `flush_paint_messages` 的 PeekMessageW 處理送入的同步訊息(如外部 PrintWindow)時,其處理端又跑了
+          // 巢狀訊息迴圈,同時 IPC 等路徑把本視窗重新標為待重繪,於是本視窗的 WM_PAINT 在重繪階段被巢狀派送。
           // 外層的 WM_PAINT 離開時會自行 `redraw_events_cleared` + `process_control_flow`,這裡跳過即可。
           log::warn!("tao: thread event target WM_PAINT re-entered while redrawing; skipped (tingyi patch)");
         }
