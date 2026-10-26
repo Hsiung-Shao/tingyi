@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/tingyi-core", "crates/tingyi-bench", "src-tauri"]
+# 內嵌修補的 tao(見 third_party/tao-0.37.1/TINGYI-PATCH.md),不當 workspace 成員
+exclude = ["third_party/tao-0.37.1"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,3 +17,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[patch.crates-io]
+# 移除 tao 一處會讓正式版偶發 panic 的 assert;上游修好後刪除(見 third_party/tao-0.37.1/TINGYI-PATCH.md)
+tao = { path = "third_party/tao-0.37.1" }

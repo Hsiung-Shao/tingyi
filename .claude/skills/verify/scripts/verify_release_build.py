@@ -7,9 +7,9 @@ tauri 會改寫打包類型標記,位元組不一定相同),WebView2 開 CDP(正
 3. 選專用模型、鎖日文(找不到 ja 鈕判 FAIL)、開本機翻譯 → 開始 → 出現「停止」、
    llama-server 子程序啟動(PID 取自 app log `llama-server 啟動 pid=N`)、
    app log 有「模型載入完成:routed[reazonspeech](」→ 停止 → llama-server 由 app 結束。
-   選用的壓力檢查(`--stress-rounds N`,預設 0 = 不做):列舉音訊來源清單(list_audio_apps)與 PrintWindow 截圖重繪
-   同時進行 N 輪,app 仍存活。2026-10-26 實測:改版前後的正式版都會偶發當掉(tao flush_paint_messages assertion,
-   exit code 101,約每 10–30 輪一次),是既有問題、與清單改版無關,所以預設不做,避免驗證不穩;修好後再改回預設開啟。
+   壓力回歸檢查(`--stress-rounds N`,預設 20;0 = 不做):列舉音訊來源清單(list_audio_apps)與 PrintWindow 截圖重繪
+   同時進行 N 輪,app 仍存活。2026-10-26:原版 tao 0.37.1 在這個情境下會偶發 panic(flush_paint_messages assertion,
+   exit code 101,約每 3–31 輪一次),已以內嵌修補的 tao 修正(third_party/tao-0.37.1/TINGYI-PATCH.md)。
 4. 溫和關閉主視窗(taskkill 不加 /F,送 WM_CLOSE),app 30 秒內自行結束且 returncode 為 0;沒結束才強制補殺並判 FAIL。
    之後只看自己的 tingyi PID 與 llama-server PID 有無殘留(使用者另有同名安裝版,不能用名稱判斷)。
 沒帶 --data-dir 且專案 data/ 不存在時直接判 FAIL(正式版會退回使用者的 %LOCALAPPDATA%\\tingyi)。
@@ -190,8 +190,8 @@ def execute(run: Run, a, evidence: Path, state: dict) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", help="覆寫 TINGYI_DATA_DIR(預設不設,正式版在本機會用專案內 data/)")
-    ap.add_argument("--stress-rounds", type=int, default=0,
-                    help="清單列舉與 PrintWindow 重繪同時進行的輪數;0 = 不做(既有的偶發當機尚未修好)")
+    ap.add_argument("--stress-rounds", type=int, default=20,
+                    help="清單列舉與 PrintWindow 重繪同時進行的輪數;0 = 不做(觸發依賴環境,要有把握就加大)")
     a = ap.parse_args()
     evidence = SKILL / "evidence" / (datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-release")
     evidence.mkdir(parents=True)

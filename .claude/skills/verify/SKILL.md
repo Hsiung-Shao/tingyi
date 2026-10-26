@@ -23,7 +23,7 @@ python .claude/skills/verify/scripts/verify_release_build.py      # 先 pnpm tau
 
 第三支驗開發用下載腳本 `scripts/download-models.ps1`(真網路,約 3.4 GB,不啟動 app):乾淨資料目錄下載必要項目與日英專用模型包、Python 獨立重算 SHA256、`-Verify`、竄改一個位元組必須失敗且錯誤訊息只點名該檔、竄改已解壓的模型與 llama DLL 也必須被 `-Verify` 抓到,且照訊息「請刪除:」的路徑刪除後重跑可恢復;`--existing` 再對既有資料目錄的全部選配項目跑 `-Verify`(先 `-ListOnly`,有「待下載」就不跑)。結束時刪掉下載的資料(只留檔案清單);腳本會把 llama-server 複製到本 worktree 的 `src-tauri\binaries`(已 gitignore)。
 
-第四支驗正式版打包(`pnpm tauri build` 之後):不安裝、不動使用者已安裝的版本,直接啟動 `target\release\tingyi.exe`(CDP,正式版頁面是 `http://tauri.localhost/`);檢查安裝檔與執行檔修改時間相差 120 秒內(同一次建置)、執行檔是 GUI 子系統、專用模型顯示已下載、專用模型 + 本機翻譯可開始且 llama-server 子程序啟動(PID 取自 app log)、鎖定日文、log 有 `routed[reazonspeech](`、停止後 llama-server 由 app 結束、溫和關閉主視窗(WM_CLOSE)後 app 自行結束、關閉後自己的 tingyi / llama-server PID 無殘留。正式版的資料目錄是編譯時的 workspace `data/`(存在時),所以要在 main 的工作目錄(`D:\codeproject\translate`)跑;`--data-dir <空目錄>` 是破壞對照(必須失敗)。介面設定不存檔,不會改到使用者平常的設定。
+第四支驗正式版打包(`pnpm tauri build` 之後):不安裝、不動使用者已安裝的版本,直接啟動 `target\release\tingyi.exe`(CDP,正式版頁面是 `http://tauri.localhost/`);檢查安裝檔與執行檔修改時間相差 120 秒內(同一次建置)、執行檔是 GUI 子系統、專用模型顯示已下載、專用模型 + 本機翻譯可開始且 llama-server 子程序啟動(PID 取自 app log)、鎖定日文、log 有 `routed[reazonspeech](`、停止後 llama-server 由 app 結束、溫和關閉主視窗(WM_CLOSE)後 app 自行結束且 returncode 0、關閉後自己的 tingyi / llama-server PID 無殘留;另有壓力回歸檢查(`--stress-rounds`,預設 20 輪「清單列舉 + PrintWindow 截圖」同時進行,app 不得當掉;原版 tao 會偶發 panic,已內嵌修補,見 `third_party/tao-0.37.1/TINGYI-PATCH.md`)。正式版的資料目錄是編譯時的 workspace `data/`(存在時),所以要在 main 的工作目錄(`D:\codeproject\translate`)跑;`--data-dir <空目錄>` 是破壞對照(必須失敗)。介面設定不存檔,不會改到使用者平常的設定。
 
 選項:`--data-dir <模型資料目錄>`(預設 `D:\codeproject\translate\data`;worktree 沒有 `data/`,不設會退回 `%LOCALAPPDATA%\tingyi` 而找不到模型)、`--launch-timeout 600`。
 

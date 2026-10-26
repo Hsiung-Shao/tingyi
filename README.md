@@ -80,4 +80,5 @@ pnpm build
 - 程式碼:MIT
 - Hy-MT2(tencent,Apache-2.0)、SenseVoice-Small(sherpa-onnx 轉出,Apache-2.0)、Silero VAD(MIT)、llama.cpp(MIT)
 - ReazonSpeech k2 v2(reazon-research,Apache-2.0)、Parakeet TDT 0.6B v2(NVIDIA,CC-BY-4.0,需標示出處)
+- 內嵌 [tao](https://github.com/tauri-apps/tao) 0.37.1(Apache-2.0)於 `third_party/tao-0.37.1/`,只修一處會讓正式版偶發 panic 的 assert(見該目錄 `TINGYI-PATCH.md`)
 - 評測集只供本機量測、不隨 repo 散布:ReazonSpeech 測試集、JSUT basic5000、Google FLEURS(各自授權)
