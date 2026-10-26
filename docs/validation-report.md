@@ -287,7 +287,7 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 
 ## 6k. 正式版偶發當掉(tao WM_PAINT assertion)(2026-10-26 加入)
 
-正式版在「外部程式 PrintWindow 截圖重繪 + IPC」同時進行時偶發 panic(`flush_paint_messages` assertion,exit 101),改版前後都會發生(約每 3–31 輪一次,另有一次 300 輪未發生)。原因依 tao 原始碼推論為 `PeekMessageW` 處理送入的同步訊息時 thread event target 的 WM_PAINT 重入;上游 dev 仍是 assert。以內嵌修補的 tao(`third_party/tao-0.37.1/`)把 assert 改為跳過並記 warn,外層 WM_PAINT 會自行完成該輪重繪。驗證:`verify_release_build.py --stress-rounds 300`;上游 issue 草稿在 `docs/upstream/tao-flush-paint-messages-issue.md`(未發出)。
+正式版在「外部程式 PrintWindow 截圖重繪 + IPC」同時進行時偶發 panic(`flush_paint_messages` assertion,exit 101),改版前後都會發生(約每 3–31 輪一次,另有一次 300 輪未發生)。原因依 tao 原始碼推論為 `PeekMessageW` 處理送入的同步訊息時 thread event target 的 WM_PAINT 重入;上游 dev 仍是 assert。以內嵌修補的 tao(`third_party/tao-0.37.1/`)把 assert 改為跳過並記 warn,外層 WM_PAINT 會自行完成該輪重繪。驗證方式:`verify_release_build.py --stress-rounds 300`(待實跑;需先關閉安裝版 tingyi);上游 issue 草稿在 `docs/upstream/tao-flush-paint-messages-issue.md`(未發出)。
 
 ## 7. 驗證週發現的陷阱
 
