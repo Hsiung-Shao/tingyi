@@ -89,16 +89,22 @@ window.__v = {
   },
   state: () => window.__TAURI_INTERNALS__.invoke('get_audio_source'),
   maxInput: () => document.querySelector('input[aria-label="單段上限(秒)"]'),
-  // 受控 input:原生 setter + input 事件更新 state,下一拍再 blur 觸發 onBlur 送出
+  // 受控 input:原生 setter + input 事件更新 state,下一拍再送 Enter 觸發 onKeyDown 送出。
+  // 不用 blur():視窗不在前景時 WebView2 不派送 focusout,React 的 onBlur 不會觸發。
   typeMax: (v) => {
     const i = window.__v.maxInput();
     if (!i) return null;
-    i.focus();
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v);
     i.dispatchEvent(new Event('input', { bubbles: true }));
     return i.value;
   },
-  blurMax: () => { const i = window.__v.maxInput(); i && i.blur(); i && i.scrollIntoView({ block: 'center' }); return !!i; },
+  enterMax: () => {
+    const i = window.__v.maxInput();
+    if (!i) return false;
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    i.scrollIntoView({ block: 'center' });
+    return true;
+  },
   segLabel: () => ([...document.querySelectorAll('label')].find(l => l.textContent.startsWith('斷句')) || {}).textContent || '',
 };
 true
@@ -286,7 +292,7 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         async def set_max(v: str) -> str:
             await js(f"window.__v.typeMax('{v}')")
             await asyncio.sleep(0.3)
-            await js("window.__v.blurMax()")
+            await js("window.__v.enterMax()")
             want = f"上限 {v or 8} 秒"
             got = await wait_for(lambda: js(f"window.__v.segLabel().includes('{want}') ? window.__v.segLabel() : null"), 10)
             return got or await js("window.__v.segLabel()")
