@@ -186,6 +186,46 @@ enum Cmd {
         /// 串流模式:專用模型段首段尾墊的合成靜音毫秒(routed 引擎)
         #[arg(long)]
         transducer_pad_ms: Option<u32>,
+        /// 串流模式:斷句設為「快」(偏移 −100 ms、單段上限 3 s)
+        #[arg(long)]
+        fast: bool,
+        /// 串流模式:組長達到這個毫秒數後小段一結束就送出(預設沿用 VadConfig)
+        #[arg(long)]
+        long_ms: Option<u32>,
+    },
+    /// 斷句量測(只跑 VAD):評測集句子裁掉頭尾靜音後,以固定句間停頓接成長音訊,
+    /// 量「句子講完 → 切出段落」的延遲、句間停頓抓到的比例、句中誤切
+    SegEval {
+        #[arg(long, num_args = 1.., default_values_t = ["ja-rs".to_string(), "ja-fleurs".into(), "en-fleurs".into()])]
+        sets: Vec<String>,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// 句間停頓(毫秒,可多個)
+        #[arg(long, num_args = 1.., default_values_t = [100u32, 150, 200, 300])]
+        gaps: Vec<u32>,
+        /// 短組需要的停頓(毫秒,可多個;調整器的靜音門檻);硬上限依調整器規則(≤300 → 4 s、≥500 → 6 s、其餘 5 s)
+        #[arg(long, num_args = 1.., default_values_t = [200u32, 300, 450])]
+        silences: Vec<u32>,
+        #[arg(long, default_value_t = -26.0, allow_hyphen_values = true)]
+        level_dbfs: f32,
+        /// 改量真實錄音(16 kHz wav,可多個):沒有標註,只量段長與「開口 → 切出」的等待
+        #[arg(long, num_args = 1..)]
+        wav: Vec<PathBuf>,
+        /// Silero 語音門檻(預設沿用 VadConfig)
+        #[arg(long)]
+        threshold: Option<f32>,
+        /// 最短語音(毫秒,預設沿用 VadConfig)
+        #[arg(long)]
+        min_speech_ms: Option<u32>,
+        /// 單段硬上限秒數(覆寫依門檻推算的值)
+        #[arg(long)]
+        max_speech_sec: Option<f32>,
+        /// 合成模式:停頓與句子底下的白噪音響度(dBFS);Silero 會把句後 -60 dBFS 白噪音當成還在講話
+        #[arg(long, default_value_t = -60.0, allow_hyphen_values = true)]
+        noise_dbfs: f32,
+        /// 組長達到這個毫秒數後小段一結束就送出(預設沿用 VadConfig)
+        #[arg(long)]
+        long_ms: Option<u32>,
     },
 }
 
@@ -404,6 +444,8 @@ struct StreamOpts {
     tuning: bool,
     level_dbfs: f32,
     transducer_pad_ms: Option<u32>,
+    fast: bool,
+    long_ms: Option<u32>,
 }
 
 /// 把整段縮放到指定 RMS(dBFS),clip 在 ±1。
@@ -463,13 +505,15 @@ async fn run_stream_eval(
             (other, None) => return Err(anyhow!("串流模式不支援引擎 {other}(可用 sensevoice、whisper、routed)")),
         };
         let tag = format!(
-            "{engine}{}{}{}{}{}{}",
+            "{engine}{}{}{}{}{}{}{}{}",
             if opts.level_dbfs == -26.0 { String::new() } else { format!("-lv{}", opts.level_dbfs) },
             opts.transducer_pad_ms.map(|ms| format!("-tpad{ms}")).unwrap_or_default(),
             opts.pre_pad_ms.map(|ms| format!("-pre{ms}")).unwrap_or_default(),
             if opts.cleanup { "" } else { "-nocleanup" },
             opts.max_speech_sec.map(|s| format!("-max{s}")).unwrap_or_default(),
-            if opts.tuning { "" } else { "-notune" }
+            if opts.tuning { "" } else { "-notune" },
+            if opts.fast { "-fast" } else { "" },
+            opts.long_ms.map(|ms| format!("-long{ms}")).unwrap_or_default()
         );
         for set in sets {
             let utts = load_eval_set(set, limit)?;
@@ -498,6 +542,12 @@ async fn run_stream_eval(
                     cfg.vad.max_speech_sec = s;
                 }
                 cfg.seg_tuning = opts.tuning;
+                if opts.fast {
+                    cfg.seg_control.offset_ms.store(-100, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(ms) = opts.long_ms {
+                    cfg.vad.long_len_sec = ms as f32 / 1000.0;
+                }
                 if let Some(ms) = opts.transducer_pad_ms {
                     cfg.transducer_pad_ms = ms;
                 }
@@ -752,15 +802,33 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::AsrEval {
-            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, no_cleanup, max_speech_sec, no_tuning, level_dbfs, transducer_pad_ms,
+            sets, engines, limit, threads, auto, no_normalize, out, stream, session_size, pre_pad_ms, no_cleanup, max_speech_sec, no_tuning, level_dbfs, transducer_pad_ms, fast, long_ms,
         } => {
             if stream {
                 let opts = StreamOpts {
-                    session_size, pre_pad_ms, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs, transducer_pad_ms,
+                    session_size, pre_pad_ms, cleanup: !no_cleanup, max_speech_sec, tuning: !no_tuning, level_dbfs, transducer_pad_ms, fast, long_ms,
                 };
                 run_stream_eval(&sets, &engines, limit, threads, auto, &opts, &out).await?
             } else {
                 run_asr_eval(&sets, &engines, limit, threads, auto, !no_normalize, &out)?
+            }
+        }
+        Cmd::SegEval { sets, limit, gaps, silences, level_dbfs, wav, threshold, min_speech_ms, max_speech_sec, noise_dbfs, long_ms } => {
+            let mut base = VadConfig::default();
+            if let Some(t) = threshold {
+                base.threshold = t;
+            }
+            if let Some(ms) = min_speech_ms {
+                base.min_speech_sec = ms as f32 / 1000.0;
+            }
+            if let Some(ms) = long_ms {
+                base.long_len_sec = ms as f32 / 1000.0;
+            }
+            println!("threshold {}、min_speech {} ms", base.threshold, (base.min_speech_sec * 1000.0).round());
+            if wav.is_empty() {
+                run_seg_eval(&sets, limit, &gaps, &silences, level_dbfs, noise_dbfs, &base, max_speech_sec)?
+            } else {
+                run_seg_eval_wav(&wav, &silences, &base, max_speech_sec)?
             }
         }
         Cmd::DownloadModel { id, models_dir } => run_download_model(&id, models_dir)?,
@@ -883,6 +951,129 @@ fn run_capture_probe(source: &str, seconds: u64) -> Result<()> {
         s.sessions,
         s.samples_out as f64 / 16_000.0 / elapsed
     );
+    Ok(())
+}
+
+/// 一個切出的段落:語音本體 [start, end)、切出時已餵入的樣本數、是否撞硬上限。
+struct SegHit {
+    core: (i64, i64),
+    emit_at: i64,
+    forced: bool,
+}
+
+fn run_segmenter(audio: &[f32], cfg: &VadConfig) -> Result<Vec<SegHit>> {
+    let mut seg = Segmenter::new(cfg)?;
+    let mut fed = 0i64;
+    let mut out = Vec::new();
+    for c in audio.chunks(480) {
+        fed += c.len() as i64;
+        out.extend(seg.push(c).into_iter().map(|s| SegHit { core: s.core, emit_at: fed, forced: s.forced }));
+    }
+    out.extend(seg.flush().into_iter().map(|s| SegHit { core: s.core, emit_at: fed, forced: s.forced }));
+    Ok(out)
+}
+
+/// 用 VAD 找出單句的語音本體,裁掉頭尾靜音;找不到語音回 None。
+/// 停頓 0.1 s 就送出、上限 30 s 不硬切,取所有段落的頭尾即為整句範圍。
+fn trim_to_speech(pcm: &[f32]) -> Result<Option<Vec<f32>>> {
+    let cfg = VadConfig { min_silence_sec: 0.1, max_speech_sec: 30.0, ..VadConfig::default() };
+    let mut padded = pcm.to_vec();
+    padded.extend(std::iter::repeat_n(0.0, 16_000));
+    let hits = run_segmenter(&padded, &cfg)?;
+    let (Some(a), Some(b)) = (hits.iter().map(|h| h.core.0).min(), hits.iter().map(|h| h.core.1).max()) else {
+        return Ok(None);
+    };
+    Ok(Some(pcm[a.max(0) as usize..(b as usize).min(pcm.len())].to_vec()))
+}
+
+fn run_seg_eval_wav(files: &[PathBuf], silences: &[u32], base: &VadConfig, max_override: Option<f32>) -> Result<()> {
+    println!("檔案              門檻  上限 | 段數  段長 p50/p95/最長 ms   >8 s 段  撞上限段 | 開口→切出 p50/p95/最長 ms  段尾→切出 p50 ms");
+    for f in files {
+        let audio = read_wav_16k(f)?;
+        let name: String = f.parent().and_then(|d| d.file_name()).unwrap_or_default().to_string_lossy().chars().take(16).collect();
+        for &ms in silences {
+            let max_s = max_override.unwrap_or(if ms <= 300 { 4.0 } else if ms >= 500 { 6.0 } else { 5.0 });
+            let cfg = VadConfig { min_silence_sec: ms as f32 / 1000.0, max_speech_sec: max_s, ..base.clone() };
+            let hits = run_segmenter(&audio, &cfg)?;
+            let ms_of = |x: i64| (x.max(0) / 16) as u32;
+            let len = tingyi_core::metrics::Stats::from_samples(hits.iter().map(|h| ms_of(h.core.1 - h.core.0)).collect());
+            let wait = tingyi_core::metrics::Stats::from_samples(hits.iter().map(|h| ms_of(h.emit_at - h.core.0)).collect());
+            let tail = tingyi_core::metrics::Stats::from_samples(hits.iter().map(|h| ms_of(h.emit_at - h.core.1)).collect());
+            println!(
+                "{name:<16} {ms:>5} {max_s:>4.0}s | {:>4}  {:>5} / {:>5} / {:>6}   {:>6}  {:>6.1}%  | {:>5} / {:>5} / {:>6}        {:>5}",
+                hits.len(), len.p50, len.p95, len.max,
+                hits.iter().filter(|h| h.core.1 - h.core.0 > 8 * 16_000).count(),
+                hits.iter().filter(|h| h.forced).count() as f64 * 100.0 / hits.len().max(1) as f64,
+                wait.p50, wait.p95, wait.max, tail.p50,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_seg_eval(
+    sets: &[String],
+    limit: usize,
+    gaps: &[u32],
+    silences: &[u32],
+    level_dbfs: f32,
+    noise_dbfs: f32,
+    base: &VadConfig,
+    max_override: Option<f32>,
+) -> Result<()> {
+    use tingyi_core::eval::build_stream;
+    const TOL: i64 = 300 * 16; // 段尾比句尾早 300 ms 內仍算切在句尾
+    println!("集          停頓  門檻  上限 | 抓到句間  講完→切出 p50/p95 ms | 句中誤切/百句  撞上限段  段長 p50 ms | 短句被切開  片段/句");
+    for set in sets {
+        let mut utts = Vec::new();
+        for u in load_eval_set(set, limit)? {
+            if let Some(t) = trim_to_speech(&level_to(&read_wav_16k(&u.wav)?, level_dbfs))? {
+                utts.push(t);
+            }
+        }
+        for &gap in gaps {
+            let (mut audio, spans) = build_stream(&utts, 7, (gap, gap), noise_dbfs, 16_000);
+            audio.extend(std::iter::repeat_n(0.0, 24_000));
+            for &ms in silences {
+                let max_s = max_override.unwrap_or(if ms <= 300 { 4.0 } else if ms >= 500 { 6.0 } else { 5.0 });
+                let cfg = VadConfig { min_silence_sec: ms as f32 / 1000.0, max_speech_sec: max_s, ..base.clone() };
+                let hits = run_segmenter(&audio, &cfg)?;
+                let (mut caught, mut lat, mut splits) = (0usize, Vec::new(), 0usize);
+                // 短句(≤ 2.5 s,本來不需要切)被任何邊界切開的句數;每句與幾個段重疊
+                let (mut short_n, mut short_cut, mut pieces) = (0usize, 0usize, 0usize);
+                for (i, &(s, e)) in spans.iter().enumerate() {
+                    let (s, e) = (s as i64, e as i64);
+                    let next = spans.get(i + 1).map_or(i64::MAX, |n| n.0 as i64);
+                    if let Some(h) = hits.iter().find(|h| h.core.1 >= e - TOL) {
+                        lat.push(((h.emit_at - e).max(0) / 16) as u32);
+                        caught += usize::from(h.core.1 < next);
+                    }
+                    splits += hits.iter().filter(|h| !h.forced && h.core.1 > s + TOL && h.core.1 < e - TOL).count();
+                    if e - s <= 2500 * 16 {
+                        short_n += 1;
+                        short_cut += usize::from(hits.iter().any(|h| h.core.1 > s + TOL && h.core.1 < e - TOL));
+                    }
+                    pieces += hits.iter().filter(|h| h.core.0 < e && h.core.1 > s).count();
+                }
+                let n = spans.len().max(1);
+                let l = tingyi_core::metrics::Stats::from_samples(lat);
+                let mut lens: Vec<u32> = hits.iter().map(|h| ((h.core.1 - h.core.0) / 16) as u32).collect();
+                lens.sort_unstable();
+                println!(
+                    "{set:<10} {gap:>5} {ms:>5} {max_s:>4.0}s | {:>6.1}%   {:>6} / {:>6}       | {:>8.1}       {:>5.1}%   {:>6}      | {:>5.1}%({short_n:>3})  {:>5.2}",
+                    caught as f64 * 100.0 / n as f64,
+                    l.p50,
+                    l.p95,
+                    splits as f64 * 100.0 / n as f64,
+                    hits.iter().filter(|h| h.forced).count() as f64 * 100.0 / hits.len().max(1) as f64,
+                    lens.get(lens.len() / 2).copied().unwrap_or(0),
+                    short_cut as f64 * 100.0 / short_n.max(1) as f64,
+                    pieces as f64 / n as f64,
+                );
+            }
+        }
+    }
     Ok(())
 }
 

@@ -601,17 +601,25 @@ fn chrono_like_now() -> String {
     format!("{secs}")
 }
 
-/// 斷句靈敏度:fast / normal / slow(−100 / 0 / +100 ms)與是否自動調整。執行中即時生效。
+/// 斷句靈敏度:fast / normal / slow(−100 / 0 / +100 ms)、是否自動調整、手動單段上限(秒,None = 依靈敏度)。
+/// 執行中即時生效。
 #[tauri::command]
-pub fn set_segmentation(state: State<'_, AppState>, sensitivity: String, adaptive: bool) -> Result<(), String> {
+pub fn set_segmentation(
+    state: State<'_, AppState>,
+    sensitivity: String,
+    adaptive: bool,
+    max_speech_sec: Option<f32>,
+) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let offset = match sensitivity.as_str() {
         "fast" => -100,
         "slow" => 100,
         _ => 0,
     };
+    let override_ms = max_speech_sec.filter(|s| s.is_finite() && *s > 0.0).map_or(0, |s| (s * 1000.0).round() as u32);
     state.seg_control.offset_ms.store(offset, Ordering::Relaxed);
     state.seg_control.adaptive.store(adaptive, Ordering::Relaxed);
+    state.seg_control.max_speech_override_ms.store(override_ms, Ordering::Relaxed);
     Ok(())
 }
 

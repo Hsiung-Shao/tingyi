@@ -164,6 +164,9 @@ pub struct PipelineConfig {
     pub unknown_silence: Duration,
     /// 講者已連續靜音這麼久 → 明顯未完的句子也直接翻(對方大概不會接著講了)。
     pub incomplete_silence: Duration,
+    /// 斷句選「快」時的 `incomplete_wait` / `incomplete_silence`。
+    pub incomplete_wait_fast: Duration,
+    pub incomplete_silence_fast: Duration,
     /// 合併後音訊長度上限,超過就強制翻。
     pub merge_max_audio_ms: u32,
     /// 合併後字數上限(CJK 字數;英文以詞數 × 2 近似)。
@@ -213,6 +216,8 @@ impl Default for PipelineConfig {
             unknown_silence: Duration::from_millis(250),
             // 2026-10-06 使用者決定:有回修補償後快路徑更積極,未完句靜音 0.6 s 就翻(原 1.2 s)
             incomplete_silence: Duration::from_millis(600),
+            incomplete_wait_fast: Duration::from_millis(1000),
+            incomplete_silence_fast: Duration::from_millis(300),
             merge_max_audio_ms: 12_000,
             merge_max_chars: 80,
             mt_timeout: Duration::from_secs(15),
@@ -531,7 +536,7 @@ fn start_inner(
     })
 }
 
-/// 切換音訊來源時插入的靜音:比斷句靜音上限(600 ms)長,讓進行中的語音在切換點收尾。
+/// 切換音訊來源時插入的靜音:讓 VAD 交付進行中的小段,再以 `finish_group` 在切換點收尾。
 const SWITCH_SILENCE_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 7 / 10;
 
 /// 同一批樣本餵給回修環形緩衝、整段錄音與 Segmenter(三者時鐘一致)。
@@ -627,6 +632,13 @@ fn vad_loop(
                     let zeros = vec![0.0f32; SWITCH_SILENCE_SAMPLES];
                     let Some(h) = feed_samples(&zeros, &mut segmenter, &seg_tx, &refine_tx, &mut wav_sink, &stats) else { return };
                     had_segment |= h;
+                    // 合併器可能還在等停頓:切換點直接收尾,不讓新來源的語音併進舊來源的組
+                    for seg in segmenter.finish_group() {
+                        had_segment = true;
+                        if seg_tx.send(seg).is_err() {
+                            return;
+                        }
+                    }
                     if let Some(tx) = &refine_tx {
                         let _ = tx.send(RefineMsg::Boundary);
                     }
@@ -843,8 +855,17 @@ fn wait_policy(cfg: &PipelineConfig, u: &Utterance) -> Option<(Duration, Duratio
     }
     match completeness(&u.text, u.lang) {
         Completeness::Complete => None,
-        Completeness::Incomplete => Some((cfg.incomplete_wait, cfg.incomplete_silence)),
+        Completeness::Incomplete => Some(incomplete_wait(cfg)),
         Completeness::Unknown => Some((cfg.unknown_wait, cfg.unknown_silence)),
+    }
+}
+
+/// 明顯未完的句子的(最長等待、靜音多久就翻)。
+fn incomplete_wait(cfg: &PipelineConfig) -> (Duration, Duration) {
+    if cfg.seg_control.offset_ms.load(Ordering::Relaxed) < 0 {
+        (cfg.incomplete_wait_fast, cfg.incomplete_silence_fast)
+    } else {
+        (cfg.incomplete_wait, cfg.incomplete_silence)
     }
 }
 
@@ -1050,5 +1071,22 @@ mod tests {
         assert_eq!(AsrEngine::SenseVoice.default_pre_pad_ms(), 800);
         assert_eq!(AsrEngine::Routed.default_pre_pad_ms(), 800);
         assert_eq!(AsrEngine::Whisper { base_url: String::new() }.default_pre_pad_ms(), 200);
+    }
+
+    // T16:「快」偏移 -100 縮短未完句等待,0 與 +100 維持預設,改值立即反映
+    #[test]
+    fn incomplete_wait_shortens_only_when_fast() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let cfg = PipelineConfig::default();
+        let fast = (Duration::from_millis(1000), Duration::from_millis(300));
+        let normal = (Duration::from_millis(2500), Duration::from_millis(600));
+        cfg.seg_control.offset_ms.store(-100, Relaxed);
+        assert_eq!(incomplete_wait(&cfg), fast, "快檔應用縮短值");
+        cfg.seg_control.offset_ms.store(0, Relaxed);
+        assert_eq!(incomplete_wait(&cfg), normal, "0 用預設");
+        cfg.seg_control.offset_ms.store(100, Relaxed);
+        assert_eq!(incomplete_wait(&cfg), normal, "慢檔不縮短");
+        cfg.seg_control.offset_ms.store(-100, Relaxed);
+        assert_eq!(incomplete_wait(&cfg), fast, "改回快檔立即反映");
     }
 }

@@ -15,6 +15,8 @@ pub struct SegControl {
     /// 目前生效的靜音門檻(毫秒),供 UI 顯示。
     pub current_ms: AtomicU32,
     pub current_max_speech_ms: AtomicU32,
+    /// 使用者手動填的單段上限(毫秒);0 = 依快/中/慢預設。
+    pub max_speech_override_ms: AtomicU32,
 }
 
 impl Default for SegControl {
@@ -24,6 +26,7 @@ impl Default for SegControl {
             adaptive: AtomicBool::new(true),
             current_ms: AtomicU32::new(350),
             current_max_speech_ms: AtomicU32::new(5000),
+            max_speech_override_ms: AtomicU32::new(0),
         }
     }
 }
@@ -54,6 +57,9 @@ pub struct SegmentationTuner {
     cooldown: u32,
     last: Option<SegParams>,
 }
+
+/// 使用者可填的單段上限範圍(毫秒);`Segmenter` 的 history 也依上界配置。
+pub const MAX_SPEECH_INPUT_MS: (u32, u32) = (2000, 15_000);
 
 const MIN_MS: i32 = 200;
 const MAX_MS: i32 = 600;
@@ -159,8 +165,15 @@ impl SegmentationTuner {
         let adapt = if control.adaptive.load(Ordering::Relaxed) { self.adapt_ms } else { 0 };
         let offset = control.offset_ms.load(Ordering::Relaxed);
         let ms = (base + adapt + offset).clamp(MIN_MS, MAX_MS) as u32;
-        // 語速快(門檻低)→ 單段上限 4 s;慢 → 6 s;否則 5 s
-        let max_speech_ms = if ms <= 300 { 4000 } else if ms >= 500 { 6000 } else { 5000 };
+        // 單段上限:使用者手動填的優先;否則快 3 s / 中 8 s / 慢 10 s。
+        // 2026-10-27 量測:上限越短越快但越不準(快 3 s 英文演講開口 → 切出 p50 3.0 s,串流 CER 多 4–8 個百分點),
+        // 所以只有「快」切得積極,中/慢放寬換準確度。
+        let max_speech_ms = match control.max_speech_override_ms.load(Ordering::Relaxed) {
+            0 if offset < 0 => 3000,
+            0 if offset > 0 => 10_000,
+            0 => 8000,
+            v => v.clamp(MAX_SPEECH_INPUT_MS.0, MAX_SPEECH_INPUT_MS.1),
+        };
         SegParams {
             min_silence_ms: ms,
             max_speech_ms,
@@ -208,7 +221,7 @@ mod tests {
         let mut t = SegmentationTuner::new();
         let p = t.set_lang(Lang::Ja, &c).unwrap();
         assert_eq!(p.min_silence_ms, 300);
-        assert_eq!(p.max_speech_ms, 4000);
+        assert_eq!(p.max_speech_ms, 8000);
         c.offset_ms.store(100, Ordering::Relaxed);
         let p = t.emit_if_changed(&c).unwrap();
         assert_eq!(p.min_silence_ms, 400);
@@ -258,6 +271,37 @@ mod tests {
         // 夾限:偏移 +100 且不自動,仍 ≤ 600
         c.offset_ms.store(500, Ordering::Relaxed);
         assert_eq!(t.params(&c).min_silence_ms, 600);
+    }
+
+    // T18:單段上限預設快 3 s、中 8 s、慢 10 s,與語言無關
+    #[test]
+    fn max_speech_follows_sensitivity_preset() {
+        let c = SegControl::default();
+        let mut t = SegmentationTuner::new();
+        t.set_lang(Lang::En, &c);
+        assert_eq!(t.params(&c).max_speech_ms, 8000, "英文中檔上限 8 s");
+        c.offset_ms.store(-100, Ordering::Relaxed);
+        let p = t.params(&c);
+        assert_eq!((p.min_silence_ms, p.max_speech_ms), (350, 3000), "英文快檔 350 ms、上限 3 s");
+        t.set_lang(Lang::Ja, &c);
+        assert_eq!(t.params(&c).max_speech_ms, 3000, "日文快檔上限也是 3 s");
+        c.offset_ms.store(100, Ordering::Relaxed);
+        assert_eq!(t.params(&c).max_speech_ms, 10_000, "慢檔上限 10 s");
+    }
+
+    // T19:使用者手動填的單段上限蓋過快/中/慢預設,設 0 回到預設,改了會重送參數
+    #[test]
+    fn manual_max_speech_overrides_preset() {
+        let c = SegControl::default();
+        let mut t = SegmentationTuner::new();
+        t.set_lang(Lang::Ja, &c);
+        c.offset_ms.store(-100, Ordering::Relaxed);
+        c.max_speech_override_ms.store(6000, Ordering::Relaxed);
+        let p = t.emit_if_changed(&c).expect("改了上限要重送");
+        assert_eq!(p.max_speech_ms, 6000, "手動 6 s 蓋過快檔 3 s");
+        assert_eq!(c.current_max_speech_ms.load(Ordering::Relaxed), 6000, "UI 顯示目前上限");
+        c.max_speech_override_ms.store(0, Ordering::Relaxed);
+        assert_eq!(t.emit_if_changed(&c).expect("清空要重送").max_speech_ms, 3000, "清空回到快檔預設");
     }
 
     #[test]

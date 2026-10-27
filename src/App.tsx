@@ -31,14 +31,17 @@ export default function App() {
   const [unlocked, setUnlocked] = useState(false);
   const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
   const [adaptive, setAdaptive] = useState(true);
+  /** 手動單段上限(秒);空字串 = 依快/中/慢預設 */
+  const [maxSpeech, setMaxSpeech] = useState("");
   const [speakerId, setSpeakerId] = useState(true);
   const [refine, setRefine] = useState(true);
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
 
-  const applySegmentation = async (s: Sensitivity, a: boolean) => {
+  const applySegmentation = async (s: Sensitivity, a: boolean, m: string = maxSpeech) => {
     setSensitivity(s);
     setAdaptive(a);
-    await invoke("set_segmentation", { sensitivity: s, adaptive: a });
+    const sec = Number.parseFloat(m);
+    await invoke("set_segmentation", { sensitivity: s, adaptive: a, maxSpeechSec: Number.isFinite(sec) && sec > 0 ? sec : null });
   };
 
   const commitRename = async () => {
@@ -362,13 +365,17 @@ export default function App() {
 
           <section className="flex flex-col gap-2">
             <label className="text-neutral-400">
-              斷句{segmentation ? `(靜音門檻 ${segmentation.min_silence_ms} ms,${segmentation.reason})` : ""}
+              斷句
+              {segmentation
+                ? `(靜音門檻 ${segmentation.min_silence_ms} ms、上限 ${segmentation.max_speech_ms / 1000} 秒,${segmentation.reason})`
+                : ""}
             </label>
             <div className="flex gap-1">
               {(["fast", "normal", "slow"] as Sensitivity[]).map((s) => (
                 <button
                   key={s}
                   onClick={() => applySegmentation(s, adaptive)}
+                  title={s === "fast" ? "停頓短也切,翻譯等待較短(可能較零碎)" : undefined}
                   className={`flex-1 rounded px-2 py-1 border ${sensitivity === s ? "bg-sky-700 border-sky-500" : "bg-neutral-900 border-neutral-700"}`}
                 >
                   {s === "fast" ? "快" : s === "normal" ? "中" : "慢"}
@@ -378,6 +385,26 @@ export default function App() {
             <label className="flex items-center gap-2 text-xs text-neutral-400">
               <input type="checkbox" checked={adaptive} onChange={(e) => applySegmentation(sensitivity, e.target.checked)} />
               依語速自動調整
+            </label>
+            <label
+              className="flex items-center gap-2 text-xs text-neutral-400"
+              title="連續講話最多等幾秒就硬切;越小越快、辨識越不準。空白 = 依快/中/慢(3 / 8 / 10 秒)"
+            >
+              單段上限
+              <input
+                type="number"
+                aria-label="單段上限(秒)"
+                min={2}
+                max={15}
+                step={0.5}
+                value={maxSpeech}
+                placeholder={sensitivity === "fast" ? "3" : sensitivity === "slow" ? "10" : "8"}
+                onChange={(e) => setMaxSpeech(e.target.value)}
+                onBlur={() => applySegmentation(sensitivity, adaptive)}
+                onKeyDown={(e) => e.key === "Enter" && applySegmentation(sensitivity, adaptive)}
+                className="w-16 bg-neutral-900 border border-neutral-700 rounded px-2 py-0.5"
+              />
+              秒
             </label>
           </section>
 

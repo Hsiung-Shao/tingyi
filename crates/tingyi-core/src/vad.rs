@@ -1,6 +1,7 @@
 //! Silero VAD 切段(透過 sherpa-onnx)。
 //!
-//! 規則(規格書):連續靜音 ≥ 500 ms 視為段落結束;單段上限 8 秒;段首段尾各補 200 ms。
+//! sherpa 只切「小段」(最短靜音 0.1 s),何時把小段合併送出由 `endpoint::Endpointer` 決定
+//! (短組要停頓 `min_silence_sec`、組長達 `max_speech_sec` 硬切);段首段尾再補緩衝。
 
 use anyhow::{anyhow, Result};
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
@@ -9,17 +10,27 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::audio::TARGET_SAMPLE_RATE;
+use crate::endpoint::{quietest_frame, Emit, EndpointParams, Endpointer};
 
 /// 沒有指定、也沒有引擎預設時的段首緩衝(毫秒)。
 pub const DEFAULT_PRE_PAD_MS: u32 = 200;
+
+/// sherpa VAD 的最短靜音:只用來切小段,送出時機交給 Endpointer。
+const SMALL_SILENCE_SEC: f32 = 0.1;
+/// sherpa VAD 的語音上限:只是防呆,實際上限由 Endpointer 硬切。
+const SHERPA_MAX_SPEECH_SEC: f32 = 20.0;
 
 #[derive(Debug, Clone)]
 pub struct VadConfig {
     pub model: PathBuf,
     pub threshold: f32,
+    /// 短組需要的停頓秒數(Endpointer 的 `base`;調整器的靜音門檻)。
     pub min_silence_sec: f32,
     pub min_speech_sec: f32,
+    /// 單段硬上限秒數(Endpointer 的 `max_len`)。
     pub max_speech_sec: f32,
+    /// 組長達到這個秒數後,小段一結束就送出(Endpointer 的 `long_len`)。
+    pub long_len_sec: f32,
     /// Silero 視窗(16 kHz 時為 512)。
     pub window_size: i32,
     /// 段首往前補的緩衝(毫秒);不會切進前一段的語音本體。None = 依辨識引擎的預設
@@ -34,12 +45,14 @@ impl Default for VadConfig {
     fn default() -> Self {
         Self {
             model: crate::paths::silero_vad_model(),
-            // 2026-10-06 真實影片實測:0.5 s 靜音在連續對白中很少成立,段落常撞上限才切;
-            // 改 0.35 s / 5 s 讓字幕更快出現(規格書原值 0.5 s / 8 s)。
+            // 短組停頓 0.35 s、硬上限 5 s(2026-10-06 真實影片實測後自規格書 0.5 s / 8 s 調低);
+            // 執行中由調整器透過 `Segmenter::set_params` 改寫。
             threshold: 0.5,
             min_silence_sec: 0.35,
-            min_speech_sec: 0.25,
+            // 0.25 → 0.128 s:起音盲區(Endpointer 的 onset_lag)跟著縮短,短句送出快約 0.13 s(2026-10-27 真實日文素材)
+            min_speech_sec: 0.128,
             max_speech_sec: 5.0,
+            long_len_sec: 2.5,
             window_size: 512,
             pre_pad_ms: None,
             pad_ms: 200,
@@ -54,9 +67,9 @@ pub struct Segment {
     pub samples: Vec<f32>,
     /// 段首在整條串流中的樣本索引(含緩衝)。
     pub start_sample: i64,
-    /// 段尾被 VAD 判定的瞬間(端到端延遲原點)。
+    /// 段落被送出的瞬間(端到端延遲原點)。
     pub end_at: Instant,
-    /// VAD 判定的語音本體 [start, end)(不含補白);斷句調整、說話者、字速都用這段。
+    /// 語音本體 [start, end)(不含補白);斷句調整、說話者、字速都用這段。
     pub core: (i64, i64),
     /// 撞單段上限被強制切開(話還沒講完)。
     pub forced: bool,
@@ -83,85 +96,53 @@ impl Segment {
 /// 把連續 16 kHz 音訊切成語音段。
 pub struct Segmenter {
     vad: VoiceActivityDetector,
+    endpointer: Endpointer,
     pre_pad: i64,
     post_pad: i64,
     /// 上一段語音本體的結尾(補白不切進前一段)。
     last_core_end: Option<i64>,
-    /// 已餵進 Segmenter 的總樣本數。
+    /// 已餵進 Segmenter 的總樣本數(sherpa 小段的 start 也是從 0 起算的絕對位置)。
     fed: i64,
-    /// 目前這個 VAD 建立時的 `fed`:sherpa VAD 回傳的 start 從建立時起算,換參數重建後要加回原點。
-    vad_origin: i64,
     /// 最近的原始樣本,供補前後緩衝用。
     history: VecDeque<f32>,
     history_start: i64,
     history_cap: usize,
-    /// 目前正在講的這段語音的起點(樣本索引);None = 沒在講話。即時預覽用。
-    speech_start: Option<i64>,
-    /// 目前生效的設定(VAD 建立後不能改,要換參數得重建)。
-    cfg: VadConfig,
-    /// 等待套用的新參數(靜音秒數、單段上限秒數);在沒講話時重建 VAD 套用。
-    pending: Option<(f32, f32)>,
+    /// VAD 回報開口時,往回推估實際開口的樣本數(min_speech + 2 窗)。
+    onset_back: i64,
+    /// VAD 正偵測到語音時,這段語音的估計起點。
+    onset: Option<i64>,
 }
 
 impl Segmenter {
     pub fn new(cfg: &VadConfig) -> Result<Self> {
         let vad = Self::build_vad(cfg)?;
         let ms_to_samples = |ms: u32| ms as i64 * TARGET_SAMPLE_RATE as i64 / 1000;
-        // history 要能容納最大的單段上限(自適應最高 6 s)+ 緩衝
-        let history_cap = (cfg.max_speech_sec.max(6.0) as usize + 4) * TARGET_SAMPLE_RATE as usize;
+        let sec_to_ms = |s: f32| (s * 1000.0).round() as u32;
+        // history 要能容納使用者可填的最大單段上限 + 緩衝:合併後的段落只能從 history 取樣本
+        let max_sec = cfg.max_speech_sec.max(crate::tuner::MAX_SPEECH_INPUT_MS.1 as f32 / 1000.0);
+        let history_cap = (max_sec.ceil() as usize + 4) * TARGET_SAMPLE_RATE as usize;
         Ok(Self {
             vad,
+            endpointer: Endpointer::new(EndpointParams {
+                long_len: ms_to_samples(sec_to_ms(cfg.long_len_sec)),
+                ..EndpointParams::new(sec_to_ms(cfg.min_silence_sec), sec_to_ms(cfg.max_speech_sec), sec_to_ms(cfg.min_speech_sec))
+            }),
             pre_pad: ms_to_samples(cfg.pre_pad_ms.unwrap_or(DEFAULT_PRE_PAD_MS)),
             post_pad: ms_to_samples(cfg.pad_ms),
             last_core_end: None,
             fed: 0,
-            vad_origin: 0,
             history: VecDeque::with_capacity(history_cap),
             history_start: 0,
             history_cap,
-            speech_start: None,
-            cfg: cfg.clone(),
-            pending: None,
+            onset_back: (cfg.min_speech_sec * TARGET_SAMPLE_RATE as f32).round() as i64 + 2 * cfg.window_size as i64,
+            onset: None,
         })
     }
 
-    /// 要求換參數;會在下一次「沒在講話」時重建 VAD 套用,避免丟掉進行中的語音。
+    /// 換參數(短組需要的停頓秒數、單段硬上限秒數);下一次餵樣本就生效。
     pub fn set_params(&mut self, min_silence_sec: f32, max_speech_sec: f32) {
-        if (self.cfg.min_silence_sec - min_silence_sec).abs() < 1e-3
-            && (self.cfg.max_speech_sec - max_speech_sec).abs() < 1e-3
-        {
-            self.pending = None;
-            return;
-        }
-        self.pending = Some((min_silence_sec, max_speech_sec));
-    }
-
-    /// 目前生效的(靜音秒數、單段上限秒數)。
-    pub fn current_params(&self) -> (f32, f32) {
-        (self.cfg.min_silence_sec, self.cfg.max_speech_sec)
-    }
-
-    fn apply_pending_if_idle(&mut self) {
-        let Some((ms, mx)) = self.pending else { return };
-        if self.vad.detected() || self.speech_start.is_some() {
-            return;
-        }
-        let mut cfg = self.cfg.clone();
-        cfg.min_silence_sec = ms;
-        cfg.max_speech_sec = mx;
-        match Self::build_vad(&cfg) {
-            Ok(v) => {
-                self.vad = v;
-                self.vad_origin = self.fed;
-                self.cfg = cfg;
-                self.pending = None;
-                tracing::debug!("VAD 參數已套用:靜音 {ms:.2}s、上限 {mx:.1}s");
-            }
-            Err(e) => {
-                tracing::warn!("重建 VAD 失敗,維持舊參數:{e:#}");
-                self.pending = None;
-            }
-        }
+        let to_samples = |s: f32| (s * TARGET_SAMPLE_RATE as f32).round() as i64;
+        self.endpointer.set_params(to_samples(min_silence_sec), to_samples(max_speech_sec));
     }
 
     fn build_vad(cfg: &VadConfig) -> Result<VoiceActivityDetector> {
@@ -173,10 +154,10 @@ impl Segmenter {
             silero_vad: SileroVadModelConfig {
                 model: Some(model),
                 threshold: cfg.threshold,
-                min_silence_duration: cfg.min_silence_sec,
+                min_silence_duration: SMALL_SILENCE_SEC,
                 min_speech_duration: cfg.min_speech_sec,
                 window_size: cfg.window_size,
-                max_speech_duration: cfg.max_speech_sec,
+                max_speech_duration: SHERPA_MAX_SPEECH_SEC,
             },
             sample_rate: TARGET_SAMPLE_RATE,
             num_threads: cfg.num_threads,
@@ -184,15 +165,13 @@ impl Segmenter {
             debug: false,
             ..Default::default()
         };
-        // VAD 內部緩衝 60 秒,足以容納 max_speech + 靜音。
+        // VAD 內部緩衝 60 秒,足以容納 sherpa 上限 + 靜音。
         VoiceActivityDetector::create(&config, 60.0)
             .ok_or_else(|| anyhow!("VoiceActivityDetector::create 失敗"))
     }
 
     /// 餵入樣本,回傳這次新切出的段落(可能 0 個或多個)。
     pub fn push(&mut self, samples: &[f32]) -> Vec<Segment> {
-        self.apply_pending_if_idle();
-        let before = self.fed;
         self.vad.accept_waveform(samples);
         self.fed += samples.len() as i64;
         self.history.extend(samples.iter().copied());
@@ -200,88 +179,92 @@ impl Segmenter {
             self.history.pop_front();
             self.history_start += 1;
         }
-        let segs = self.drain(Instant::now());
-        if !segs.is_empty() {
-            // 段落剛結束:下一句從這之後算
-            self.speech_start = None;
+        if self.vad.detected() {
+            self.onset.get_or_insert(self.fed - self.onset_back);
+        } else {
+            self.onset = None;
         }
-        if self.speech_start.is_none() && self.vad.detected() {
-            // 語音剛開始:往回多抓 pad,避免吃掉第一個音節;與正式段落同規則,不切進前一段
-            self.speech_start = Some(
-                (before - self.pre_pad)
-                    .max(self.history_start)
-                    .max(self.last_core_end.unwrap_or(i64::MIN)),
-            );
-        }
-        segs
+        let mut emits = self.deliver_smalls();
+        let (history, hs) = (&self.history, self.history_start);
+        emits.extend(self.endpointer.tick(self.fed, self.onset, &mut |lo, hi| {
+            let lo = lo.max(hs);
+            let x: Vec<f32> = history.range((lo - hs) as usize..(hi - hs).max(lo - hs) as usize).copied().collect();
+            // 100 ms 框比 20 ms 不易落在字中間(2026-10-27 串流 CER:6 組中 5 組改善 0.2–1.8 個百分點)
+            quietest_frame(&x, lo, 1600)
+        }));
+        self.emit_segments(emits)
     }
 
-    /// 目前講到一半的語音(從語音起點到最新樣本),供即時預覽辨識;沒在講話回 None。
+    /// 目前講到一半的語音(從開著的組首到最新樣本),供即時預覽辨識;沒有組回 None。
+    /// VAD 偵測到語音時 `tick` 一定已開組,所以不必另看 onset。
     pub fn current_speech(&self) -> Option<Vec<f32>> {
-        let start = self.speech_start?;
-        if !self.vad.detected() {
-            return None;
-        }
-        let a = (start - self.history_start).max(0) as usize;
+        let start = (self.endpointer.open_start()? - self.pre_pad)
+            .max(self.last_core_end.unwrap_or(i64::MIN))
+            .max(self.history_start);
+        let a = (start - self.history_start) as usize;
         if a >= self.history.len() {
             return None;
         }
         Some(self.history.range(a..).copied().collect())
     }
 
-    /// 是否正在講話中(供即時預覽判斷)。
+    /// 講者是否還在講(即時預覽、翻譯與回修的靜音計時用)。
     pub fn speaking(&self) -> bool {
-        self.vad.detected()
+        self.endpointer.speaking(self.fed, self.vad.detected())
     }
 
     /// 強制結束目前段落(停止擷取時呼叫)。
     pub fn flush(&mut self) -> Vec<Segment> {
         self.vad.flush();
-        self.drain(Instant::now())
+        let mut emits = self.deliver_smalls();
+        emits.extend(self.endpointer.finish_group(self.fed));
+        self.emit_segments(emits)
     }
 
-    fn drain(&mut self, now: Instant) -> Vec<Segment> {
+    /// 結束目前的組但不 flush VAD(切換音訊來源時,插完靜音後呼叫)。
+    pub fn finish_group(&mut self) -> Vec<Segment> {
+        let emits = self.endpointer.finish_group(self.fed).into_iter().collect();
+        self.emit_segments(emits)
+    }
+
+    /// 把 VAD 切好的小段依序交給 Endpointer。
+    fn deliver_smalls(&mut self) -> Vec<Emit> {
         let mut out = Vec::new();
         while !self.vad.is_empty() {
-            let front = self
-                .vad
-                .front()
-                .map(|seg| (self.vad_origin + seg.start() as i64, seg.n() as i64, seg.samples().to_vec()));
+            let core = self.vad.front().map(|s| (s.start() as i64, s.start() as i64 + s.n() as i64));
             self.vad.pop();
-            if let Some((start, n, samples)) = front {
-                out.push(self.with_padding(start, n, samples, now));
+            if let Some(core) = core {
+                out.extend(self.endpointer.on_small(core, self.fed));
             }
         }
         out
     }
 
-    fn with_padding(&mut self, start: i64, n: i64, core_samples: Vec<f32>, now: Instant) -> Segment {
-        let max_n = self.cfg.max_speech_sec * TARGET_SAMPLE_RATE as f32;
-        let forced = n as f32 >= max_n * 0.95;
+    fn emit_segments(&mut self, emits: Vec<Emit>) -> Vec<Segment> {
+        let now = Instant::now();
+        emits.into_iter().filter_map(|e| self.with_padding(e, now)).collect()
+    }
+
+    fn with_padding(&mut self, e: Emit, now: Instant) -> Option<Segment> {
         let hist = (self.history_start, self.history_start + self.history.len() as i64);
         let (want_start, want_end) =
-            pad_bounds(start, start + n, self.pre_pad, self.post_pad, hist, self.last_core_end, forced);
-        self.last_core_end = Some(start + n);
-        let core = (start, start + n);
-        // history 可能已不含這段(極端情況),就退回 VAD 給的原始樣本。
-        if want_start >= want_end || start < self.history_start {
-            return Segment {
-                samples: core_samples,
-                start_sample: start,
-                end_at: now,
-                core,
-                forced,
-            };
+            pad_bounds(e.core.0, e.core.1, self.pre_pad, self.post_pad.min(e.post_limit), hist, self.last_core_end, e.forced);
+        self.last_core_end = Some(e.core.1);
+        // pad_bounds 已夾在 history 內,history 不含整段時只交出還留著的部分;
+        // 整段都已被擠出 history(極端情況)就沒有樣本可送,丟掉。
+        if want_start >= want_end {
+            tracing::warn!("段落 {:?} 已不在 history 內,丟棄", e.core);
+            return None;
         }
         let a = (want_start - self.history_start) as usize;
         let b = (want_end - self.history_start) as usize;
-        Segment {
+        Some(Segment {
             samples: self.history.range(a..b).copied().collect(),
             start_sample: want_start,
             end_at: now,
-            core,
-            forced,
-        }
+            core: e.core,
+            forced: e.forced,
+        })
     }
 }
 

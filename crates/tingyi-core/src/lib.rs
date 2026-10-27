@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod vad;
+pub mod endpoint;
 pub mod sentence;
 pub mod tuner;
 pub mod speaker;
