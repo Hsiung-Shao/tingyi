@@ -156,8 +156,9 @@ impl Endpointer {
     /// `quietest(lo, hi)` 回傳 [lo, hi) 內最安靜的位置(硬切用)。依序判斷:
     /// - 組長 ≥ `long_len` 且組尾已知 → 立即送出。
     /// - 短組:`onset` 晚於組尾且 `onset − 組尾 ≥ base` → 立即送出;沒有 `onset` 且 `fed − 組尾 ≥ base + onset_lag` → 送出。
-    /// - 組長(有 `onset` 時算到 `fed`)≥ `max_len` → 在 [max(fed − cut_search, 組首 + cut_min_head), fed) 硬切,
-    ///   前半 forced 送出,後半從切點開新組(組尾未知,等小段交付)。
+    /// - 組尾未知且沒有 `onset` → 清掉這個組(小段已在 tick 前交付完,不會再有屬於它的語音)。
+    /// - 組長(有 `onset` 時算到 `fed`,否則算到組尾;記為 reach)≥ `max_len` → 在
+    ///   [max(reach − cut_search, 組首 + cut_min_head), reach) 硬切,前半 forced 送出,後半從切點開新組。
     ///
     /// 非 forced 的 `post_limit = min(max_post, max(small_gap, fed − 組尾 − onset_lag))`。
     /// 單一小段的組(不是硬切後接續的)語音總長 < `min_keep` 時丟掉不送。
@@ -177,13 +178,16 @@ impl Endpointer {
         if due == Some(true) {
             out.extend(self.take(fed));
         }
+        if onset.is_none() && self.group.as_ref().is_some_and(|g| g.end.is_none()) {
+            self.group = None;
+        }
         if let (None, Some(o)) = (&self.group, onset) {
             self.group = Some(Group { start: o.max(self.cut), end: None, smalls: 0, speech: 0, after_cut: false });
         }
         if let Some(g) = &mut self.group {
             let reach = if onset.is_some() { fed } else { g.end.unwrap_or(g.start) };
             if reach - g.start >= self.p.max_len {
-                let c = quietest((fed - self.p.cut_search).max(g.start + self.p.cut_min_head), fed);
+                let c = quietest((reach - self.p.cut_search).max(g.start + self.p.cut_min_head), reach);
                 out.push(Emit { core: (g.start, c), forced: true, post_limit: 0 });
                 // 沒有 onset 時是已交付的小段剛好跨過上限:後半的組尾已知,照常等停頓送出
                 let end = g.end.filter(|&e| e > c);
@@ -504,6 +508,50 @@ mod tests {
         let (all, _) = run_ticks(&mut s, 14400, 23584, None);
         assert_eq!(all.len(), 1, "前置:T3 規格的送出格(< 23584)應已送出");
         assert!(!s.speaking(23584, false), "距小段結尾 10784 >= 5504,不再算在講");
+    }
+
+    // T20:硬切時語音剛結束、之後沒有新小段 → 組被清掉,不會把靜音當 forced 段送出
+    #[test]
+    fn hard_cut_without_followup_small_clears_group() {
+        let mut e = Endpointer::new(p());
+        let mut emits = Vec::new();
+        let mut fed = 5504;
+        while fed <= 64320 {
+            emits.extend(e.tick(fed, Some(0), &mut |_, _| 64000));
+            fed += CHUNK;
+        }
+        assert_eq!(emits.len(), 1, "前置:撞上限硬切一次");
+        assert_eq!(e.on_small((0, 63800), 64800), None, "小段整段在切點前,丟掉");
+        while fed <= 200_000 {
+            emits.extend(e.tick(fed, None, &mut |_, hi| hi - 1600));
+            fed += CHUNK;
+        }
+        assert_eq!(emits.len(), 1, "靜音期間不得再送出段落,實際 {emits:?}");
+        assert_eq!(e.open_start(), None, "沒有語音的殘組要清掉");
+        assert!(!e.speaking(200_000, false), "殘組不能讓 speaking 一直為 true");
+        let out = e.tick(200_480, Some(190_000), &mut |_, hi| hi - 1600);
+        assert!(out.is_empty());
+        assert_eq!(e.open_start(), Some(190_000), "下一句另開新組,不接在舊切點");
+    }
+
+    // T21:手動上限 2 s(小於 long_len)時硬切點落在組內,不會切出組尾之後的靜音
+    #[test]
+    fn hard_cut_without_onset_stays_inside_group() {
+        let mut e = Endpointer::new(EndpointParams::new(300, 2000, 250));
+        assert_eq!(e.on_small((0, 36000), 37600), None);
+        let mut emits = Vec::new();
+        let mut fed = 37600;
+        while fed <= 120_000 {
+            emits.extend(e.tick(fed, None, &mut |lo, hi| {
+                assert!(hi <= 36000, "沒有 onset 時搜尋範圍不得超過組尾,實際 hi={hi}");
+                (lo + hi) / 2
+            }));
+            fed += CHUNK;
+        }
+        assert!(!emits.is_empty(), "組應送出");
+        assert!(emits.iter().all(|m| m.core.1 <= 36000), "不得送出組尾之後的靜音,實際 {emits:?}");
+        assert_eq!(emits.last().map(|m| m.core.1), Some(36000), "最後一段收在組尾");
+        assert_eq!(e.open_start(), None);
     }
 
     // T15:open_start 在開組時為組首、硬切後為最後切點、送出後為 None

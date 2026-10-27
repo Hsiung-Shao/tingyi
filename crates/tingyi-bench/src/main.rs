@@ -203,7 +203,7 @@ enum Cmd {
         /// 句間停頓(毫秒,可多個)
         #[arg(long, num_args = 1.., default_values_t = [100u32, 150, 200, 300])]
         gaps: Vec<u32>,
-        /// 短組需要的停頓(毫秒,可多個;調整器的靜音門檻);硬上限依調整器規則(≤300 → 4 s、≥500 → 6 s、其餘 5 s)
+        /// 短組需要的停頓(毫秒,可多個;調整器的靜音門檻);硬上限見 --max-speech-sec
         #[arg(long, num_args = 1.., default_values_t = [200u32, 300, 450])]
         silences: Vec<u32>,
         #[arg(long, default_value_t = -26.0, allow_hyphen_values = true)]
@@ -217,9 +217,9 @@ enum Cmd {
         /// 最短語音(毫秒,預設沿用 VadConfig)
         #[arg(long)]
         min_speech_ms: Option<u32>,
-        /// 單段硬上限秒數(覆寫依門檻推算的值)
-        #[arg(long)]
-        max_speech_sec: Option<f32>,
+        /// 單段硬上限秒數:預設 8 s(中檔;快 3 s、慢 10 s 請用 --max-speech-sec 指定)
+        #[arg(long, default_value_t = 8.0)]
+        max_speech_sec: f32,
         /// 合成模式:停頓與句子底下的白噪音響度(dBFS);Silero 會把句後 -60 dBFS 白噪音當成還在講話
         #[arg(long, default_value_t = -60.0, allow_hyphen_values = true)]
         noise_dbfs: f32,
@@ -986,13 +986,12 @@ fn trim_to_speech(pcm: &[f32]) -> Result<Option<Vec<f32>>> {
     Ok(Some(pcm[a.max(0) as usize..(b as usize).min(pcm.len())].to_vec()))
 }
 
-fn run_seg_eval_wav(files: &[PathBuf], silences: &[u32], base: &VadConfig, max_override: Option<f32>) -> Result<()> {
+fn run_seg_eval_wav(files: &[PathBuf], silences: &[u32], base: &VadConfig, max_s: f32) -> Result<()> {
     println!("檔案              門檻  上限 | 段數  段長 p50/p95/最長 ms   >8 s 段  撞上限段 | 開口→切出 p50/p95/最長 ms  段尾→切出 p50 ms");
     for f in files {
         let audio = read_wav_16k(f)?;
         let name: String = f.parent().and_then(|d| d.file_name()).unwrap_or_default().to_string_lossy().chars().take(16).collect();
         for &ms in silences {
-            let max_s = max_override.unwrap_or(if ms <= 300 { 4.0 } else if ms >= 500 { 6.0 } else { 5.0 });
             let cfg = VadConfig { min_silence_sec: ms as f32 / 1000.0, max_speech_sec: max_s, ..base.clone() };
             let hits = run_segmenter(&audio, &cfg)?;
             let ms_of = |x: i64| (x.max(0) / 16) as u32;
@@ -1020,7 +1019,7 @@ fn run_seg_eval(
     level_dbfs: f32,
     noise_dbfs: f32,
     base: &VadConfig,
-    max_override: Option<f32>,
+    max_s: f32,
 ) -> Result<()> {
     use tingyi_core::eval::build_stream;
     const TOL: i64 = 300 * 16; // 段尾比句尾早 300 ms 內仍算切在句尾
@@ -1036,7 +1035,6 @@ fn run_seg_eval(
             let (mut audio, spans) = build_stream(&utts, 7, (gap, gap), noise_dbfs, 16_000);
             audio.extend(std::iter::repeat_n(0.0, 24_000));
             for &ms in silences {
-                let max_s = max_override.unwrap_or(if ms <= 300 { 4.0 } else if ms >= 500 { 6.0 } else { 5.0 });
                 let cfg = VadConfig { min_silence_sec: ms as f32 / 1000.0, max_speech_sec: max_s, ..base.clone() };
                 let hits = run_segmenter(&audio, &cfg)?;
                 let (mut caught, mut lat, mut splits) = (0usize, Vec::new(), 0usize);
