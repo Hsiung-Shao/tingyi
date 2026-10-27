@@ -88,6 +88,18 @@ window.__v = {
     return i.checked;
   },
   state: () => window.__TAURI_INTERNALS__.invoke('get_audio_source'),
+  maxInput: () => document.querySelector('input[aria-label="單段上限(秒)"]'),
+  // 受控 input:原生 setter + input 事件更新 state,下一拍再 blur 觸發 onBlur 送出
+  typeMax: (v) => {
+    const i = window.__v.maxInput();
+    if (!i) return null;
+    i.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v);
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+    return i.value;
+  },
+  blurMax: () => { const i = window.__v.maxInput(); i && i.blur(); i && i.scrollIntoView({ block: 'center' }); return !!i; },
+  segLabel: () => ([...document.querySelectorAll('label')].find(l => l.textContent.startsWith('斷句')) || {}).textContent || '',
 };
 true
 """
@@ -269,6 +281,20 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         if not run.check("切回 TTS 後再出現 TTS 字幕", bool(hits3), json.dumps(hits3, ensure_ascii=False)[:300]):
             return False
         screenshot(run, "3-back")
+
+        # 4) 斷句「單段上限」輸入框:填 4 → 執行中立即生效(標題顯示上限 4 秒);清空 → 回到中檔預設 8 秒
+        async def set_max(v: str) -> str:
+            await js(f"window.__v.typeMax('{v}')")
+            await asyncio.sleep(0.3)
+            await js("window.__v.blurMax()")
+            want = f"上限 {v or 8} 秒"
+            got = await wait_for(lambda: js(f"window.__v.segLabel().includes('{want}') ? window.__v.segLabel() : null"), 10)
+            return got or await js("window.__v.segLabel()")
+        label4 = await set_max("4")
+        run.check("單段上限填 4 秒後執行中生效", "上限 4 秒" in label4, label4)
+        screenshot(run, "4-max-speech")
+        label0 = await set_max("")
+        run.check("單段上限清空後回到中檔預設 8 秒", "上限 8 秒" in label0, label0)
 
         await js("window.__v.btn('停止').click(), true")
         stopped = await wait_for(lambda: js("!!window.__v.btn('開始')"), 60)
