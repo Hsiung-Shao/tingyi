@@ -27,6 +27,9 @@ function isSkipped(el: Element): boolean {
   return ce !== null && ce !== 'false';
 }
 
+/** 插入譯文當下的原文;文字被頁面改掉時用來判斷要不要重翻 */
+const sourceText = new WeakMap<Element, string>();
+
 function isCandidate(el: Element, opts: CollectOptions): el is HTMLElement {
   const tag = el.tagName.toUpperCase();
   if (!LEAF_TAGS.has(tag) && !CONTAINER_TAGS.has(tag)) return false;
@@ -34,14 +37,18 @@ function isCandidate(el: Element, opts: CollectOptions): el is HTMLElement {
   if (el.querySelector(`:scope > font.${TARGET_CLASS}`)) return false;
   const text = getBlockText(el);
   if (text.length < opts.minChars) return false;
+  // 全漢字的日文標題看起來像中文,有 lang 標示就以它為準
+  if (el.closest('[lang]')?.getAttribute('lang')?.toLowerCase().startsWith('ja')) return true;
   return !isLikelyTargetLang(text, opts.targetLang);
 }
 
 function walk(el: Element, opts: CollectOptions, out: HTMLElement[], includeSelf: boolean): void {
   if (isSkipped(el)) return;
-  if (includeSelf && !el.querySelector(BLOCKISH_SELECTOR)) {
+  if (includeSelf) {
+    const hasBlocks = el.querySelector(BLOCKISH_SELECTOR) !== null;
+    // 有子區塊時,自己行內那段文字(例如 <li>父項<ul>…</ul></li>)也算一段
     if (isCandidate(el, opts)) out.push(el);
-    return;
+    if (!hasBlocks) return;
   }
   for (const child of Array.from(el.children)) walk(child, opts, out, true);
 }
@@ -58,13 +65,14 @@ export function collectBlocks(root: Element, opts: CollectOptions): HTMLElement[
   return out;
 }
 
-/** 區塊要送翻的文字(含行內子元素文字,不含已插入的譯文),空白壓成單一空格 */
+/** 區塊要送翻的文字(含行內子元素文字,不含已插入的譯文與子區塊),空白壓成單一空格 */
 export function getBlockText(el: Element): string {
   const doc = el.ownerDocument;
   const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       for (let p = node.parentElement; p && p !== el; p = p.parentElement) {
         if (p.classList.contains(TARGET_CLASS) || p.tagName === 'SCRIPT' || p.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
+        if (p.matches(BLOCKISH_SELECTOR) || SKIP_TAGS.has(p.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
@@ -74,24 +82,25 @@ export function getBlockText(el: Element): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** 在區塊內最後面插入 <font class="atx-target">;已存在就只更新文字 */
+/** 在區塊內插入 <font class="atx-target">:一般放最後面,有子區塊時放在第一個子區塊前;已存在就只更新文字 */
 export function insertTranslation(el: HTMLElement, text: string): void {
   let target = el.querySelector<HTMLElement>(`:scope > font.${TARGET_CLASS}`);
   if (!target) {
     target = el.ownerDocument.createElement('font');
     target.className = TARGET_CLASS;
-    el.appendChild(target);
+    const firstBlock = Array.from(el.children).find((c) => c.matches(BLOCKISH_SELECTOR));
+    el.insertBefore(target, firstBlock ?? null);
   }
   target.textContent = text;
+  sourceText.set(el, getBlockText(el));
 }
 
 /** 移除 root 底下所有譯文與 data-atx-state 標記,還原頁面 */
 export function removeAllTranslations(root: Element): void {
   root.querySelectorAll(`font.${TARGET_CLASS}`).forEach((f) => f.remove());
-  const marked = [root, ...Array.from(root.querySelectorAll('[data-atx-state],[data-atx-error]'))];
+  const marked = [root, ...Array.from(root.querySelectorAll('[data-atx-state]'))];
   for (const el of marked) {
     el.removeAttribute('data-atx-state');
-    el.removeAttribute('data-atx-error');
   }
 }
 
@@ -104,11 +113,20 @@ export function watchNewBlocks(
   const observer = new MutationObserver((records) => {
     const found = new Set<HTMLElement>();
     for (const r of records) {
+      // 已翻好的區塊文字被頁面改掉(例如「載入中…」換成正文):清掉舊譯文重新排入
+      const at = r.target.nodeType === Node.ELEMENT_NODE ? (r.target as Element) : r.target.parentElement;
+      const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"]') : null;
+      if (done && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
+        done.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
+        delete done.dataset.atxState;
+        sourceText.delete(done);
+        if (isCandidate(done, opts)) found.add(done);
+      }
       for (const node of Array.from(r.addedNodes)) {
         if (node.nodeType !== Node.ELEMENT_NODE || !node.isConnected) continue;
         const el = node as Element;
-        // 自己插入的譯文、或已收集區塊裡的行內變動都不算新段落
-        if (el.closest(`.${TARGET_CLASS}, [data-atx-state]`)) continue;
+        // 自己插入的譯文不算新段落
+        if (el.closest(`.${TARGET_CLASS}`)) continue;
         if (el.parentElement && el.parentElement.closest(`[contenteditable]:not([contenteditable="false"])`)) continue;
         const out: HTMLElement[] = [];
         walk(el, opts, out, true);
@@ -117,6 +135,6 @@ export function watchNewBlocks(
     }
     if (found.size > 0) onBlocks([...found]);
   });
-  observer.observe(root, { childList: true, subtree: true });
+  observer.observe(root, { childList: true, subtree: true, characterData: true });
   return () => observer.disconnect();
 }

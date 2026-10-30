@@ -1,6 +1,7 @@
 import {
   buildPrompt,
   callOpenAICompatible,
+  PartialTranslationError,
   translateWithRetry,
   withCache,
   type KeyValueStore,
@@ -76,8 +77,13 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
   const translate = withCache(store, scope, (segs) =>
     withSlot(s.concurrency, () => (s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context))),
   );
-  const map = await translate(segments);
-  return { ok: true, translations: [...map].map(([id, text]) => ({ id, text })) };
+  const toList = (m: Map<number, string>) => [...m].map(([id, text]) => ({ id, text }));
+  try {
+    return { ok: true, translations: toList(await translate(segments)) };
+  } catch (e) {
+    if (e instanceof PartialTranslationError) return { ok: true, translations: toList(e.partial), error: e.message };
+    throw e;
+  }
 }
 
 async function handleListProviders(): Promise<ProvidersResponse> {

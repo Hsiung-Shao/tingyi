@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildPrompt } from '@atx/core';
-import { runProcess } from '../process.ts';
+import { runProcess, type RunResult } from '../process.ts';
 import { resolveCommand, sanitizedEnv } from '../resolve.ts';
 import { buildCliInvocation, type CliKind } from './cli.ts';
 import type { Provider, ProviderStatus, TranslateRequest } from './types.ts';
@@ -20,25 +20,37 @@ export interface CliProviderOptions {
   note?: string;
 }
 
-/** 從各 CLI 的輸出取出模型回覆文字 */
-export function extractCliOutput(kind: CliKind, stdout: string, outputFileText?: string): string {
-  if (kind === 'codex') return outputFileText ?? stdout;
-  const start = stdout.indexOf('{');
-  if (start < 0) return stdout;
+function parseJsonTail(text: string): Record<string, unknown> | undefined {
+  const start = text.indexOf('{');
+  if (start < 0) return undefined;
   try {
-    const data = JSON.parse(stdout.slice(start)) as Record<string, unknown>;
-    if (kind === 'claude') {
-      if (data.is_error) throw new Error(`claude: ${String(data.result)}`);
-      if (data.structured_output) return JSON.stringify(data.structured_output);
-      return String(data.result ?? '');
-    }
-    const err = data.error as { message?: string } | undefined;
-    if (err?.message) throw new Error(`gemini: ${err.message}`);
-    return String(data.response ?? '');
-  } catch (e) {
-    if (e instanceof SyntaxError) return stdout;
-    throw e;
+    return JSON.parse(text.slice(start)) as Record<string, unknown>;
+  } catch {
+    return undefined;
   }
+}
+
+/** 從各 CLI 的執行結果取出模型回覆文字;執行失敗時丟出帶原因的錯誤,不把雜訊當譯文 */
+export function cliResultToText(kind: CliKind, r: RunResult, outputFileText?: string): string {
+  const fail = (detail: string) => new Error(`${kind} 執行失敗(結束碼 ${r.exitCode}):${detail.trim().slice(-300)}`);
+  if (kind === 'codex') {
+    if (r.exitCode !== 0 || outputFileText === undefined) throw fail(r.stderr || r.stdout);
+    return outputFileText;
+  }
+  // gemini 失敗時 JSON 錯誤寫在 stderr
+  const data = parseJsonTail(r.stdout) ?? (kind === 'gemini' ? parseJsonTail(r.stderr) : undefined);
+  if (!data) {
+    if (r.exitCode !== 0 || !r.stdout.trim()) throw fail(r.stderr || r.stdout);
+    return r.stdout;
+  }
+  if (kind === 'claude') {
+    if (data.is_error) throw new Error(`claude: ${String(data.result)}`);
+    if (data.structured_output) return JSON.stringify(data.structured_output);
+    return String(data.result ?? '');
+  }
+  const err = data.error as { message?: string } | undefined;
+  if (err?.message) throw new Error(`gemini: ${err.message}`);
+  return String(data.response ?? '');
 }
 
 export function createCliProvider(opts: CliProviderOptions): Provider {
@@ -87,11 +99,7 @@ export function createCliProvider(opts: CliProviderOptions): Provider {
           signal: req.signal,
         });
         const fileText = inv.outputFile ? await readFile(inv.outputFile, 'utf8').catch(() => undefined) : undefined;
-        const out = extractCliOutput(kind, r.stdout, fileText);
-        if (r.exitCode !== 0 && !out.trim()) {
-          throw new Error(`${kind} 結束碼 ${r.exitCode}:${r.stderr.slice(-300)}`);
-        }
-        return out;
+        return cliResultToText(kind, r, fileText);
       } finally {
         await rm(workDir, { recursive: true, force: true }).catch(() => {});
       }

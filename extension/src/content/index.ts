@@ -62,10 +62,10 @@ async function send(batch: Segment[], owners: Map<number, HTMLElement>, gen: num
       el.dataset.atxState = 'done';
       state.done++;
     } else {
+      // 錯誤細節可能含本機路徑與 CLI 狀態,只留在擴充狀態(popup 顯示),不寫進不可信的頁面 DOM
       el.dataset.atxState = 'error';
-      el.dataset.atxError = res.ok ? '這段沒有拿到譯文' : res.error;
       state.errors++;
-      state.lastError = res.ok ? '部分段落沒有拿到譯文' : res.error;
+      state.lastError = res.error ?? '部分段落沒有拿到譯文';
     }
   }
 }

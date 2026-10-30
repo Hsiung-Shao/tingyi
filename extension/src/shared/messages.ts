@@ -5,7 +5,8 @@ export type ContentRequest =
   | { type: 'getLimits' };
 
 export type TranslateResponse =
-  | { ok: true; translations: { id: number; text: string }[] }
+  /** error:有部分段落失敗(其餘段落仍有譯文) */
+  | { ok: true; translations: { id: number; text: string }[]; error?: string }
   | { ok: false; error: string };
 
 export type LimitsResponse = BatchLimits & { targetLang: string };

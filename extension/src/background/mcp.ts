@@ -2,8 +2,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 
-/** CLI agent 一批 20 段加缺段重試可能好幾分鐘;SDK 預設 60 秒會在 bridge 還在跑時放棄 */
-const TOOL_TIMEOUT_MS = 10 * 60_000;
+/**
+ * SDK 預設 60 秒會在 bridge 還在跑 CLI 時放棄。bridge 自己在 270 秒時收尾回傳,
+ * 這裡設 290 秒;不能超過 5 分鐘,否則 Chrome 會先終止處理這個事件的 SW。
+ */
+const TOOL_TIMEOUT_MS = 290_000;
 
 let cached: { key: string; client: Promise<Client> } | null = null;
 

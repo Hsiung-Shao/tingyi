@@ -15,7 +15,14 @@ export interface BridgeOptions {
   /** 允許的 Origin(例 chrome-extension://<id>);請求沒帶 Origin 視為非瀏覽器客戶端,只看 token */
   allowedOrigins: string[];
   providers: Provider[];
+  /**
+   * 一次 translate_batch 的總期限,到了就中止後端、回傳已完成的部分。
+   * 預設 270 秒:Chrome 擴充 SW 處理單一事件超過 5 分鐘會被終止,要比它短。
+   */
+  deadlineMs?: number;
 }
+
+export const DEFAULT_DEADLINE_MS = 270_000;
 
 export interface BridgeHandle {
   /** 例 http://127.0.0.1:47821/mcp */
@@ -44,7 +51,7 @@ function rejectStatus(req: IncomingMessage, opts: BridgeOptions): number | null 
 
 const segmentSchema = z.object({ id: z.number().int(), text: z.string() });
 
-function buildMcpServer(providers: Provider[], signal: AbortSignal): McpServer {
+function buildMcpServer(providers: Provider[], clientGone: AbortSignal, deadlineMs: number): McpServer {
   const server = new McpServer({ name: 'agent-translator-bridge', version: '0.1.0' });
 
   server.registerTool(
@@ -90,16 +97,23 @@ function buildMcpServer(providers: Provider[], signal: AbortSignal): McpServer {
         return { isError: true, content: [{ type: 'text', text: `未知的後端:${providerId}` }] };
       }
       const started = Date.now();
+      const signal = AbortSignal.any([clientGone, AbortSignal.timeout(deadlineMs)]);
       const result = new Map<number, string>();
       for (const batch of splitBatches(segments, provider.limits)) {
         if (signal.aborted) break;
-        const got = await translateWithRetry(
-          batch,
-          (segs) => provider.translate({ segments: segs, targetLang, model, context, signal }),
-          1,
-          provider.format ?? 'json',
-        );
-        for (const [id, text] of got) result.set(id, text);
+        try {
+          const got = await translateWithRetry(
+            batch,
+            (segs) => provider.translate({ segments: segs, targetLang, model, context, signal }),
+            1,
+            provider.format ?? 'json',
+          );
+          for (const [id, text] of got) result.set(id, text);
+        } catch (e) {
+          // 期限到或客戶端離開:保留已完成的部分,其餘列 missing
+          if (signal.aborted) break;
+          throw e;
+        }
       }
       const structuredContent = {
         translations: [...result].map(([id, text]) => ({ id, text })),
@@ -145,7 +159,7 @@ export async function createBridgeServer(opts: BridgeOptions): Promise<BridgeHan
       const body = await readBody(req);
       // 客戶端斷線或放棄時,中止還在跑的 CLI,避免重送時兩組並跑
       const abort = new AbortController();
-      const server = buildMcpServer(opts.providers, abort.signal);
+      const server = buildMcpServer(opts.providers, abort.signal, opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on('close', () => {
         if (!res.writableFinished) abort.abort();
