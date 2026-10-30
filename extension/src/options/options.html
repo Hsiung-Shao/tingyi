@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Translator 設定</title>
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <style>
+      body { max-width: 560px; margin: 0 auto; padding: 24px 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agent Translator 設定</h1>
+
+    <h2>bridge(MCP server)</h2>
+    <p class="muted">在專案目錄執行 <code>pnpm bridge</code>,第一次啟動會印出 token。</p>
+    <label for="bridgeUrl">MCP 端點</label>
+    <input id="bridgeUrl" />
+    <label for="bridgeToken">token</label>
+    <input id="bridgeToken" type="password" autocomplete="off" />
+    <label for="bridgeModel">模型(留空用 CLI 預設)</label>
+    <input id="bridgeModel" placeholder="例:haiku、gpt-5.4-mini" />
+
+    <h2>直連 OpenAI 相容端點(本地模型)</h2>
+    <label for="baseUrl">Base URL(不含 /chat/completions)</label>
+    <input id="baseUrl" placeholder="http://127.0.0.1:11434/v1" />
+    <label for="model">模型</label>
+    <input id="model" placeholder="例:qwen3:8b" />
+    <label for="apiKey">API key(本機通常留空)</label>
+    <input id="apiKey" type="password" autocomplete="off" />
+    <label for="format">送出格式</label>
+    <select id="format">
+      <option value="json">多段 JSON(一般聊天模型)</option>
+      <option value="single">一次一段純文字(Hy-MT2 等翻譯專用模型)</option>
+    </select>
+    <label><input id="jsonMode" type="checkbox" /> 要求 JSON 輸出(response_format)</label>
+    <label for="extraBody">額外 body 欄位(JSON)</label>
+    <input id="extraBody" placeholder='{"keep_alive":"5m"}' />
+
+    <h2>批次</h2>
+    <div class="row">
+      <div><label for="bridgeSeg">bridge 每批段數</label><input id="bridgeSeg" type="number" min="1" /></div>
+      <div><label for="bridgeChars">bridge 每批字數</label><input id="bridgeChars" type="number" min="200" /></div>
+    </div>
+    <div class="row">
+      <div><label for="directSeg">直連每批段數</label><input id="directSeg" type="number" min="1" /></div>
+      <div><label for="directChars">直連每批字數</label><input id="directChars" type="number" min="200" /></div>
+    </div>
+    <label for="concurrency">同時送出的批次數</label>
+    <input id="concurrency" type="number" min="1" max="8" />
+
+    <p class="row" style="margin-top: 18px">
+      <button id="save">儲存</button>
+      <button id="test" class="secondary">測試翻譯</button>
+    </p>
+    <div id="status" class="status"></div>
+    <script src="options.js"></script>
+  </body>
+</html>

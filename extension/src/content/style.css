@@ -1,0 +1,24 @@
+font.atx-target {
+  display: block;
+  margin-top: 0.25em;
+  color: inherit;
+  opacity: 0.78;
+  font-weight: inherit;
+  line-height: inherit;
+  white-space: normal;
+}
+
+[data-atx-state='pending'] {
+  background-image: linear-gradient(90deg, transparent, rgba(120, 140, 255, 0.12), transparent);
+  background-size: 200% 100%;
+  animation: atx-pending 1.4s linear infinite;
+}
+
+[data-atx-state='error'] {
+  text-decoration: underline dotted rgba(220, 60, 60, 0.7);
+}
+
+@keyframes atx-pending {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}

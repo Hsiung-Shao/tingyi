@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Translator</title>
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <style>
+      body { width: 300px; padding: 14px; }
+      #toggle { width: 100%; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agent Translator</h1>
+    <button id="toggle">翻譯此頁</button>
+    <div id="pageState" class="status muted"></div>
+    <label for="route">翻譯後端</label>
+    <select id="route">
+      <option value="bridge">bridge(MCP:訂閱 agent)</option>
+      <option value="direct">直連 OpenAI 相容端點</option>
+    </select>
+    <div id="bridgeBox">
+      <label for="provider">agent</label>
+      <select id="provider"></select>
+    </div>
+    <label for="targetLang">目標語言</label>
+    <select id="targetLang">
+      <option value="zh-TW">繁體中文(台灣)</option>
+      <option value="zh-CN">簡體中文</option>
+      <option value="en">English</option>
+      <option value="ja">日本語</option>
+      <option value="ko">한국어</option>
+    </select>
+    <div id="providerState" class="status muted"></div>
+    <p><a href="#" id="openOptions">進階設定</a></p>
+    <script src="popup.js"></script>
+  </body>
+</html>
