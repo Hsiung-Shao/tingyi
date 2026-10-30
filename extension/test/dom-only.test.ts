@@ -202,3 +202,26 @@ describe('僅譯文模式的原文包裝', () => {
     }
   });
 });
+
+describe('僅譯文模式的審查修正', () => {
+  it('F1 第一段原文在含圖示的連結裡時,譯文不被塞進該連結', () => {
+    document.body.innerHTML = '<p><a href="/u"><img src="a.png"> Alice</a> said the weather is nice today.</p>';
+    const p = q('p');
+    translate(p, '愛麗絲說今天天氣很好。');
+    setDisplayMode('only', document);
+    const target = p.querySelector<HTMLElement>(targetSel)!;
+    expect(target.closest('a')).toBeNull();
+    expect(target.parentElement).toBe(p);
+  });
+
+  it('F2 網站複製了已包裝的區塊,關閉翻譯後複本的原文恢復可見', () => {
+    document.body.innerHTML = '<p id="src">Getting started guide here</p><div id="sticky"></div>';
+    const p = q('#src');
+    translate(p, '入門指南');
+    setDisplayMode('only', document);
+    q('#sticky').innerHTML = p.innerHTML;
+    removeAllTranslations(document.body);
+    expect(document.querySelector(origSel)).toBeNull();
+    expect(q('#sticky').textContent).toContain('Getting started guide here');
+  });
+});

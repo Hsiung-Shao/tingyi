@@ -174,11 +174,14 @@ function applyOnly(el: HTMLElement): void {
     }
     flush(null);
   };
-  wrap(soleLink ?? el);
+  const host = soleLink ?? el;
+  wrap(host);
   if (made.length === 0) return;
   wrappers.set(el, made);
-  const first = made.find((w) => (w.textContent ?? '').trim() !== '') ?? made[0];
-  first?.after(target);
+  // 譯文放在 host 這一層:第一段原文若在頭像連結、徽章這類行內元素裡,不能把整段譯文塞進去
+  let top: Node | undefined = made.find((w) => (w.textContent ?? '').trim() !== '') ?? made[0];
+  while (top && top.parentNode !== host) top = top.parentNode ?? undefined;
+  host.insertBefore(target, top?.nextSibling ?? null);
 }
 
 /** 解開僅譯文的包裝,原文節點回到原位,譯文回到雙語位置 */
@@ -321,6 +324,8 @@ export function insertTranslation(el: HTMLElement, text: string, source?: string
 export function removeAllTranslations(root: Element): void {
   const marked = [root, ...Array.from(root.querySelectorAll<HTMLElement>('[data-atx-state]'))];
   marked.forEach((el) => restoreDual(el as HTMLElement));
+  // 網站複製過的區塊(黏性標題、輪播複本)帶著我們的容器,但不在紀錄裡,也要解開
+  root.querySelectorAll(`font.${ORIG_CLASS}`).forEach((w) => w.replaceWith(...Array.from(w.childNodes)));
   root.querySelectorAll(`font.${TARGET_CLASS}`).forEach((f) => f.remove());
   for (const el of marked) {
     el.removeAttribute('data-atx-state');

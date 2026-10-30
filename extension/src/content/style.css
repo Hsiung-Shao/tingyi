@@ -30,8 +30,8 @@ font.atx-target.atx-inline {
   to { background-position: -100% 0; }
 }
 
-/* 僅譯文:原文包進隱藏容器,譯文佔原文的位置(只有切到僅譯文時才會有這個容器) */
-font.atx-orig {
+/* 僅譯文:原文包進隱藏容器,譯文佔原文的位置;只在僅譯文模式隱藏,網站複製出的殘留容器切回雙語仍看得到 */
+html[data-atx-mode='only'] font.atx-orig {
   display: none !important;
 }
 html[data-atx-mode='only'] [data-atx-state='done'] font.atx-target {
