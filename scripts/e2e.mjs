@@ -310,12 +310,16 @@ try {
       for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, modifiers, text: type === 'keyDown' ? text : undefined });
       await sleep(150);
     };
-    await page.evalJs(`document.activeElement?.blur()`);
-    await key('Tab', 'Tab', 9, 8);
+    // 起點固定:頁面最後放一個按鈕並聚焦,往後 Tab 依序是浮動球主按鈕、展開鈕
+    await page.evalJs(`(()=>{const b=document.createElement('button');b.id='e2e-anchor';b.textContent='anchor';document.body.appendChild(b);b.focus({preventScroll:true})})()`);
+    await key('Tab', 'Tab', 9);
+    await key('Tab', 'Tab', 9);
+    const focused = await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');return document.activeElement===h?(h.shadowRoot.activeElement?.dataset.atx??'host'):(document.activeElement?.tagName??'none')})()`);
     await key('Enter', 'Enter', 13, 0, '\r');
     const kb = await page.evalJs(`${ball('expand')}.getAttribute('aria-expanded')`);
-    check('使用者自己用鍵盤操作浮動球有效', kb === 'true', `aria-expanded=${kb}`);
+    check('使用者自己用鍵盤操作浮動球有效', kb === 'true', `focused=${focused} aria-expanded=${kb}`);
     await key('Escape', 'Escape', 27);
+    await page.evalJs(`document.getElementById('e2e-anchor')?.remove();window.scrollTo(0,0)`);
     await clickBall('expand');
     await sleep(400);
     await screenshot(page, '04-ball-panel.png');
@@ -330,7 +334,8 @@ try {
     check('切回雙語後原文恢復', parseFloat(dual) > 0, dual);
     await clickBall('scope-page');
     const nav = await waitFor(async () => ({ ok: await page.evalJs(`!!document.querySelector('#navli font.atx-target.atx-inline')`) }), 120000, 'scope-page');
-    check('整頁模式導覽列也翻且同行顯示', nav.ok, `${nav.ms}ms`);
+    const dbg = await page.evalJs(`({pressed:${ball('scope-page')}.getAttribute('aria-pressed'),open:${ball('expand')}.getAttribute('aria-expanded'),on:${ball('toggle')}.getAttribute('aria-pressed'),navState:document.getElementById('navli').dataset.atxState??null,status:${ball('status')}.textContent})`);
+    check('整頁模式導覽列也翻且同行顯示', nav.ok, `${nav.ms}ms ${JSON.stringify(dbg)}`);
     await screenshot(page, '06-scope-page.png');
     await clickBall('scope-main');
     await sleep(800);
