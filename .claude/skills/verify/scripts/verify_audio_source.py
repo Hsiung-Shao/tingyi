@@ -4,10 +4,11 @@
 1. 拒絕雙開:1420 / 9339 埠或 tingyi.exe 已在跑就失敗。
 2. `pnpm tauri dev`(WebView2 開遠端除錯埠),等主視窗「開始」可按。
 3. 自己啟動兩個供音程式:TTS(powershell.exe 唸英文)與靜音播放器(powershell.exe 循環播放靜音 wav)。
-4. 來源選 TTS → 開始 → 應出現與 TTS 句子相符的字幕。
-5. 執行中切到靜音播放器 → 12 秒內不得新增字幕(TTS 仍在唸)。
-6. 切回 TTS → 應再出現相符字幕(正向對照,證明第 5 步不是因為 TTS 停了)。
-7. 停止、截圖、只關閉自己啟動的行程。證據寫到 evidence/<時間>/,run.log + exit_code.txt + 截圖 + result.json。
+4. 來源選 TTS → 開始 → 應出現與 TTS 句子相符的字幕;懸浮字幕有字。
+5. 執行中切到靜音播放器 → 12 秒內不得新增字幕(TTS 仍在唸);懸浮字幕 10 秒內收起。
+6. 切回 TTS → 應再出現相符字幕(正向對照,證明第 5 步不是因為 TTS 停了);懸浮字幕只顯示新句。
+7. 單段上限輸入框;「沒聲音幾秒後隱藏」設 0 → 靜音 8 秒仍顯示 → 改回 3 → 3 秒內收起。
+8. 停止、截圖、只關閉自己啟動的行程。證據寫到 evidence/<時間>/,run.log + exit_code.txt + 截圖 + result.json。
 
 用法(在專案根目錄):
   python .claude/skills/verify/scripts/verify_audio_source.py [--data-dir D:\\codeproject\\translate\\data]
@@ -88,18 +89,18 @@ window.__v = {
     return i.checked;
   },
   state: () => window.__TAURI_INTERNALS__.invoke('get_audio_source'),
-  maxInput: () => document.querySelector('input[aria-label="單段上限(秒)"]'),
+  input: (label) => document.querySelector(`input[aria-label="${label}"]`),
   // 受控 input:原生 setter + input 事件更新 state,下一拍再送 Enter 觸發 onKeyDown 送出。
   // 不用 blur():視窗不在前景時 WebView2 不派送 focusout,React 的 onBlur 不會觸發。
-  typeMax: (v) => {
-    const i = window.__v.maxInput();
+  type: (label, v) => {
+    const i = window.__v.input(label);
     if (!i) return null;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v);
     i.dispatchEvent(new Event('input', { bubbles: true }));
     return i.value;
   },
-  enterMax: () => {
-    const i = window.__v.maxInput();
+  enter: (label) => {
+    const i = window.__v.input(label);
     if (!i) return false;
     i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     i.scrollIntoView({ block: 'center' });
@@ -109,6 +110,16 @@ window.__v = {
 };
 true
 """
+
+MAX_LABEL = "單段上限(秒)"
+HIDE_LABEL = "沒聲音幾秒後隱藏字幕"
+# 懸浮字幕頁:內容容器的收起狀態、文字與顯示中的句子 id
+OVERLAY_STATE = r"""(() => {
+  const c = document.querySelector('[data-role=overlay-content]');
+  if (!c) return null;
+  return { idle: c.dataset.idle, text: c.innerText.trim(),
+           ids: [...c.querySelectorAll('[data-sentence-id]')].map(e => +e.dataset.sentenceId) };
+})()"""
 
 
 class Run:
@@ -197,6 +208,7 @@ async def wait_for(pred, timeout: float, interval: float = 0.5):
 
 async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
     ws, page = await connect(CDP_PORT, URL_PREFIX)
+    ows, opage = await connect(CDP_PORT, URL_PREFIX, overlay=True)
     try:
         async def js(expr, timeout=30.0):
             await page.eval(JS_HELPERS)  # 每次重注入:Vite HMR 重新載入會清掉
@@ -204,6 +216,24 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
 
         async def sentences():
             return await js("window.__v.sentences()")
+
+        async def overlay():
+            return await opage.eval(OVERLAY_STATE)
+
+        async def overlay_shown(min_id=0):
+            o = await overlay()
+            ok = o and o["idle"] == "0" and o["text"] and o["ids"] and min(o["ids"]) > min_id
+            return o if ok else None
+
+        async def watch_overlay(seconds: float) -> list:
+            """每 0.25 s 記一次懸浮字幕狀態:[(距開始秒數, idle)]。"""
+            t0 = time.monotonic()
+            seen = []
+            while time.monotonic() - t0 < seconds:
+                o = await overlay()
+                seen.append((round(time.monotonic() - t0, 2), o["idle"] if o else None))
+                await asyncio.sleep(0.25)
+            return seen
 
         ready = await wait_for(lambda: js("(() => { const b = window.__v.btn('開始'); return !!b && !b.disabled; })()"), 180)
         if not run.check("主視窗就緒(開始可按)", bool(ready)):
@@ -261,15 +291,24 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         run.result["phase1"] = hits
         if not run.check("指定 TTS 時出現 TTS 字幕", bool(hits), json.dumps(hits, ensure_ascii=False)[:300]):
             return False
+        ov1 = await wait_for(overlay_shown, 10)
+        run.check("懸浮字幕有字(未收起)", bool(ov1), json.dumps(ov1 or await overlay(), ensure_ascii=False)[:300])
         screenshot(run, "1-tts")
 
-        # 2) 執行中切到靜音播放器:不得新增字幕
+        # 2) 執行中切到靜音播放器:不得新增字幕;懸浮字幕應在 10 秒內收起
         if not await choose(f"app:{silent_pid}", silent_pid, "靜音播放器"):
             return False
-        await asyncio.sleep(3)  # 切換前已在辨識/合併中的句子可能晚到
+        t_switch = time.monotonic()
+        seen = await watch_overlay(3)  # 切換前已在辨識/合併中的句子可能晚到
         before = await sentences()
-        await asyncio.sleep(12)
+        seen += [(round(t + 3, 2), i) for t, i in await watch_overlay(12)]
         after = await sentences()
+        hidden_at = next((t for t, i in seen if i == "1"), None)
+        run.result["phase2_overlay"] = seen
+        run.check("切到靜音播放器後懸浮字幕 10 秒內收起", hidden_at is not None and hidden_at <= 10,
+                  f"切換後 {hidden_at} s 收起(預期約 3.5–5 s),觀察 {time.monotonic() - t_switch:.1f} s")
+        run.check("收起後到觀察結束都維持收起", hidden_at is not None and all(i == "1" for t, i in seen if t >= hidden_at),
+                  json.dumps([x for x in seen if hidden_at is not None and x[0] >= hidden_at and x[1] != "1"]))
         new = [x for x in after if x["id"] > max([y["id"] for y in before], default=0)]
         run.result["phase2_new"] = new
         tts_alive = pid_alive(tts_pid)
@@ -286,13 +325,19 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         run.result["phase3"] = hits3
         if not run.check("切回 TTS 後再出現 TTS 字幕", bool(hits3), json.dumps(hits3, ensure_ascii=False)[:300]):
             return False
+        ov3 = await wait_for(lambda: overlay_shown(last_id), 15)
+        run.check("切回 TTS 後懸浮字幕只顯示收起後的新句", bool(ov3),
+                  f"收起時最新 id {last_id};{json.dumps(ov3 or await overlay(), ensure_ascii=False)[:300]}")
         screenshot(run, "3-back")
+
+        async def set_input(label: str, v: str):
+            await js(f"window.__v.type('{label}', '{v}')")
+            await asyncio.sleep(0.3)
+            await js(f"window.__v.enter('{label}')")
 
         # 4) 斷句「單段上限」輸入框:填 4 → 執行中立即生效(標題顯示上限 4 秒);清空 → 回到中檔預設 8 秒
         async def set_max(v: str) -> str:
-            await js(f"window.__v.typeMax('{v}')")
-            await asyncio.sleep(0.3)
-            await js("window.__v.enterMax()")
+            await set_input(MAX_LABEL, v)
             want = f"上限 {v or 8} 秒"
             got = await wait_for(lambda: js(f"window.__v.segLabel().includes('{want}') ? window.__v.segLabel() : null"), 10)
             return got or await js("window.__v.segLabel()")
@@ -302,12 +347,29 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         label0 = await set_max("")
         run.check("單段上限清空後回到中檔預設 8 秒", "上限 8 秒" in label0, label0)
 
+        # 5) 「沒聲音幾秒後隱藏」設 0:切到靜音 8 秒仍顯示;改回 3 → 3 秒內收起
+        await set_input(HIDE_LABEL, "0")
+        shown5 = await wait_for(overlay_shown, 15)
+        run.check("隱藏秒數設 0 前懸浮字幕有字", bool(shown5), json.dumps(shown5 or await overlay(), ensure_ascii=False)[:300])
+        if not await choose(f"app:{silent_pid}", silent_pid, "靜音播放器(隱藏秒數 0)"):
+            return False
+        seen0 = await watch_overlay(8)
+        run.result["phase5_hide0"] = seen0
+        run.check("隱藏秒數 0 時靜音 8 秒仍顯示", all(i == "0" for _, i in seen0), json.dumps([x for x in seen0 if x[1] != "0"]))
+        screenshot(run, "5-hide-0")
+        await set_input(HIDE_LABEL, "3")
+        seen3 = await watch_overlay(3)
+        run.result["phase5_hide3"] = seen3
+        run.check("隱藏秒數改回 3 後 3 秒內收起", any(i == "1" for _, i in seen3), json.dumps(seen3))
+        screenshot(run, "5-hide-3")
+
         await js("window.__v.btn('停止').click(), true")
         stopped = await wait_for(lambda: js("!!window.__v.btn('開始')"), 60)
         run.check("停止後回到可開始", bool(stopped))
         return all(c["ok"] for c in run.result["checks"]) and tts_alive
     finally:
         await ws.close()
+        await ows.close()
 
 
 def main() -> int:

@@ -17,15 +17,15 @@ def list_targets(port: int) -> list:
         return json.loads(r.read().decode("utf-8"))
 
 
-def find_page(port: int, url_prefix: str):
-    """回傳第一個 url 以 url_prefix 開頭、但不是 overlay 的 page target;沒有回 None。"""
+def find_page(port: int, url_prefix: str, overlay: bool = False):
+    """回傳第一個 url 以 url_prefix 開頭的 page target(overlay=True 找懸浮字幕頁,否則找主視窗);沒有回 None。"""
     try:
         targets = list_targets(port)
     except OSError:
         return None
     for t in targets:
         url = t.get("url", "")
-        if t.get("type") == "page" and url.startswith(url_prefix) and "overlay" not in url:
+        if t.get("type") == "page" and url.startswith(url_prefix) and ("overlay" in url) == overlay:
             return t
     return None
 
@@ -58,8 +58,8 @@ class Page:
             return res.get("result", {}).get("value")
 
 
-async def connect(port: int, url_prefix: str) -> tuple:
-    page = find_page(port, url_prefix)
+async def connect(port: int, url_prefix: str, overlay: bool = False) -> tuple:
+    page = find_page(port, url_prefix, overlay)
     if page is None:
         raise RuntimeError(f"埠 {port} 上找不到 {url_prefix} 頁面")
     ws = await websockets.connect(page["webSocketDebuggerUrl"], max_size=None)
