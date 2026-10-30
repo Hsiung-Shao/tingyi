@@ -646,10 +646,10 @@ pub fn set_segmentation(
     Ok(())
 }
 
-/// 懸浮字幕沒聲音幾秒後收起;0 = 不隱藏。執行中改了立即生效。
+/// 懸浮字幕沒聲音幾秒後收起;0 = 不隱藏。執行中改了立即生效;回傳夾限後實際生效的秒數。
 #[tauri::command]
-pub fn set_subtitle_hide(state: State<'_, AppState>, seconds: f32) {
-    state.idle_control.set_secs(seconds);
+pub fn set_subtitle_hide(state: State<'_, AppState>, seconds: f32) -> f32 {
+    state.idle_control.set_secs(seconds) as f32 / 1000.0
 }
 
 /// 說話者改名(執行中才有效)。

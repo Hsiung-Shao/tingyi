@@ -23,12 +23,17 @@ export default function Overlay() {
   const { sentences, partial, partialSpeaker, speakers } = useSubtitles();
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [interactive, setInteractive] = useState(false);
-  // 後端判定閒置(沒聲音且字幕沒有新內容)時收起:記下當時最新句與預覽,之後只顯示比它新的內容
-  const [dismissed, setDismissed] = useState<{ id: number; partial: string } | null>(null);
+  // 後端判定閒置(沒聲音且字幕沒有新內容)時收起:記下當時最新句與預覽,之後只顯示比它新的內容;
+  // 收起時還在等譯文的句子(pending),譯文到了也算新內容
+  const [dismissed, setDismissed] = useState<{ id: number; partial: string; pending: Set<number> } | null>(null);
   // 補回句屬於歷史修正,不插進即時字幕;被回修的當前句則會自動更新
   const live = useMemo(() => sentences.filter((s) => !s.recovered), [sentences]);
-  const latest = useRef({ id: -1, partial: "" });
-  latest.current = { id: live.length > 0 ? live[live.length - 1].id : -1, partial };
+  const latest = useRef({ id: -1, partial: "", pending: new Set<number>() });
+  latest.current = {
+    id: live.length > 0 ? live[live.length - 1].id : -1,
+    partial,
+    pending: new Set(live.filter((s) => s.state === "translating" && s.translation === "").map((s) => s.id)),
+  };
 
   useEffect(() => {
     const a = listen<string>("overlay-mode", (e) => setMode(e.payload as OverlayMode));
@@ -45,7 +50,9 @@ export default function Overlay() {
   }, []);
 
   const { shown, freshPartial, idle } = useMemo(() => {
-    const fresh = dismissed ? live.filter((s) => s.id > dismissed.id) : live;
+    const fresh = dismissed
+      ? live.filter((s) => s.id > dismissed.id || (dismissed.pending.has(s.id) && s.translation.length > 0))
+      : live;
     const freshPartial = dismissed && partial === dismissed.partial ? "" : partial;
     const idle = dismissed !== null && fresh.length === 0 && freshPartial === "";
     return { shown: latestShown(fresh), freshPartial, idle };
@@ -58,6 +65,8 @@ export default function Overlay() {
   });
   const visible = idle ? lastShown.current.visible : shown;
   const shownPartial = idle ? lastShown.current.partial : freshPartial;
+  // 解鎖拖曳時不淡出,讓使用者看得到字幕位置
+  const faded = idle && !interactive;
 
   const startDrag = (e: React.MouseEvent) => {
     if (!interactive) return;
@@ -79,8 +88,8 @@ export default function Overlay() {
       )}
       <div
         data-role="overlay-content"
-        data-idle={idle ? "1" : "0"}
-        className={`w-full flex flex-col items-center gap-1 transition-opacity duration-500 ${idle ? "opacity-0" : ""}`}
+        data-idle={faded ? "1" : "0"}
+        className={`w-full flex flex-col items-center gap-1 transition-opacity duration-500 ${faded ? "opacity-0" : ""}`}
       >
         {visible.map((s) => {
           const hasTranslation = s.translation.length > 0;

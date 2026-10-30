@@ -2,7 +2,7 @@
 //!
 //! 事件轉發端把每個管線事件交給 `on_event`,並定時呼叫 `poll`;時間一律由呼叫端傳入,方便單元測試。
 //! - 新內容:新句、有字的預覽、譯文串流/完成/失敗、合併。回修與補句不算(安靜時才會跑,不該讓舊句閃回)。
-//! - 等譯文的句子未完成前不收起(超過 `PENDING_CAP` 不再擋,MT 卡住也能收)。
+//! - 等譯文的句子未完成前不收起(從該句最後一次有動靜起超過 `PENDING_CAP` 不再擋,MT 卡住也能收)。
 //! - 講話狀態卡在「講話中」但擷取封包停了(系統音訊沒有任何串流時)→ 以封包停的時長當靜音時長。
 
 use std::collections::HashMap;
@@ -30,14 +30,15 @@ impl Default for IdleControl {
 }
 
 impl IdleControl {
-    /// 套用使用者輸入的秒數:非有限值或 ≤ 0 → 0(不隱藏),其餘夾在 `HIDE_SECS_RANGE` 內。
-    pub fn set_secs(&self, sec: f32) {
+    /// 套用使用者輸入的秒數:非有限值或 ≤ 0 → 0(不隱藏),其餘夾在 `HIDE_SECS_RANGE` 內;回傳實際生效的毫秒。
+    pub fn set_secs(&self, sec: f32) -> u32 {
         let ms = if sec.is_finite() && sec > 0.0 {
             (sec.clamp(HIDE_SECS_RANGE.0, HIDE_SECS_RANGE.1) * 1000.0).round() as u32
         } else {
             0
         };
         self.hide_ms.store(ms, Ordering::Relaxed);
+        ms
     }
 }
 
@@ -46,7 +47,7 @@ impl IdleControl {
 pub struct IdleTracker {
     translate: bool,
     last_content: Option<Instant>,
-    /// 等譯文的句子 id → 到達時間。
+    /// 等譯文的句子 id → 最後一次有動靜的時間(到達、合併、譯文串流)。
     pending: HashMap<u64, Instant>,
     last_packets: u64,
     packets_at: Instant,
@@ -76,17 +77,25 @@ impl IdleTracker {
                 }
             }
             PipelineEvent::Partial { text, .. } if !text.is_empty() => {}
-            PipelineEvent::TranslationDelta { .. } => {}
+            PipelineEvent::TranslationDelta { id, .. } => self.touch_pending(*id, now),
             PipelineEvent::TranslationDone { id, .. } | PipelineEvent::TranslationFailed { id, .. } => {
                 self.pending.remove(id);
             }
-            PipelineEvent::TranscriptMerged { from, .. } => {
+            PipelineEvent::TranscriptMerged { into, from, .. } => {
                 self.pending.remove(from);
+                self.touch_pending(*into, now);
             }
             _ => return,
         }
         self.last_content = Some(now);
         self.fired = false;
+    }
+
+    /// 還在等譯文的句子有動靜(合併、譯文串流)→ 等譯文上限從現在重新算。
+    fn touch_pending(&mut self, id: u64, now: Instant) {
+        if let Some(t) = self.pending.get_mut(&id) {
+            *t = now;
+        }
     }
 
     /// 回 true = 現在該收起字幕(同一段閒置只回一次,有新內容後重新計時)。
@@ -353,6 +362,44 @@ mod tests {
         for (sec, want) in cases {
             c.set_secs(sec);
             assert_eq!(c.hide_ms.load(Ordering::Relaxed), want, "set_secs({sec})");
+        }
+    }
+
+    // T15:合併時重新計算等譯文上限,從合併起算 20 s(19 s 仍擋、20 s 放行)。
+    #[test]
+    fn merge_restarts_pending_cap() {
+        let t0 = Instant::now();
+        let mut tr = IdleTracker::new(true, t0);
+        tr.on_event(&transcript(1, true), t0);
+        tr.on_event(&transcript(2, true), t0 + ms(14_000));
+        tr.on_event(
+            &PipelineEvent::TranscriptMerged { into: 1, from: 2, text: "hello hello".into(), start_ms: 0, end_ms: 2000 },
+            t0 + ms(15_000),
+        );
+        assert!(!quiet(&mut tr, t0, 34_000, 0, H), "合併後未滿 20 s 仍該擋");
+        assert!(quiet(&mut tr, t0, 35_000, 0, H), "合併後滿 20 s 應放行");
+    }
+
+    // T16:譯文串流時重新計算等譯文上限,從最後一個 delta 起算 20 s。
+    #[test]
+    fn translation_delta_restarts_pending_cap() {
+        let t0 = Instant::now();
+        let mut tr = IdleTracker::new(true, t0);
+        tr.on_event(&transcript(1, true), t0);
+        tr.on_event(&PipelineEvent::TranslationDelta { id: 1, delta: "你".into() }, t0 + ms(10_000));
+        assert!(!quiet(&mut tr, t0, 25_000, 0, H), "delta 後未滿 20 s 仍該擋");
+        assert!(quiet(&mut tr, t0, 30_000, 0, H), "delta 後滿 20 s 應放行");
+    }
+
+    // T17:set_secs 回傳實際生效的毫秒,且等於 hide_ms 存的值。
+    #[test]
+    fn set_secs_returns_effective_ms() {
+        let c = IdleControl::default();
+        let cases: [(f32, u32); 4] = [(0.5, 1000), (100.0, 30_000), (-1.0, 0), (2.5, 2500)];
+        for (sec, want) in cases {
+            let got: u32 = c.set_secs(sec);
+            assert_eq!(got, want, "set_secs({sec}) 回傳值");
+            assert_eq!(c.hide_ms.load(Ordering::Relaxed), got, "set_secs({sec}) 回傳值應等於 hide_ms");
         }
     }
 }

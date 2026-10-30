@@ -48,7 +48,9 @@ export default function App() {
 
   const applySubtitleHide = async () => {
     const sec = Number.parseFloat(hideSec);
-    await invoke("set_subtitle_hide", { seconds: Number.isFinite(sec) ? sec : 3 });
+    // 後端會夾在 0 或 1–30 秒,輸入框改顯示實際生效的值
+    const applied = await invoke<number>("set_subtitle_hide", { seconds: Number.isFinite(sec) ? sec : 3 });
+    setHideSec(String(applied));
   };
 
   const commitRename = async () => {
