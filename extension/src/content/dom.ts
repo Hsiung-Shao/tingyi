@@ -31,21 +31,29 @@ function isSkipped(el: Element): boolean {
 
 /** 譯文對應的原文(送出時的文字);文字被頁面改掉時用來判斷要不要重翻 */
 const sourceText = new WeakMap<Element, string>();
-/** 每個區塊因文字變動重翻的次數;計時器、股價這類一直變的文字不能無限重送 */
-const retranslated = new WeakMap<Element, number>();
+/**
+ * 每個區塊因文字變動重翻的紀錄。計時器、股價這類一直變的文字不能無限重送;
+ * 但 SPA 換頁、虛擬清單會重複使用同一個節點,所以用時間窗:安靜一段時間後重新計數。
+ */
+const retranslated = new WeakMap<Element, { count: number; last: number }>();
 const MAX_RETRANSLATE = 3;
+const RETRANSLATE_WINDOW_MS = 30_000;
 
 /**
- * 原文已變、要重翻:清掉舊譯文與狀態並回 true。超過次數上限就保留最後的譯文、不再重翻,回 false。
+ * 原文已變、要重翻:清掉舊譯文與狀態並回 true。
+ * 時間窗內超過次數上限就回 false,但同樣移除舊譯文並標成 stale(對不上原文的譯文比沒有更糟)。
  */
 export function resetForRetranslate(el: HTMLElement): boolean {
-  const n = retranslated.get(el) ?? 0;
-  if (n >= MAX_RETRANSLATE) {
+  const now = Date.now();
+  const prev = retranslated.get(el);
+  const count = prev && now - prev.last < RETRANSLATE_WINDOW_MS ? prev.count : 0;
+  retranslated.set(el, { count: Math.min(count + 1, MAX_RETRANSLATE + 1), last: now });
+  el.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
+  if (count >= MAX_RETRANSLATE) {
+    el.dataset.atxState = 'stale';
     sourceText.set(el, getBlockText(el));
     return false;
   }
-  retranslated.set(el, n + 1);
-  el.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
   delete el.dataset.atxState;
   sourceText.delete(el);
   return true;
@@ -141,7 +149,8 @@ export function watchNewBlocks(
     for (const r of records) {
       // 已翻好的區塊文字被頁面改掉(例如「載入中…」換成正文):清掉舊譯文重新排入
       const at = r.target.nodeType === Node.ELEMENT_NODE ? (r.target as Element) : r.target.parentElement;
-      const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"]') : null;
+      // stale:之前重翻太頻繁被擋下的區塊,時間窗過後文字再變就恢復重翻
+      const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"],[data-atx-state="stale"]') : null;
       if (done && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
         if (resetForRetranslate(done) && isCandidate(done, opts)) found.add(done);
       }

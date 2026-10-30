@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
-import { collectBlocks, getBlockText, insertTranslation, removeAllTranslations, watchNewBlocks } from '../src/content/dom.ts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { collectBlocks, getBlockText, insertTranslation, removeAllTranslations, resetForRetranslate, watchNewBlocks } from '../src/content/dom.ts';
 
 const opts = { targetLang: 'zh-TW', minChars: 2 };
 const texts = (b: HTMLElement[]) => b.map(getBlockText);
@@ -73,6 +73,34 @@ describe('已翻譯區塊的內容變更', () => {
     }
     stop();
     expect(reported).toBe(3);
+  });
+
+  it('達到重翻上限時移除舊譯文,不留下對不上原文的譯文', () => {
+    document.body.innerHTML = '<p id="p">Page one title</p>';
+    const p = document.getElementById('p')!;
+    for (let i = 0; i < 3; i++) {
+      insertTranslation(p, `譯${i}`);
+      expect(resetForRetranslate(p)).toBe(true);
+    }
+    insertTranslation(p, '第三次的譯文');
+    p.dataset.atxState = 'done';
+    expect(resetForRetranslate(p)).toBe(false);
+    expect(p.querySelector('font.atx-target')).toBeNull();
+    expect(p.dataset.atxState).toBe('stale');
+  });
+
+  it('安靜超過 30 秒後重翻次數重新計算', () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = '<p id="p">Reused list item</p>';
+      const p = document.getElementById('p')!;
+      for (let i = 0; i < 3; i++) expect(resetForRetranslate(p)).toBe(true);
+      expect(resetForRetranslate(p)).toBe(false);
+      vi.advanceTimersByTime(31_000);
+      expect(resetForRetranslate(p)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('送出後到插入前文字被改時回報譯文已過期', () => {
