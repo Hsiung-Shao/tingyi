@@ -44,13 +44,20 @@ export default function Overlay() {
     };
   }, []);
 
-  const { visible, shownPartial, idle } = useMemo(() => {
+  const { shown, freshPartial, idle } = useMemo(() => {
     const fresh = dismissed ? live.filter((s) => s.id > dismissed.id) : live;
     const freshPartial = dismissed && partial === dismissed.partial ? "" : partial;
-    // 收起後還沒有新東西:保留原內容做淡出
     const idle = dismissed !== null && fresh.length === 0 && freshPartial === "";
-    return { visible: latestShown(idle ? live : fresh), shownPartial: idle ? partial : freshPartial, idle };
+    return { shown: latestShown(fresh), freshPartial, idle };
   }, [live, partial, dismissed]);
+  // 收起後還沒有新東西:淡出收起前一刻畫面上的內容。不能從全部句子重挑,
+  // 否則最新句沒有譯文時會挑到上一次收起前的舊句,讓它閃回來。
+  const lastShown = useRef({ visible: [] as Sentence[], partial: "" });
+  useEffect(() => {
+    if (!idle) lastShown.current = { visible: shown, partial: freshPartial };
+  });
+  const visible = idle ? lastShown.current.visible : shown;
+  const shownPartial = idle ? lastShown.current.partial : freshPartial;
 
   const startDrag = (e: React.MouseEvent) => {
     if (!interactive) return;
