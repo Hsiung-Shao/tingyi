@@ -224,4 +224,15 @@ describe('僅譯文模式的審查修正', () => {
     expect(document.querySelector(origSel)).toBeNull();
     expect(q('#sticky').textContent).toContain('Getting started guide here');
   });
+
+  it('F3 網站複製的已翻區塊,切到 only 時也會替換', () => {
+    document.body.innerHTML = '<p id="src">Getting started guide here</p><div id="copy"></div>';
+    const p = q('#src');
+    translate(p, '入門指南');
+    q('#copy').innerHTML = p.outerHTML.replace('id="src"', 'id="dup"');
+    setDisplayMode('only', document);
+    const dup = q('#dup');
+    expect(dup.querySelector(origSel)?.textContent).toContain('Getting started guide here');
+    expect(dup.querySelector(targetSel)?.parentElement).toBe(dup);
+  });
 });

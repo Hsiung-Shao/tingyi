@@ -88,7 +88,11 @@ const URL_TEXT = /^https?:\/\/\S+$/;
 
 function targetOf(el: Element): HTMLElement | null {
   const t = targets.get(el);
-  return t && el.contains(t) ? t : null;
+  if (t && el.contains(t)) return t;
+  // 網站複製的已翻區塊(輪播複本、黏性標題)不在紀錄裡,從 DOM 找回雙語位置的譯文
+  const found = el.querySelector<HTMLElement>(`:scope > font.${TARGET_CLASS}`);
+  if (found) targets.set(el, found);
+  return found;
 }
 
 /** node 是否屬於 el 自己的行內內容(不在子區塊或譯文裡) */
