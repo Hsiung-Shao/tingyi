@@ -14,6 +14,8 @@ export interface BallOptions {
   /** 拖曳結束時回報新的 top(px),由呼叫端存起來 */
   onMove?(top: number): void;
   initial: { state: TabState; prefs: BallPrefs; top?: number };
+  /** 只給 jsdom 測試用:程式派發的事件 isTrusted 為 false,正式環境一律拒絕 */
+  allowSyntheticEvents?: boolean;
 }
 
 export interface BallHandle {
@@ -198,15 +200,25 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     more.setAttribute('aria-expanded', String(open));
   };
 
+  /**
+   * 只接受使用者本人的操作:shadow root 是 open,網頁程式可以 click() 代按,
+   * 自動開翻譯就等於把頁面內容送進使用者的訂閱 agent,也能改掉全域設定。
+   */
+  const trusted = (e: Event) => e.isTrusted || opts.allowSyntheticEvents === true;
+  const on = (el: HTMLElement, type: string, fn: (e: PointerEvent) => void) =>
+    el.addEventListener(type, (e) => {
+      if (trusted(e)) fn(e as PointerEvent);
+    });
+
   // 拖曳:pointerdown 記起點,移動超過門檻才算拖曳;拖曳後的 click 不算開關
   let dragStart: { y: number; top: number } | null = null;
   let dragged = false;
-  ball.addEventListener('pointerdown', (e) => {
+  on(ball, 'pointerdown', (e) => {
     dragStart = { y: e.clientY, top: parseFloat(host.style.top) || 0 };
     dragged = false;
     ball.setPointerCapture?.(e.pointerId);
   });
-  ball.addEventListener('pointermove', (e) => {
+  on(ball, 'pointermove', (e) => {
     if (!dragStart) return;
     const dy = e.clientY - dragStart.y;
     if (!dragged && Math.abs(dy) <= DRAG_THRESHOLD_PX) return;
@@ -218,9 +230,9 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     if (dragStart && dragged) opts.onMove?.(parseFloat(host.style.top) || 0);
     dragStart = null;
   };
-  ball.addEventListener('pointerup', endDrag);
-  ball.addEventListener('pointercancel', endDrag);
-  ball.addEventListener('click', () => {
+  on(ball, 'pointerup', endDrag);
+  on(ball, 'pointercancel', endDrag);
+  on(ball, 'click', () => {
     if (dragged) {
       dragged = false;
       return;
@@ -228,13 +240,13 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     opts.onToggle();
   });
 
-  sw.addEventListener('click', () => opts.onToggle());
-  more.addEventListener('click', () => setOpen(!wrap.classList.contains('open')));
-  modeDual.addEventListener('click', () => opts.onMode('dual'));
-  modeOnly.addEventListener('click', () => opts.onMode('only'));
-  scopeMain.addEventListener('click', () => opts.onScope('main'));
-  scopePage.addEventListener('click', () => opts.onScope('page'));
-  optionsBtn.addEventListener('click', () => opts.onOpenOptions());
+  on(sw, 'click', () => opts.onToggle());
+  on(more, 'click', () => setOpen(!wrap.classList.contains('open')));
+  on(modeDual, 'click', () => opts.onMode('dual'));
+  on(modeOnly, 'click', () => opts.onMode('only'));
+  on(scopeMain, 'click', () => opts.onScope('main'));
+  on(scopePage, 'click', () => opts.onScope('page'));
+  on(optionsBtn, 'click', () => opts.onOpenOptions());
 
   // 點面板外或按 Esc 收合
   const onDocDown = (e: Event) => {

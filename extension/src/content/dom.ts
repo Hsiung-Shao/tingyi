@@ -28,8 +28,12 @@ function isChrome(el: Element): boolean {
   const tag = el.tagName.toUpperCase();
   if (tag === 'NAV') return true;
   if (CHROME_ROLES.has(el.getAttribute('role') ?? '')) return true;
-  // 文章自己的 header/footer(標題、作者列)要翻,只跳過整站的頁首頁尾
-  return (tag === 'HEADER' || tag === 'FOOTER') && !el.parentElement?.closest('article, main');
+  // 依 ARIA 對應:header/footer 只有不在 sectioning 內容裡時才是整站頁首頁尾;
+  // 章節、文章自己的標題列(<section><header><h2>)要翻
+  return (
+    (tag === 'HEADER' || tag === 'FOOTER') &&
+    !el.parentElement?.closest('article, aside, main, nav, section, [role=article], [role=main]')
+  );
 }
 
 /** el 或它的祖先是否落在介面區塊(用在監看新增節點時) */

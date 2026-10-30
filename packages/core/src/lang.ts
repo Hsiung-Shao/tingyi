@@ -20,7 +20,8 @@ export function isLikelyTargetLang(text: string, targetLang: string): boolean {
  */
 export function isCodeLike(text: string): boolean {
   const t = text.trim();
-  if (t.length < 2 || /\s/.test(t)) return false;
+  // 中日文句子本來就沒有空白,只有整段都是 ASCII 可見字元的單詞才可能是識別字
+  if (t.length < 2 || !/^[\x21-\x7e]+$/.test(t)) return false;
   return /[a-z][A-Z]/.test(t) || /\w_\w/.test(t) || /\(\)$/.test(t) || /\.\w/.test(t) || t.includes('::');
 }
 

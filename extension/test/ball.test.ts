@@ -32,7 +32,8 @@ function make(over: Partial<Parameters<typeof createBall>[1]> = {}) {
     onOpenOptions: vi.fn(),
     onMove: vi.fn(),
   };
-  ball = createBall(document, { ...cbs, initial: { state: idle, prefs: prefs0, top: 200 }, ...over });
+  // jsdom 派發的事件 isTrusted 為 false,測試要開啟才能模擬使用者操作
+  ball = createBall(document, { ...cbs, initial: { state: idle, prefs: prefs0, top: 200 }, allowSyntheticEvents: true, ...over });
   return { handle: ball, cbs };
 }
 

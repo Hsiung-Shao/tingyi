@@ -273,27 +273,37 @@ try {
 
     // 浮動球:用 shadow root 內真的按鈕操作
     const ball = (sel) => `document.querySelector('[data-atx-host]').shadowRoot.querySelector('[data-atx="${sel}"]')`;
+    // 用 CDP 送真的滑鼠事件(isTrusted=true);頁面 JS 的 click() 會被浮動球拒絕
+    const clickBall = async (sel) => {
+      const r = await page.evalJs(`(()=>{const b=${ball(sel)}.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2}})()`);
+      for (const type of ['mousePressed', 'mouseReleased']) await page.send('Input.dispatchMouseEvent', { type, x: r.x, y: r.y, button: 'left', clickCount: 1 });
+      await sleep(150);
+    };
     check('浮動球已掛載在 body 之外', await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');return !!h&&!!h.shadowRoot&&!document.body.contains(h)})()`));
     check('浮動球主按鈕顯示開啟狀態', (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'true');
-    await page.evalJs(`${ball('expand')}.click()`);
+    // 安全:頁面 JS 代按主按鈕不得關掉翻譯
+    await page.evalJs(`${ball('toggle')}.click()`);
+    await sleep(300);
+    check('頁面 JS 代按浮動球無效', (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'true' && (await page.evalJs(`document.querySelectorAll('font.atx-target').length`)) > 0);
+    await clickBall('expand');
     await sleep(400);
     await screenshot(page, '04-ball-panel.png');
-    await page.evalJs(`${ball('mode-only')}.click()`);
+    await clickBall('mode-only');
     await sleep(600);
     const only = await page.evalJs(`({mode:document.documentElement.dataset.atxMode,src:getComputedStyle(document.getElementById('p1')).fontSize,tgt:getComputedStyle(document.querySelector('#p1 font.atx-target')).fontSize})`);
     check('僅譯文模式隱藏原文、譯文可見', only.mode === 'only' && only.src === '0px' && parseFloat(only.tgt) > 0, JSON.stringify(only));
     await screenshot(page, '05-only-translation.png');
-    await page.evalJs(`${ball('mode-dual')}.click()`);
+    await clickBall('mode-dual');
     await sleep(600);
     const dual = await page.evalJs(`getComputedStyle(document.getElementById('p1')).fontSize`);
     check('切回雙語後原文恢復', parseFloat(dual) > 0, dual);
-    await page.evalJs(`${ball('scope-page')}.click()`);
+    await clickBall('scope-page');
     const nav = await waitFor(async () => ({ ok: await page.evalJs(`!!document.querySelector('#navli font.atx-target.atx-inline')`) }), 120000, 'scope-page');
     check('整頁模式導覽列也翻且同行顯示', nav.ok, `${nav.ms}ms`);
     await screenshot(page, '06-scope-page.png');
-    await page.evalJs(`${ball('scope-main')}.click()`);
+    await clickBall('scope-main');
     await sleep(800);
-    await page.evalJs(`${ball('expand')}.click()`);
+    await clickBall('expand');
 
     // 5. 捲到下方
     await page.evalJs(`document.getElementById('far').scrollIntoView()`);
