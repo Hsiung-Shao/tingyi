@@ -30,6 +30,7 @@ pub fn run() {
             commands::list_speakers,
             commands::set_overlay_interactive,
             commands::set_overlay_mode,
+            commands::set_subtitle_hide,
             commands::show_overlay,
             commands::export_transcript,
             commands::list_audio_apps,

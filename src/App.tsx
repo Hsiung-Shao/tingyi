@@ -33,6 +33,8 @@ export default function App() {
   const [adaptive, setAdaptive] = useState(true);
   /** 手動單段上限(秒);空字串 = 依快/中/慢預設 */
   const [maxSpeech, setMaxSpeech] = useState("");
+  /** 懸浮字幕沒聲音幾秒後收起;空字串 = 3 秒,0 = 不隱藏 */
+  const [hideSec, setHideSec] = useState("3");
   const [speakerId, setSpeakerId] = useState(true);
   const [refine, setRefine] = useState(true);
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
@@ -42,6 +44,11 @@ export default function App() {
     setAdaptive(a);
     const sec = Number.parseFloat(m);
     await invoke("set_segmentation", { sensitivity: s, adaptive: a, maxSpeechSec: Number.isFinite(sec) && sec > 0 ? sec : null });
+  };
+
+  const applySubtitleHide = async () => {
+    const sec = Number.parseFloat(hideSec);
+    await invoke("set_subtitle_hide", { seconds: Number.isFinite(sec) ? sec : 3 });
   };
 
   const commitRename = async () => {
@@ -485,6 +492,26 @@ export default function App() {
             >
               {unlocked ? "鎖定位置(恢復滑鼠穿透)" : "解鎖以拖曳位置"}
             </button>
+            <label
+              className="flex items-center gap-2 text-xs text-neutral-400"
+              title="沒聲音或沒人講話超過這個秒數(且譯文已顯示這麼久),懸浮字幕自動收起;有人再講話才出現新字幕。0 = 不隱藏"
+            >
+              沒聲音
+              <input
+                type="number"
+                aria-label="沒聲音幾秒後隱藏字幕"
+                min={0}
+                max={30}
+                step={0.5}
+                value={hideSec}
+                placeholder="3"
+                onChange={(e) => setHideSec(e.target.value)}
+                onBlur={applySubtitleHide}
+                onKeyDown={(e) => e.key === "Enter" && applySubtitleHide()}
+                className="w-16 bg-neutral-900 border border-neutral-700 rounded px-2 py-0.5"
+              />
+              秒後隱藏(0 = 不隱藏)
+            </label>
           </section>
 
           <section className="text-xs text-neutral-400 flex flex-col gap-1 mt-auto">

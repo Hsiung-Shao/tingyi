@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use tingyi_core::audio::source::SourceControl;
+use tingyi_core::idle::IdleControl;
 use tingyi_core::model_download::DownloadRegistry;
 use tingyi_core::llama::{LlamaServerProcess, WhisperServerProcess};
 use tingyi_core::pipeline::PipelineHandle;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub seg_control: Arc<SegControl>,
     /// 音訊來源;跨回合保留,執行中切換由擷取執行緒即時套用。
     pub audio_source: Arc<SourceControl>,
+    /// 懸浮字幕閒置隱藏秒數;跨回合保留,事件轉發端每次輪詢時讀。
+    pub idle_control: Arc<IdleControl>,
     /// 進行中的專用模型下載(同一個模型同時只能一個)。
     pub downloads: Arc<DownloadRegistry>,
     pub pipeline: Mutex<Option<PipelineHandle>>,

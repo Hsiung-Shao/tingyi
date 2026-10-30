@@ -14,6 +14,7 @@ use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
 use tingyi_core::pipeline::{self, PipelineConfig};
 use tingyi_core::postprocess::{Glossary, GlossaryEntry};
 use tingyi_core::export::{self, ExportSentence};
+use tingyi_core::idle::IdleTracker;
 use tingyi_core::model_download::{self as md, DownloadError, DownloadOptions, ModelStatus, Phase, Progress};
 use tingyi_core::{gpu, paths};
 
@@ -328,11 +329,33 @@ pub async fn start_session(
         }
     };
 
-    // 3. 事件轉發
+    // 3. 事件轉發;順便判斷懸浮字幕閒置(沒聲音且沒有新內容)→ 通知字幕視窗收起
     let app2 = app.clone();
+    let stats = handle.stats();
+    let idle_control = state.idle_control.clone();
+    let translate_on = translator.is_some();
     let fwd = tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app2.emit("pipeline", &ev);
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let mut idle = IdleTracker::new(translate_on, Instant::now());
+        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                ev = rx.recv() => {
+                    let Some(ev) = ev else { break };
+                    idle.on_event(&ev, Instant::now());
+                    let _ = app2.emit("pipeline", &ev);
+                }
+                _ = tick.tick() => {
+                    let hide = Duration::from_millis(idle_control.hide_ms.load(Ordering::Relaxed) as u64);
+                    let speaking = stats.speaking.load(Ordering::Relaxed);
+                    let silence = Duration::from_millis(stats.silence_ms());
+                    let packets = stats.capture.packets.load(Ordering::Relaxed);
+                    if idle.poll(Instant::now(), hide, speaking, silence, packets) {
+                        let _ = app2.emit("subtitle-idle", ());
+                    }
+                }
+            }
         }
     });
     *state.forwarder.lock().unwrap() = Some(fwd);
@@ -621,6 +644,12 @@ pub fn set_segmentation(
     state.seg_control.adaptive.store(adaptive, Ordering::Relaxed);
     state.seg_control.max_speech_override_ms.store(override_ms, Ordering::Relaxed);
     Ok(())
+}
+
+/// 懸浮字幕沒聲音幾秒後收起;0 = 不隱藏。執行中改了立即生效。
+#[tauri::command]
+pub fn set_subtitle_hide(state: State<'_, AppState>, seconds: f32) {
+    state.idle_control.set_secs(seconds);
 }
 
 /// 說話者改名(執行中才有效)。
