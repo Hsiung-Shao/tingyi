@@ -16,10 +16,12 @@ async function connect(url: string, token: string): Promise<Client> {
   return client;
 }
 
+/**
+ * 只丟掉快取,不 close():transport 的 close 會 abort 所有共用它的 POST,
+ * 會把另一批還在跑的請求一起中止。bridge 是 stateless,舊 client 沒有常駐連線,交給 GC。
+ */
 function dropClient(): void {
-  const old = cached;
   cached = null;
-  void old?.client.then((c) => c.close()).catch(() => {});
 }
 
 function getClient(url: string, token: string): Promise<Client> {
