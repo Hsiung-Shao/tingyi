@@ -285,6 +285,37 @@ try {
     await page.evalJs(`${ball('toggle')}.click()`);
     await sleep(300);
     check('頁面 JS 代按浮動球無效', (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'true' && (await page.evalJs(`document.querySelectorAll('font.atx-target').length`)) > 0);
+    // 安全:點擊劫持。頁面把球改成全畫面透明,或把 host 放大透明,再誘導使用者點頁面中央
+    const stillOn = async () => (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'true';
+    const realClick = async (x, y) => {
+      for (const type of ['mousePressed', 'mouseReleased']) await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+      await sleep(300);
+    };
+    await page.evalJs(`${ball('toggle')}.style.cssText='position:fixed;left:0;top:0;width:100vw;height:100vh;opacity:0'`);
+    await realClick(640, 450);
+    const jack1 = await stillOn();
+    await page.evalJs(`${ball('toggle')}.removeAttribute('style')`);
+    await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');h.style.setProperty('transform','scale(60)');h.style.setProperty('opacity','0.01')})()`);
+    await realClick(640, 450);
+    const jack2 = await stillOn();
+    await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');h.style.removeProperty('transform');h.style.removeProperty('opacity')})()`);
+    check('點擊劫持(放大透明的球或 host)無效', jack1 && jack2, JSON.stringify({ jack1, jack2 }));
+    // 安全:頁面偷偷把焦點移到球上,再誘導使用者按 Enter
+    await page.evalJs(`${ball('toggle')}.focus()`);
+    for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: type === 'keyDown' ? '\r' : undefined });
+    await sleep(300);
+    check('頁面偷移焦點後按 Enter 無效', await stillOn());
+    // 對照:使用者自己用鍵盤(Shift+Tab 到最後一個可聚焦元素 = 展開鈕,再按 Enter)要能操作
+    const key = async (k, code, vk, modifiers = 0, text) => {
+      for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, modifiers, text: type === 'keyDown' ? text : undefined });
+      await sleep(150);
+    };
+    await page.evalJs(`document.activeElement?.blur()`);
+    await key('Tab', 'Tab', 9, 8);
+    await key('Enter', 'Enter', 13, 0, '\r');
+    const kb = await page.evalJs(`${ball('expand')}.getAttribute('aria-expanded')`);
+    check('使用者自己用鍵盤操作浮動球有效', kb === 'true', `aria-expanded=${kb}`);
+    await key('Escape', 'Escape', 27);
     await clickBall('expand');
     await sleep(400);
     await screenshot(page, '04-ball-panel.png');

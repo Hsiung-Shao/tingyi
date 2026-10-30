@@ -26,6 +26,29 @@ export interface BallHandle {
 }
 
 const DRAG_THRESHOLD_PX = 4;
+/** 浮動球與面板只會出現在視窗右側這個寬度內(面板 236 + 球 48 + 邊距) */
+const RIGHT_ZONE_PX = 340;
+
+/**
+ * 防點擊劫持:網頁可以改 host(在 light DOM)或 open shadow 內元素的樣式,把按鈕放大成全畫面透明,
+ * 讓使用者的下一次真實點擊落在按鈕上。被點的元素必須尺寸正常、在右側區域、自己到 host 都不透明可見,
+ * host 也不能被 transform;不符就不算數。
+ */
+export function isGenuineTarget(el: Element, host: HTMLElement, win: Window): boolean {
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0 || r.width > 320 || r.height > 420) return false;
+  if (r.left < win.innerWidth - RIGHT_ZONE_PX || r.top < -4 || r.bottom > win.innerHeight + 4) return false;
+  for (let n: Element | null = el; n; ) {
+    const cs = win.getComputedStyle(n);
+    const opacity = parseFloat(cs.opacity);
+    if ((!Number.isNaN(opacity) && opacity < 0.95) || cs.visibility === 'hidden' || cs.display === 'none') return false;
+    // filter: opacity(0)、clip-path 也能把按鈕藏起來
+    if ((cs.filter && cs.filter !== 'none') || (cs.clipPath && cs.clipPath !== 'none')) return false;
+    if (n === host) return !cs.transform || cs.transform === 'none';
+    n = n.parentElement ?? ((n.getRootNode() as ShadowRoot).host as Element | undefined) ?? null;
+  }
+  return false;
+}
 
 const STYLE = `
 :host { all: initial; }
@@ -204,10 +227,38 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
    * 只接受使用者本人的操作:shadow root 是 open,網頁程式可以 click() 代按,
    * 自動開翻譯就等於把頁面內容送進使用者的訂閱 agent,也能改掉全域設定。
    */
+  const win = doc.defaultView ?? window;
   const trusted = (e: Event) => e.isTrusted || opts.allowSyntheticEvents === true;
+  // 點擊與按下時另外檢查按鈕沒被網頁竄改(拖曳中的移動與放開不檢查)
+  /*
+   * 鍵盤觸發的 click 只在焦點是使用者自己移過來時才算:網頁可以 .focus() 球上的按鈕,
+   * 再誘導使用者按 Enter。記錄最近一次真實的 Tab 與在球上的按下,focusin 時判斷焦點來源。
+   */
+  let lastTab = 0;
+  let lastPointerOnHost = 0;
+  let focusLegit = false;
+  // 只有按在「沒被竄改的」按鈕上才算使用者自己把焦點移過來(劫持時的按下不算)
+  root.addEventListener('pointerdown', (e) => {
+    if (e.isTrusted && e.target instanceof Element && isGenuineTarget(e.target, host, win)) lastPointerOnHost = Date.now();
+  });
+  root.addEventListener('focusin', () => {
+    const now = Date.now();
+    focusLegit = now - lastTab < 500 || now - lastPointerOnHost < 500;
+  });
+  root.addEventListener('focusout', () => {
+    focusLegit = false;
+  });
+  const genuine = (el: HTMLElement, e: Event) => {
+    if (opts.allowSyntheticEvents === true || (e.type !== 'click' && e.type !== 'pointerdown')) return true;
+    if (!isGenuineTarget(el, host, win)) return false;
+    if (e instanceof MouseEvent && e.type === 'click' && e.detail === 0 && !focusLegit) return false;
+    // 滑鼠點擊:點擊位置最上層真的是浮動球(鍵盤觸發的 click 沒有座標,detail 為 0,略過)
+    if (e instanceof MouseEvent && e.detail > 0 && doc.elementFromPoint(e.clientX, e.clientY) !== host) return false;
+    return true;
+  };
   const on = (el: HTMLElement, type: string, fn: (e: PointerEvent) => void) =>
     el.addEventListener(type, (e) => {
-      if (trusted(e)) fn(e as PointerEvent);
+      if (trusted(e) && genuine(el, e)) fn(e as PointerEvent);
     });
 
   // 拖曳:pointerdown 記起點,移動超過門檻才算拖曳;拖曳後的 click 不算開關
@@ -253,6 +304,7 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     if (wrap.classList.contains('open') && !e.composedPath().includes(host)) setOpen(false);
   };
   const onKey = (e: KeyboardEvent) => {
+    if (e.isTrusted && e.key === 'Tab') lastTab = Date.now();
     if (e.key === 'Escape') setOpen(false);
   };
   doc.addEventListener('pointerdown', onDocDown, true);
