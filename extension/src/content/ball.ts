@@ -91,6 +91,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   box-shadow: 0 12px 32px rgba(16, 24, 40, .22);
 }
 .wrap.open .panel { display: block; }
+.wrap.up .panel { top: auto; bottom: 0; }
 .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .title { font-weight: 650; font-size: 13px; }
 .switch {
@@ -137,11 +138,13 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
   host.setAttribute('translate', 'no');
   // inline + important:網站的全域 div 樣式蓋不掉定位
   const fix = (prop: string, value: string) => host.style.setProperty(prop, value, 'important');
+  // 存下來的位置可能來自更大的螢幕:夾在目前視窗內,球才看得到、拖得回來
+  const clampTop = (top: number) => Math.min((doc.defaultView?.innerHeight ?? 800) - 48, Math.max(8, top));
   fix('position', 'fixed');
   fix('right', '0');
   fix('z-index', '2147483646');
   fix('display', 'block');
-  fix('top', `${opts.initial.top ?? Math.round((doc.defaultView?.innerHeight ?? 800) * 0.45)}px`);
+  fix('top', `${clampTop(opts.initial.top ?? Math.round((doc.defaultView?.innerHeight ?? 800) * 0.45))}px`);
   const root = host.attachShadow({ mode: 'open' });
 
   const style = doc.createElement('style');
@@ -218,9 +221,17 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
   root.append(style, wrap);
   doc.documentElement.appendChild(host);
 
+  // 浮動球只接受滑鼠/觸控,按鈕不放進 Tab 順序(鍵盤使用者用 Alt+A 或 popup)
+  root.querySelectorAll('button').forEach((b) => (b.tabIndex = -1));
+
   const setOpen = (open: boolean) => {
     wrap.classList.toggle('open', open);
     more.setAttribute('aria-expanded', String(open));
+    // 球太靠下方時面板往上展開,整個面板留在視窗內
+    if (open) {
+      const room = (doc.defaultView?.innerHeight ?? 800) - host.getBoundingClientRect().top;
+      wrap.classList.toggle('up', panel.offsetHeight > room - 8);
+    }
   };
 
   /**
@@ -229,31 +240,17 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
    */
   const win = doc.defaultView ?? window;
   const trusted = (e: Event) => e.isTrusted || opts.allowSyntheticEvents === true;
-  // 點擊與按下時另外檢查按鈕沒被網頁竄改(拖曳中的移動與放開不檢查)
   /*
-   * 鍵盤觸發的 click 只在焦點是使用者自己移過來時才算:網頁可以 .focus() 球上的按鈕,
-   * 再誘導使用者按 Enter。記錄最近一次真實的 Tab 與在球上的按下,focusin 時判斷焦點來源。
+   * 點擊與按下時另外檢查按鈕沒被網頁竄改(拖曳中的移動與放開不檢查)。
+   * 只接受滑鼠/觸控點擊(detail > 0):鍵盤觸發的 click 會被網頁搬焦點利用,
+   * 滑鼠點完焦點留在球上時按空白鍵捲頁也會誤關翻譯。鍵盤使用者改用 Alt+A 或 popup(使用者決定)。
    */
-  let lastTab = 0;
-  let lastPointerOnHost = 0;
-  let focusLegit = false;
-  // 只有按在「沒被竄改的」按鈕上才算使用者自己把焦點移過來(劫持時的按下不算)
-  root.addEventListener('pointerdown', (e) => {
-    if (e.isTrusted && e.target instanceof Element && isGenuineTarget(e.target, host, win)) lastPointerOnHost = Date.now();
-  });
-  root.addEventListener('focusin', () => {
-    const now = Date.now();
-    focusLegit = now - lastTab < 500 || now - lastPointerOnHost < 500;
-  });
-  root.addEventListener('focusout', () => {
-    focusLegit = false;
-  });
   const genuine = (el: HTMLElement, e: Event) => {
     if (opts.allowSyntheticEvents === true || (e.type !== 'click' && e.type !== 'pointerdown')) return true;
     if (!isGenuineTarget(el, host, win)) return false;
-    if (e instanceof MouseEvent && e.type === 'click' && e.detail === 0 && !focusLegit) return false;
-    // 滑鼠點擊:點擊位置最上層真的是浮動球(鍵盤觸發的 click 沒有座標,detail 為 0,略過)
-    if (e instanceof MouseEvent && e.detail > 0 && doc.elementFromPoint(e.clientX, e.clientY) !== host) return false;
+    if (e.type === 'click' && (!(e instanceof MouseEvent) || e.detail === 0)) return false;
+    // 滑鼠點擊位置最上層真的是浮動球
+    if (e instanceof MouseEvent && e.type === 'click' && doc.elementFromPoint(e.clientX, e.clientY) !== host) return false;
     return true;
   };
   const on = (el: HTMLElement, type: string, fn: (e: PointerEvent) => void) =>
@@ -274,8 +271,7 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     const dy = e.clientY - dragStart.y;
     if (!dragged && Math.abs(dy) <= DRAG_THRESHOLD_PX) return;
     dragged = true;
-    const max = (doc.defaultView?.innerHeight ?? 800) - 48;
-    fix('top', `${Math.min(max, Math.max(8, dragStart.top + dy))}px`);
+    fix('top', `${clampTop(dragStart.top + dy)}px`);
   });
   const endDrag = () => {
     if (dragStart && dragged) opts.onMove?.(parseFloat(host.style.top) || 0);
@@ -304,11 +300,13 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     if (wrap.classList.contains('open') && !e.composedPath().includes(host)) setOpen(false);
   };
   const onKey = (e: KeyboardEvent) => {
-    if (e.isTrusted && e.key === 'Tab') lastTab = Date.now();
     if (e.key === 'Escape') setOpen(false);
   };
+  // 視窗縮小時把球夾回可見範圍
+  const onResize = () => fix('top', `${clampTop(parseFloat(host.style.top) || 0)}px`);
   doc.addEventListener('pointerdown', onDocDown, true);
   doc.addEventListener('keydown', onKey, true);
+  win.addEventListener('resize', onResize);
 
   const update = (state: TabState, prefs: BallPrefs) => {
     const on = String(state.enabled);
@@ -334,6 +332,7 @@ export function createBall(doc: Document, opts: BallOptions): BallHandle {
     destroy() {
       doc.removeEventListener('pointerdown', onDocDown, true);
       doc.removeEventListener('keydown', onKey, true);
+      win.removeEventListener('resize', onResize);
       host.remove();
     },
   };

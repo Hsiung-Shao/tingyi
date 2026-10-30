@@ -305,21 +305,19 @@ try {
     for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: type === 'keyDown' ? '\r' : undefined });
     await sleep(300);
     check('頁面偷移焦點後按 Enter 無效', await stillOn());
-    // 對照:使用者自己用鍵盤(Shift+Tab 到最後一個可聚焦元素 = 展開鈕,再按 Enter)要能操作
-    const key = async (k, code, vk, modifiers = 0, text) => {
-      for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, modifiers, text: type === 'keyDown' ? text : undefined });
-      await sleep(150);
+    // 浮動球只接受滑鼠/觸控(使用者決定):真實點球關閉 → 焦點留在球上時按空白鍵捲頁不得切換 → 再點一次開回
+    const key = async (k, code, vk, text) => {
+      for (const type of ['keyDown', 'keyUp']) await page.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, text: type === 'keyDown' ? text : undefined });
+      await sleep(200);
     };
-    // 起點固定:頁面最後放一個按鈕並聚焦,往後 Tab 依序是浮動球主按鈕、展開鈕
-    await page.evalJs(`(()=>{const b=document.createElement('button');b.id='e2e-anchor';b.textContent='anchor';document.body.appendChild(b);b.focus({preventScroll:true})})()`);
-    await key('Tab', 'Tab', 9);
-    await key('Tab', 'Tab', 9);
-    const focused = await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');return document.activeElement===h?(h.shadowRoot.activeElement?.dataset.atx??'host'):(document.activeElement?.tagName??'none')})()`);
-    await key('Enter', 'Enter', 13, 0, '\r');
-    const kb = await page.evalJs(`${ball('expand')}.getAttribute('aria-expanded')`);
-    check('使用者自己用鍵盤操作浮動球有效', kb === 'true', `focused=${focused} aria-expanded=${kb}`);
-    await key('Escape', 'Escape', 27);
-    await page.evalJs(`document.getElementById('e2e-anchor')?.remove();window.scrollTo(0,0)`);
+    await clickBall('toggle');
+    const offByMouse = (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'false';
+    await key(' ', 'Space', 32, ' ');
+    const stillOff = (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'false';
+    await clickBall('toggle');
+    const back = await waitFor(async () => ({ ok: await page.evalJs(`!!document.querySelector('#p1 font.atx-target')`) }), 120000, 'retoggle');
+    check('滑鼠點球可開關,點完按空白鍵不會誤切換', offByMouse && stillOff && back.ok, JSON.stringify({ offByMouse, stillOff, back: back.ok }));
+    await page.evalJs(`window.scrollTo(0,0)`);
     await clickBall('expand');
     await sleep(400);
     await screenshot(page, '04-ball-panel.png');
