@@ -113,19 +113,6 @@ describe('insertTranslation 樣式資訊', () => {
     expect(targetOf(h2)?.classList.contains(INLINE_CLASS)).toBe(false);
   });
 
-  it('U7 譯文的 --atx-fs 記住區塊原字級', () => {
-    document.body.innerHTML = '<p style="font-size:18px">Styled paragraph text</p>';
-    const p = document.querySelector('p') as HTMLElement;
-    insertTranslation(p, '有字級的段落');
-    expect(targetOf(p)?.style.getPropertyValue('--atx-fs')).toBe('18px');
-  });
-
-  it('U7 不同字級各自記住', () => {
-    document.body.innerHTML = '<p style="font-size:24px">Bigger paragraph text</p>';
-    const p = document.querySelector('p') as HTMLElement;
-    insertTranslation(p, '大字級');
-    expect(targetOf(p)?.style.getPropertyValue('--atx-fs')).toBe('24px');
-  });
 });
 
 describe('setDisplayMode', () => {

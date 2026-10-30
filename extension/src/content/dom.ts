@@ -4,6 +4,8 @@ import type { DisplayMode, Scope } from '../shared/settings.ts';
 export const TARGET_CLASS = 'atx-target';
 /** 短標籤的譯文同行顯示時加的 class */
 export const INLINE_CLASS = 'atx-inline';
+/** 僅譯文模式下包住原文的隱藏容器 */
+export const ORIG_CLASS = 'atx-orig';
 
 export interface CollectOptions {
   targetLang: string;
@@ -16,10 +18,17 @@ export interface CollectOptions {
   scope?: Scope;
 }
 
-/** only:在 <html> 設 data-atx-mode="only"(CSS 隱藏已翻段落的原文);dual:移除該屬性 */
+/**
+ * only:在 <html> 設 data-atx-mode="only",已翻區塊的原文包進隱藏容器、譯文佔原位;
+ * dual:移除該屬性並解開包裝。
+ */
 export function setDisplayMode(mode: DisplayMode, doc: Document = document): void {
   if (mode === 'only') doc.documentElement.dataset.atxMode = 'only';
   else delete doc.documentElement.dataset.atxMode;
+  for (const el of Array.from(doc.querySelectorAll<HTMLElement>('[data-atx-state="done"]'))) {
+    if (mode === 'only') applyOnly(el);
+    else restoreDual(el);
+  }
 }
 
 /** 介面區塊(選單、工具列、頁首頁尾):主要內容模式整個子樹不翻 */
@@ -69,6 +78,119 @@ function isSkipped(el: Element, opts: CollectOptions): boolean {
   return ce !== null && ce !== 'false';
 }
 
+/** 每個區塊的譯文元素:僅譯文模式會把它搬進連結裡,不能只找直接子節點 */
+const targets = new WeakMap<Element, HTMLElement>();
+/** 僅譯文模式下每個區塊建立的原文容器,還原時逐一解開 */
+const wrappers = new WeakMap<Element, HTMLElement[]>();
+/** 僅譯文模式仍保留可見的元素:圖示、媒體與表單控制項 */
+const KEEP_VISIBLE_SELECTOR = 'img,svg,picture,video,canvas,iframe,input,button,select,textarea';
+const URL_TEXT = /^https?:\/\/\S+$/;
+
+function targetOf(el: Element): HTMLElement | null {
+  const t = targets.get(el);
+  return t && el.contains(t) ? t : null;
+}
+
+/** node 是否屬於 el 自己的行內內容(不在子區塊或譯文裡) */
+function isOwnInline(el: Element, node: Node): boolean {
+  for (let p = node.parentElement; p && p !== el; p = p.parentElement) {
+    if (p.classList.contains(TARGET_CLASS) || p.matches(BLOCKISH_SELECTOR)) return false;
+  }
+  return true;
+}
+
+/** 區塊裡文字本身就是網址的連結(這類連結不替換) */
+function urlLinks(el: Element): HTMLAnchorElement[] {
+  return Array.from(el.querySelectorAll<HTMLAnchorElement>('a[href]')).filter(
+    (a) => isOwnInline(el, a) && URL_TEXT.test(a.textContent?.trim() ?? ''),
+  );
+}
+
+/** 譯文寫入 target;譯文裡出現原文的網址連結時,換成該連結的複本(網址照原樣、可以點) */
+function fillTarget(el: Element, target: HTMLElement, text: string): void {
+  target.textContent = text;
+  for (const a of urlLinks(el)) {
+    const url = a.textContent!.trim();
+    for (const node of Array.from(target.childNodes)) {
+      const i = node.nodeType === Node.TEXT_NODE ? (node.nodeValue ?? '').indexOf(url) : -1;
+      if (i < 0) continue;
+      const mid = (node as Text).splitText(i);
+      mid.splitText(url.length);
+      const clone = a.cloneNode(true) as HTMLElement;
+      clone.removeAttribute('id');
+      clone.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+      mid.replaceWith(clone);
+      break;
+    }
+  }
+}
+
+/** 譯文放回雙語位置:有子區塊時放在第一個子區塊前,否則放最後 */
+function placeDual(el: Element, target: HTMLElement): void {
+  const firstBlock = Array.from(el.children).find((c) => c !== target && c.matches(BLOCKISH_SELECTOR));
+  el.insertBefore(target, firstBlock ?? null);
+}
+
+/**
+ * 僅譯文:把區塊自己的行內原文包進隱藏的 <font class="atx-orig">,譯文放在第一段原文的位置。
+ * 子區塊、圖示與表單控制項、譯文裡找不到的網址連結不包(維持可見)。
+ * 整段文字都在同一個連結裡時,包裝和譯文都放進那個連結,譯文仍可點。
+ */
+function applyOnly(el: HTMLElement): void {
+  restoreDual(el);
+  const target = targetOf(el);
+  if (!target) return;
+  const text = getBlockText(el);
+  const translated = target.textContent ?? '';
+  const keptLinks = new Set<Element>(urlLinks(el).filter((a) => !translated.includes(a.textContent!.trim())));
+  const soleLink = Array.from(el.querySelectorAll('a')).find(
+    (a) => isOwnInline(el, a) && !keptLinks.has(a) && !a.querySelector(BLOCKISH_SELECTOR) &&
+      (a.textContent ?? '').replace(/\s+/g, ' ').trim() === text,
+  );
+  const isKept = (n: Element) => n.matches(`${BLOCKISH_SELECTOR},${KEEP_VISIBLE_SELECTOR}`) || keptLinks.has(n);
+  const hasKept = (n: Element) =>
+    n.querySelector(`${BLOCKISH_SELECTOR},${KEEP_VISIBLE_SELECTOR}`) !== null || [...keptLinks].some((a) => n.contains(a));
+  const doc = el.ownerDocument;
+  const made: HTMLElement[] = [];
+  const wrap = (parent: Element) => {
+    let run: Node[] = [];
+    const flush = (before: Node | null) => {
+      if (run.length === 0) return;
+      const w = doc.createElement('font');
+      w.className = ORIG_CLASS;
+      parent.insertBefore(w, before);
+      w.append(...run);
+      made.push(w);
+      run = [];
+    };
+    for (const n of Array.from(parent.childNodes)) {
+      if (n === target) flush(n);
+      else if (n.nodeType !== Node.ELEMENT_NODE) run.push(n);
+      else if (isKept(n as Element)) flush(n);
+      else if (hasKept(n as Element)) {
+        flush(n);
+        wrap(n as Element);
+      } else run.push(n);
+    }
+    flush(null);
+  };
+  wrap(soleLink ?? el);
+  if (made.length === 0) return;
+  wrappers.set(el, made);
+  const first = made.find((w) => (w.textContent ?? '').trim() !== '') ?? made[0];
+  first?.after(target);
+}
+
+/** 解開僅譯文的包裝,原文節點回到原位,譯文回到雙語位置 */
+function restoreDual(el: HTMLElement): void {
+  const made = wrappers.get(el);
+  if (!made) return;
+  wrappers.delete(el);
+  for (const w of made) w.replaceWith(...Array.from(w.childNodes));
+  const target = targetOf(el);
+  if (target) placeDual(el, target);
+}
+
 /** 譯文對應的原文(送出時的文字);文字被頁面改掉時用來判斷要不要重翻 */
 const sourceText = new WeakMap<Element, string>();
 /**
@@ -88,7 +210,9 @@ export function resetForRetranslate(el: HTMLElement): boolean {
   const prev = retranslated.get(el);
   const count = prev && now - prev.last < RETRANSLATE_WINDOW_MS ? prev.count : 0;
   retranslated.set(el, { count: Math.min(count + 1, MAX_RETRANSLATE + 1), last: now });
-  el.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
+  restoreDual(el);
+  targetOf(el)?.remove();
+  targets.delete(el);
   if (count >= MAX_RETRANSLATE) {
     el.dataset.atxState = 'stale';
     sourceText.set(el, getBlockText(el));
@@ -103,7 +227,7 @@ function isCandidate(el: Element, opts: CollectOptions): el is HTMLElement {
   const tag = el.tagName.toUpperCase();
   if (!LEAF_TAGS.has(tag) && !CONTAINER_TAGS.has(tag)) return false;
   if ((el as HTMLElement).dataset?.atxState !== undefined) return false;
-  if (el.querySelector(`:scope > font.${TARGET_CLASS}`)) return false;
+  if (targetOf(el)) return false;
   const text = getBlockText(el);
   if (text.length < opts.minChars) return false;
   // API 名稱、程式識別字翻了也是原字,不送
@@ -173,31 +297,31 @@ export function getBlockText(el: Element): string {
 
 /**
  * 在區塊內插入 <font class="atx-target">:一般放最後面,有子區塊時放在第一個子區塊前;已存在就只更新文字。
+ * 僅譯文模式下插入後直接替換原文位置。
  * source 是送翻時的原文;插入時原文已經不同(翻譯途中被頁面改掉)就回 true,表示譯文已過期。
  */
 export function insertTranslation(el: HTMLElement, text: string, source?: string): boolean {
-  let target = el.querySelector<HTMLElement>(`:scope > font.${TARGET_CLASS}`);
+  let target = targetOf(el);
   const current = getBlockText(el);
   if (!target) {
     target = el.ownerDocument.createElement('font');
     target.className = TARGET_CLASS;
     // 選單項目、按鈕這類短標籤:譯文接在同一行,不另起一行撐開版面
     if (!/^H[1-6]$/.test(el.tagName.toUpperCase()) && current.length <= INLINE_MAX_CHARS) target.classList.add(INLINE_CLASS);
-    const firstBlock = Array.from(el.children).find((c) => c.matches(BLOCKISH_SELECTOR));
-    el.insertBefore(target, firstBlock ?? null);
+    placeDual(el, target);
+    targets.set(el, target);
   }
-  // 僅譯文模式會把區塊字級設 0,譯文要用原本的字級;已經是 0(模式切換後重插)就不覆寫
-  const fs = el.ownerDocument.defaultView?.getComputedStyle(el).fontSize ?? '';
-  if (parseFloat(fs) > 0) target.style.setProperty('--atx-fs', fs);
-  target.textContent = text;
+  fillTarget(el, target, text);
   sourceText.set(el, source ?? current);
+  if (el.ownerDocument.documentElement.dataset.atxMode === 'only') applyOnly(el);
   return source !== undefined && source !== current;
 }
 
-/** 移除 root 底下所有譯文與 data-atx-state 標記,還原頁面 */
+/** 移除 root 底下所有譯文、僅譯文包裝與 data-atx-state 標記,還原頁面 */
 export function removeAllTranslations(root: Element): void {
+  const marked = [root, ...Array.from(root.querySelectorAll<HTMLElement>('[data-atx-state]'))];
+  marked.forEach((el) => restoreDual(el as HTMLElement));
   root.querySelectorAll(`font.${TARGET_CLASS}`).forEach((f) => f.remove());
-  const marked = [root, ...Array.from(root.querySelectorAll('[data-atx-state]'))];
   for (const el of marked) {
     el.removeAttribute('data-atx-state');
   }
@@ -223,7 +347,7 @@ export function watchNewBlocks(
         if (node.nodeType !== Node.ELEMENT_NODE || !node.isConnected) continue;
         const el = node as Element;
         // 自己插入的譯文不算新段落;主要內容模式下,選單等介面區裡新增的東西也不翻
-        if (el.closest(`.${TARGET_CLASS}`) || inChrome(el, opts)) continue;
+        if (el.closest(`.${TARGET_CLASS}`) || el.classList.contains(ORIG_CLASS) || inChrome(el, opts)) continue;
         if (el.parentElement && el.parentElement.closest(`[contenteditable]:not([contenteditable="false"])`)) continue;
         const out: HTMLElement[] = [];
         walk(el, opts, out, true);
