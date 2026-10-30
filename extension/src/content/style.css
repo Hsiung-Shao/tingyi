@@ -8,6 +8,13 @@ font.atx-target {
   white-space: normal;
 }
 
+/* 短標籤(選單項目、按鈕文字)同行顯示,不撐開版面 */
+font.atx-target.atx-inline {
+  display: inline;
+  margin-top: 0;
+  margin-left: 0.4em;
+}
+
 [data-atx-state='pending'] {
   background-image: linear-gradient(90deg, transparent, rgba(120, 140, 255, 0.12), transparent);
   background-size: 200% 100%;
@@ -21,4 +28,28 @@ font.atx-target {
 @keyframes atx-pending {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
+}
+
+/*
+ * 僅譯文:把已翻葉層區塊的原文字級設為 0,譯文用記下的原字級顯示。不搬動網站 DOM。
+ * 有子區塊的「部分區塊」(例如 <li>父項<ul>…</ul></li>)維持雙語,避免連子區塊一起隱藏。
+ */
+html[data-atx-mode='only'] [data-atx-state='done']:not(:has(> :is(p, ul, ol, dl, div, table, blockquote, pre, section, article, figure, h1, h2, h3, h4, h5, h6))) {
+  font-size: 0 !important;
+}
+html[data-atx-mode='only'] [data-atx-state='done']:not(:has(> :is(p, ul, ol, dl, div, table, blockquote, pre, section, article, figure, h1, h2, h3, h4, h5, h6))) :not(font.atx-target, font.atx-target *) {
+  font-size: 0 !important;
+}
+/* 原文那一行字級是 0 但仍佔一個行框:譯文改行內,才會和清單圓點排在同一行 */
+html[data-atx-mode='only'] [data-atx-state='done']:not(:has(> :is(p, ul, ol, dl, div, table, blockquote, pre, section, article, figure, h1, h2, h3, h4, h5, h6))) > font.atx-target {
+  display: inline;
+}
+/* 清單圓點跟著 li 的字級畫,字級設 0 後要補回來 */
+html[data-atx-mode='only'] li[data-atx-state='done']::marker {
+  font-size: 1rem;
+}
+html[data-atx-mode='only'] [data-atx-state='done'] > font.atx-target {
+  font-size: var(--atx-fs, 1rem) !important;
+  opacity: 1;
+  margin: 0;
 }

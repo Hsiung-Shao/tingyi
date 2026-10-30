@@ -1,16 +1,23 @@
 import { splitBatches, type Segment } from '@atx/core';
 import type { LimitsResponse, TabRequest, TabState, TranslateResponse } from '../shared/messages.ts';
+import { SETTINGS_KEY, type DisplayMode, type Scope, type Settings } from '../shared/settings.ts';
+import { createBall, type BallHandle, type BallPrefs } from './ball.ts';
 import {
   collectBlocks,
   getBlockText,
   insertTranslation,
   removeAllTranslations,
   resetForRetranslate,
+  setDisplayMode,
   watchNewBlocks,
   type CollectOptions,
 } from './dom.ts';
 
+const BALL_TOP_KEY = 'atx:ballTop';
+
 // esbuild 打包成 IIFE,頂層宣告不會跟其他 content script 撞名
+let ball: BallHandle | null = null;
+const prefs: BallPrefs = { displayMode: 'dual', scope: 'main' };
 let enabled = false;
 let limits: LimitsResponse | null = null;
 let nextId = 1;
@@ -33,6 +40,7 @@ function enqueue(el: HTMLElement): void {
   el.dataset.atxState = 'pending';
   queue.set(nextId++, el);
   state.pending++;
+  refreshBall();
   clearTimeout(flushTimer);
   flushTimer = setTimeout(flush, 300);
 }
@@ -95,6 +103,7 @@ async function send(batch: Segment[], owners: Map<number, HTMLElement>, gen: num
       state.lastError = res.error ?? '部分段落沒有拿到譯文';
     }
   }
+  refreshBall();
 }
 
 async function enable(): Promise<void> {
@@ -106,7 +115,7 @@ async function enable(): Promise<void> {
   limits = got;
   io?.disconnect();
   stopWatch?.();
-  const opts: CollectOptions = { targetLang: limits.targetLang, minChars: 2 };
+  const opts: CollectOptions = { targetLang: limits.targetLang, minChars: 2, scope: prefs.scope };
   io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
@@ -119,6 +128,7 @@ async function enable(): Promise<void> {
   );
   observe(collectBlocks(document.body, opts));
   stopWatch = watchNewBlocks(document.body, opts, observe);
+  refreshBall();
 }
 
 function disable(): void {
@@ -132,25 +142,78 @@ function disable(): void {
   queue.clear();
   removeAllTranslations(document.body);
   Object.assign(state, { done: 0, pending: 0, errors: 0, lastError: undefined });
+  refreshBall();
+}
+
+/** Alt+A、popup、浮動球共用的開關 */
+async function toggle(): Promise<TabState> {
+  if (enabled) disable();
+  else {
+    try {
+      await enable();
+    } catch (e) {
+      state.lastError = String(e);
+      refreshBall();
+    }
+  }
+  return state;
+}
+
+function refreshBall(): void {
+  ball?.update({ ...state }, { ...prefs });
+}
+
+function applyPrefs(next: Partial<Settings> | undefined): void {
+  const mode: DisplayMode = next?.displayMode ?? 'dual';
+  const scope: Scope = next?.scope ?? 'main';
+  const scopeChanged = scope !== prefs.scope;
+  prefs.displayMode = mode;
+  prefs.scope = scope;
+  setDisplayMode(mode);
+  // 範圍改了就重來一次;已翻過的段落會命中快取
+  if (scopeChanged && enabled) {
+    disable();
+    void toggle();
+  }
+  refreshBall();
+}
+
+/** 浮動球的設定寫回 storage;各分頁(含這一頁)由 storage.onChanged 套用 */
+async function savePref(patch: Partial<Pick<Settings, 'displayMode' | 'scope'>>): Promise<void> {
+  const raw = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY] as Partial<Settings> | undefined;
+  await chrome.storage.local.set({ [SETTINGS_KEY]: { ...raw, ...patch } });
+}
+
+async function initBall(): Promise<void> {
+  const store = chrome.storage?.local;
+  let top: number | undefined;
+  if (store) {
+    const got = await store.get([SETTINGS_KEY, BALL_TOP_KEY]);
+    applyPrefs(got[SETTINGS_KEY] as Partial<Settings> | undefined);
+    top = typeof got[BALL_TOP_KEY] === 'number' ? (got[BALL_TOP_KEY] as number) : undefined;
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes[SETTINGS_KEY]) applyPrefs(changes[SETTINGS_KEY].newValue as Partial<Settings> | undefined);
+    });
+  }
+  ball = createBall(document, {
+    onToggle: () => void toggle(),
+    onMode: (displayMode) => void savePref({ displayMode }),
+    onScope: (scope) => void savePref({ scope }),
+    onOpenOptions: () => void chrome.runtime.sendMessage({ type: 'openOptions' }),
+    onMove: (t) => void store?.set({ [BALL_TOP_KEY]: t }),
+    initial: { state: { ...state }, prefs: { ...prefs }, top },
+  });
 }
 
 chrome.runtime.onMessage.addListener((msg: TabRequest, _sender, sendResponse) => {
   if (msg.type === 'toggle') {
-    if (enabled) {
-      disable();
-      sendResponse(state);
-    } else {
-      enable().then(
-        () => sendResponse(state),
-        (e) => {
-          state.lastError = String(e);
-          sendResponse(state);
-        },
-      );
-      return true;
-    }
+    void toggle().then(sendResponse);
+    return true;
   } else if (msg.type === 'getState') {
     sendResponse(state);
   }
   return false;
 });
+
+// 只在最上層頁面顯示浮動球(iframe 裡不重複出現)
+if (window.top === window) void initBall();

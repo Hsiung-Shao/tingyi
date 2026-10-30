@@ -2,7 +2,8 @@ import type { BatchLimits, PageContext, Segment } from '@atx/core';
 
 export type ContentRequest =
   | { type: 'translate'; segments: Segment[]; context: PageContext }
-  | { type: 'getLimits' };
+  | { type: 'getLimits' }
+  | { type: 'openOptions' };
 
 export type TranslateResponse =
   /** error:有部分段落失敗(其餘段落仍有譯文) */

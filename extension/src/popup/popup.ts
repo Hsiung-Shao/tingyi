@@ -1,5 +1,5 @@
 import type { ProvidersResponse, TabState } from '../shared/messages.ts';
-import { loadSettings, saveSettings, type Route } from '../shared/settings.ts';
+import { loadSettings, saveSettings, type DisplayMode, type Route, type Scope } from '../shared/settings.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -76,6 +76,19 @@ async function init(): Promise<void> {
     s.bridge.provider = (e.target as HTMLSelectElement).value;
     await saveSettings(s);
     void refreshProviders();
+  });
+  $<HTMLSelectElement>('displayMode').value = settings.displayMode;
+  $<HTMLSelectElement>('scope').value = settings.scope;
+  // 寫回設定後,各分頁的 content script 由 storage.onChanged 即時套用
+  $('displayMode').addEventListener('change', async (e) => {
+    const s = await loadSettings();
+    s.displayMode = (e.target as HTMLSelectElement).value as DisplayMode;
+    await saveSettings(s);
+  });
+  $('scope').addEventListener('change', async (e) => {
+    const s = await loadSettings();
+    s.scope = (e.target as HTMLSelectElement).value as Scope;
+    await saveSettings(s);
   });
   $('targetLang').addEventListener('change', async (e) => {
     const s = await loadSettings();

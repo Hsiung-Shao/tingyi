@@ -13,6 +13,16 @@
     <h1>Agent Translator</h1>
     <button id="toggle">翻譯此頁</button>
     <div id="pageState" class="status muted"></div>
+    <div class="row seg" style="margin-top: 10px">
+      <select id="displayMode" aria-label="顯示模式">
+        <option value="dual">雙語對照</option>
+        <option value="only">僅譯文</option>
+      </select>
+      <select id="scope" aria-label="翻譯範圍">
+        <option value="main">主要內容</option>
+        <option value="page">整頁</option>
+      </select>
+    </div>
     <label for="route">翻譯後端</label>
     <select id="route">
       <option value="bridge">bridge(MCP:訂閱 agent)</option>

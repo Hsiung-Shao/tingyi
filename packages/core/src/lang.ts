@@ -14,6 +14,16 @@ export function isLikelyTargetLang(text: string, targetLang: string): boolean {
   return letters > 0 && han / letters >= 0.6;
 }
 
+/**
+ * 看起來像程式識別字的單一詞(沒有空白):駝峰(aB)、含底線、結尾 ()、含 .x 或 ::。
+ * 例:DeferredRequestInit、fetch()、snake_case、a.b.c 回 true;Install、Hello world 回 false。
+ */
+export function isCodeLike(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2 || /\s/.test(t)) return false;
+  return /[a-z][A-Z]/.test(t) || /\w_\w/.test(t) || /\(\)$/.test(t) || /\.\w/.test(t) || t.includes('::');
+}
+
 const LANG_NAMES: Record<string, string> = {
   'zh-TW': 'Traditional Chinese (Taiwan)',
   'zh-CN': 'Simplified Chinese',

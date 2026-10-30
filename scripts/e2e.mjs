@@ -60,7 +60,10 @@ const CANARY_FILE = path.join(homedir(), `atx-canary-${process.pid}.txt`);
 writeFileSync(CANARY_FILE, CANARY_VALUE);
 const FIXTURE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture: Machine Translation</title>
 <style>body{font:16px/1.6 Georgia,serif;max-width:720px;margin:40px auto;padding:0 16px}</style></head><body>
+<header id="site-hdr"><nav><ul style="display:flex;gap:16px;list-style:none;padding:0"><li id="navli">Blog</li><li>About us</li><li>Contact</li></ul></nav></header>
 <h1>The History of Machine Translation</h1>
+<ul><li id="api"><code>DeferredRequestInit</code></li></ul>
+<p id="ident">fetchLaterResult</p>
 <p id="p1">Machine translation is a sub-field of computational linguistics that investigates the use of software to translate text from one language to another.</p>
 <p id="p2">Early systems relied on large bilingual dictionaries and hand-coded rules, which made them brittle and expensive to maintain.</p>
 <ul><li id="li1">Statistical methods became dominant in the 1990s.</li><li id="li2">Neural networks replaced them in the late 2010s.</li></ul>
@@ -264,12 +267,45 @@ try {
     check('SPA 延遲插入的段落有翻', f.dyn);
     check('畫面下方遠處段落尚未翻(只翻可見範圍)', !f.far);
     check('注入段被當成文字翻譯、沒有洩漏 canary', f.inj.length > 0 && !f.inj.includes(CANARY_VALUE), f.inj.slice(0, 80));
+    const h = await page.evalJs(`({nav:!!document.querySelector('#navli font.atx-target'),api:!!document.querySelector('#api font.atx-target'),ident:!!document.querySelector('#ident font.atx-target')})`);
+    check('主要內容模式不翻頁首導覽列', !h.nav);
+    check('程式識別字不送翻', !h.api && !h.ident, JSON.stringify(h));
+
+    // 浮動球:用 shadow root 內真的按鈕操作
+    const ball = (sel) => `document.querySelector('[data-atx-host]').shadowRoot.querySelector('[data-atx="${sel}"]')`;
+    check('浮動球已掛載在 body 之外', await page.evalJs(`(()=>{const h=document.querySelector('[data-atx-host]');return !!h&&!!h.shadowRoot&&!document.body.contains(h)})()`));
+    check('浮動球主按鈕顯示開啟狀態', (await page.evalJs(`${ball('toggle')}.getAttribute('aria-pressed')`)) === 'true');
+    await page.evalJs(`${ball('expand')}.click()`);
+    await sleep(400);
+    await screenshot(page, '04-ball-panel.png');
+    await page.evalJs(`${ball('mode-only')}.click()`);
+    await sleep(600);
+    const only = await page.evalJs(`({mode:document.documentElement.dataset.atxMode,src:getComputedStyle(document.getElementById('p1')).fontSize,tgt:getComputedStyle(document.querySelector('#p1 font.atx-target')).fontSize})`);
+    check('僅譯文模式隱藏原文、譯文可見', only.mode === 'only' && only.src === '0px' && parseFloat(only.tgt) > 0, JSON.stringify(only));
+    await screenshot(page, '05-only-translation.png');
+    await page.evalJs(`${ball('mode-dual')}.click()`);
+    await sleep(600);
+    const dual = await page.evalJs(`getComputedStyle(document.getElementById('p1')).fontSize`);
+    check('切回雙語後原文恢復', parseFloat(dual) > 0, dual);
+    await page.evalJs(`${ball('scope-page')}.click()`);
+    const nav = await waitFor(async () => ({ ok: await page.evalJs(`!!document.querySelector('#navli font.atx-target.atx-inline')`) }), 120000, 'scope-page');
+    check('整頁模式導覽列也翻且同行顯示', nav.ok, `${nav.ms}ms`);
+    await screenshot(page, '06-scope-page.png');
+    await page.evalJs(`${ball('scope-main')}.click()`);
+    await sleep(800);
+    await page.evalJs(`${ball('expand')}.click()`);
+
     // 5. 捲到下方
     await page.evalJs(`document.getElementById('far').scrollIntoView()`);
     const far = await waitFor(async () => ({ ok: await page.evalJs(`!!document.querySelector('#far font.atx-target')`) }), 120000, 'far');
     check('捲動後下方段落有翻', far.ok, `${far.ms}ms`);
     await screenshot(page, '02-scrolled.png');
     await page.evalJs('window.scrollTo(0,0)');
+  }
+
+  if (opt.url) {
+    const navCount = await page.evalJs(`document.querySelectorAll('nav font.atx-target, [role=navigation] font.atx-target').length`);
+    check('真實頁面:主要內容模式的導覽區沒有譯文', navCount === 0, `nav 譯文數=${navCount}`);
   }
 
   // 6. 關閉 → 還原

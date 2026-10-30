@@ -98,6 +98,11 @@ chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sende
     handleListProviders().then(sendResponse, fail);
     return true;
   }
+  if (msg.type === 'openOptions') {
+    // content script 不能直接開設定頁,由浮動球面板轉請背景開
+    void chrome.runtime.openOptionsPage();
+    return false;
+  }
   return false;
 });
 
