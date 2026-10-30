@@ -1,6 +1,14 @@
 import { splitBatches, type Segment } from '@atx/core';
 import type { LimitsResponse, TabRequest, TabState, TranslateResponse } from '../shared/messages.ts';
-import { collectBlocks, getBlockText, insertTranslation, removeAllTranslations, watchNewBlocks, type CollectOptions } from './dom.ts';
+import {
+  collectBlocks,
+  getBlockText,
+  insertTranslation,
+  removeAllTranslations,
+  resetForRetranslate,
+  watchNewBlocks,
+  type CollectOptions,
+} from './dom.ts';
 
 // esbuild 打包成 IIFE,頂層宣告不會跟其他 content script 撞名
 let enabled = false;
@@ -42,12 +50,29 @@ function flush(): void {
   for (const batch of splitBatches(segments, limits)) void send(batch, owners, gen);
 }
 
+// 併發在這裡控制、拿到名額才送:若讓背景排隊,排隊時間會算進 SW 單一事件 5 分鐘上限
+let inFlight = 0;
+const waiting: (() => void)[] = [];
+async function acquire(): Promise<void> {
+  while (inFlight >= (limits?.concurrency ?? 2)) await new Promise<void>((r) => waiting.push(r));
+  inFlight++;
+}
+function release(): void {
+  inFlight--;
+  waiting.shift()?.();
+}
+
 async function send(batch: Segment[], owners: Map<number, HTMLElement>, gen: number): Promise<void> {
+  await acquire();
   let res: TranslateResponse;
   try {
+    // 排隊期間被關閉就不送了
+    if (gen !== generation) return;
     res = await chrome.runtime.sendMessage({ type: 'translate', segments: batch, context: { title: document.title, url: location.href } });
   } catch (e) {
     res = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    release();
   }
   // 翻譯途中被關閉(或關了又開)就丟掉這批結果
   if (gen !== generation) return;
@@ -58,9 +83,11 @@ async function send(batch: Segment[], owners: Map<number, HTMLElement>, gen: num
     state.pending--;
     const text = got.get(seg.id);
     if (text !== undefined) {
-      insertTranslation(el, text);
+      const stale = insertTranslation(el, text, seg.text);
       el.dataset.atxState = 'done';
       state.done++;
+      // 翻譯途中頁面改了這段文字:重新排入(有次數上限)
+      if (stale && resetForRetranslate(el)) observe([el]);
     } else {
       // 錯誤細節可能含本機路徑與 CLI 狀態,只留在擴充狀態(popup 顯示),不寫進不可信的頁面 DOM
       el.dataset.atxState = 'error';

@@ -55,6 +55,33 @@ describe('已翻譯區塊的內容變更', () => {
     expect(p.querySelector('font.atx-target')).toBeNull();
   });
 
+  it('同一區塊文字反覆變動時最多重翻 3 次', async () => {
+    document.body.innerHTML = '<p id="p">Updated 0 seconds ago</p>';
+    const p = document.getElementById('p')!;
+    p.dataset.atxState = 'done';
+    insertTranslation(p, '0 秒前更新');
+    let reported = 0;
+    const stop = watchNewBlocks(document.body, opts, (b) => {
+      reported += b.length;
+      // 模擬 content 端重翻完成
+      p.dataset.atxState = 'done';
+      insertTranslation(p, '譯文');
+    });
+    for (let i = 1; i <= 6; i++) {
+      p.firstChild!.nodeValue = `Updated ${i} seconds ago`;
+      await tick();
+    }
+    stop();
+    expect(reported).toBe(3);
+  });
+
+  it('送出後到插入前文字被改時回報譯文已過期', () => {
+    document.body.innerHTML = '<p id="p">Text changed while translating</p>';
+    const p = document.getElementById('p')!;
+    expect(insertTranslation(p, '舊譯文', 'Original text that was sent')).toBe(true);
+    expect(insertTranslation(p, '新譯文', 'Text changed while translating')).toBe(false);
+  });
+
   it('插入譯文本身不會觸發重翻', async () => {
     document.body.innerHTML = '<p id="p">Stable paragraph text</p>';
     const p = document.getElementById('p')!;
@@ -65,6 +92,13 @@ describe('已翻譯區塊的內容變更', () => {
     await tick();
     stop();
     expect(got).toEqual([]);
+  });
+});
+
+describe('行內程式碼', () => {
+  it('段落內的行內 code 與 kbd 文字保留在送翻文字中', () => {
+    document.body.innerHTML = '<p>Call <code>initialize()</code> before you press <kbd>Ctrl</kbd>+<kbd>S</kbd> to save.</p>';
+    expect(texts(collectBlocks(document.body, opts))).toEqual(['Call initialize() before you press Ctrl+S to save.']);
   });
 });
 

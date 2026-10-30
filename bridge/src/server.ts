@@ -20,6 +20,8 @@ export interface BridgeOptions {
    * 預設 270 秒:Chrome 擴充 SW 處理單一事件超過 5 分鐘會被終止,要比它短。
    */
   deadlineMs?: number;
+  /** 每個後端同時跑的上限,預設 2(多個分頁同時翻譯時保護訂閱額度與本機資源) */
+  maxConcurrentPerProvider?: number;
 }
 
 export const DEFAULT_DEADLINE_MS = 270_000;
@@ -51,7 +53,44 @@ function rejectStatus(req: IncomingMessage, opts: BridgeOptions): number | null 
 
 const segmentSchema = z.object({ id: z.number().int(), text: z.string() });
 
-function buildMcpServer(providers: Provider[], clientGone: AbortSignal, deadlineMs: number): McpServer {
+/** 每個後端同時跑的 CLI 上限;跨請求共用,所以放在 server 層級 */
+class Slots {
+  private running = 0;
+  private waiters: (() => void)[] = [];
+  private readonly max: number;
+  constructor(max: number) {
+    this.max = max;
+  }
+  /** 拿到名額回 true;等待中 signal 中止就回 false */
+  async acquire(signal: AbortSignal): Promise<boolean> {
+    while (this.running >= this.max) {
+      if (signal.aborted) return false;
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          signal.removeEventListener('abort', wake);
+          resolve();
+        };
+        this.waiters.push(wake);
+        signal.addEventListener('abort', wake, { once: true });
+      });
+    }
+    if (signal.aborted) return false;
+    this.running++;
+    return true;
+  }
+  release(): void {
+    this.running--;
+    // 全部叫醒重新檢查,避免喚醒到已中止的等待者而漏掉其他人
+    for (const wake of this.waiters.splice(0)) wake();
+  }
+}
+
+function buildMcpServer(
+  providers: Provider[],
+  clientGone: AbortSignal,
+  deadlineMs: number,
+  slotsFor: (providerId: string) => Slots,
+): McpServer {
   const server = new McpServer({ name: 'agent-translator-bridge', version: '0.1.0' });
 
   server.registerTool(
@@ -99,8 +138,10 @@ function buildMcpServer(providers: Provider[], clientGone: AbortSignal, deadline
       const started = Date.now();
       const signal = AbortSignal.any([clientGone, AbortSignal.timeout(deadlineMs)]);
       const result = new Map<number, string>();
+      const slots = slotsFor(provider.id);
       for (const batch of splitBatches(segments, provider.limits)) {
-        if (signal.aborted) break;
+        // 排隊也算在期限內:等不到名額就放棄,其餘列 missing
+        if (!(await slots.acquire(signal))) break;
         try {
           const got = await translateWithRetry(
             batch,
@@ -113,6 +154,8 @@ function buildMcpServer(providers: Provider[], clientGone: AbortSignal, deadline
           // 期限到或客戶端離開:保留已完成的部分,其餘列 missing
           if (signal.aborted) break;
           throw e;
+        } finally {
+          slots.release();
         }
       }
       const structuredContent = {
@@ -146,6 +189,12 @@ function sendError(res: ServerResponse, status: number, message: string): void {
  */
 export async function createBridgeServer(opts: BridgeOptions): Promise<BridgeHandle> {
   const host = opts.host ?? '127.0.0.1';
+  const slots = new Map<string, Slots>();
+  const slotsFor = (id: string) => {
+    let s = slots.get(id);
+    if (!s) slots.set(id, (s = new Slots(opts.maxConcurrentPerProvider ?? 2)));
+    return s;
+  };
   const http = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -159,7 +208,7 @@ export async function createBridgeServer(opts: BridgeOptions): Promise<BridgeHan
       const body = await readBody(req);
       // 客戶端斷線或放棄時,中止還在跑的 CLI,避免重送時兩組並跑
       const abort = new AbortController();
-      const server = buildMcpServer(opts.providers, abort.signal, opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
+      const server = buildMcpServer(opts.providers, abort.signal, opts.deadlineMs ?? DEFAULT_DEADLINE_MS, slotsFor);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on('close', () => {
         if (!res.writableFinished) abort.abort();

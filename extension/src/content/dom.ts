@@ -14,6 +14,8 @@ const LEAF_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TD', 
 const CONTAINER_TAGS = new Set(['DIV', 'SECTION', 'ARTICLE', 'MAIN', 'ASIDE', 'HEADER', 'FOOTER', 'NAV', 'FIGURE', 'DETAILS', 'LABEL']);
 /** 整個子樹都不翻 */
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'PRE', 'CODE', 'KBD', 'SAMP', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'BUTTON', 'SVG', 'MATH', 'CANVAS', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'HEAD']);
+/** 段落文字裡要拿掉的:看不到或屬於表單的內容。行內 code/kbd 是句子的一部分,要保留 */
+const HIDDEN_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'SELECT', 'OPTION']);
 /** 判斷「裡面還有沒有區塊」用:多了 pre、ul、table 這類不翻但會斷段的元素 */
 const BLOCKISH_SELECTOR = [...LEAF_TAGS, ...CONTAINER_TAGS, 'PRE', 'UL', 'OL', 'DL', 'TABLE', 'TR', 'HR']
   .map((t) => t.toLowerCase())
@@ -27,8 +29,27 @@ function isSkipped(el: Element): boolean {
   return ce !== null && ce !== 'false';
 }
 
-/** 插入譯文當下的原文;文字被頁面改掉時用來判斷要不要重翻 */
+/** 譯文對應的原文(送出時的文字);文字被頁面改掉時用來判斷要不要重翻 */
 const sourceText = new WeakMap<Element, string>();
+/** 每個區塊因文字變動重翻的次數;計時器、股價這類一直變的文字不能無限重送 */
+const retranslated = new WeakMap<Element, number>();
+const MAX_RETRANSLATE = 3;
+
+/**
+ * 原文已變、要重翻:清掉舊譯文與狀態並回 true。超過次數上限就保留最後的譯文、不再重翻,回 false。
+ */
+export function resetForRetranslate(el: HTMLElement): boolean {
+  const n = retranslated.get(el) ?? 0;
+  if (n >= MAX_RETRANSLATE) {
+    sourceText.set(el, getBlockText(el));
+    return false;
+  }
+  retranslated.set(el, n + 1);
+  el.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
+  delete el.dataset.atxState;
+  sourceText.delete(el);
+  return true;
+}
 
 function isCandidate(el: Element, opts: CollectOptions): el is HTMLElement {
   const tag = el.tagName.toUpperCase();
@@ -71,8 +92,8 @@ export function getBlockText(el: Element): string {
   const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       for (let p = node.parentElement; p && p !== el; p = p.parentElement) {
-        if (p.classList.contains(TARGET_CLASS) || p.tagName === 'SCRIPT' || p.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
-        if (p.matches(BLOCKISH_SELECTOR) || SKIP_TAGS.has(p.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
+        if (p.classList.contains(TARGET_CLASS) || HIDDEN_TEXT_TAGS.has(p.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
+        if (p.matches(BLOCKISH_SELECTOR)) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
@@ -82,8 +103,11 @@ export function getBlockText(el: Element): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** 在區塊內插入 <font class="atx-target">:一般放最後面,有子區塊時放在第一個子區塊前;已存在就只更新文字 */
-export function insertTranslation(el: HTMLElement, text: string): void {
+/**
+ * 在區塊內插入 <font class="atx-target">:一般放最後面,有子區塊時放在第一個子區塊前;已存在就只更新文字。
+ * source 是送翻時的原文;插入時原文已經不同(翻譯途中被頁面改掉)就回 true,表示譯文已過期。
+ */
+export function insertTranslation(el: HTMLElement, text: string, source?: string): boolean {
   let target = el.querySelector<HTMLElement>(`:scope > font.${TARGET_CLASS}`);
   if (!target) {
     target = el.ownerDocument.createElement('font');
@@ -92,7 +116,9 @@ export function insertTranslation(el: HTMLElement, text: string): void {
     el.insertBefore(target, firstBlock ?? null);
   }
   target.textContent = text;
-  sourceText.set(el, getBlockText(el));
+  const current = getBlockText(el);
+  sourceText.set(el, source ?? current);
+  return source !== undefined && source !== current;
 }
 
 /** 移除 root 底下所有譯文與 data-atx-state 標記,還原頁面 */
@@ -117,10 +143,7 @@ export function watchNewBlocks(
       const at = r.target.nodeType === Node.ELEMENT_NODE ? (r.target as Element) : r.target.parentElement;
       const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"]') : null;
       if (done && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
-        done.querySelector(`:scope > font.${TARGET_CLASS}`)?.remove();
-        delete done.dataset.atxState;
-        sourceText.delete(done);
-        if (isCandidate(done, opts)) found.add(done);
+        if (resetForRetranslate(done) && isCandidate(done, opts)) found.add(done);
       }
       for (const node of Array.from(r.addedNodes)) {
         if (node.nodeType !== Node.ELEMENT_NODE || !node.isConnected) continue;

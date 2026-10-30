@@ -9,7 +9,7 @@ export type TranslateResponse =
   | { ok: true; translations: { id: number; text: string }[]; error?: string }
   | { ok: false; error: string };
 
-export type LimitsResponse = BatchLimits & { targetLang: string };
+export type LimitsResponse = BatchLimits & { targetLang: string; concurrency: number };
 
 export type PopupRequest = { type: 'listProviders' };
 

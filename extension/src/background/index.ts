@@ -26,20 +26,6 @@ const store: KeyValueStore = {
   },
 };
 
-/** 簡單的併發上限,避免同時開太多 CLI 或打爆本地模型 */
-let running = 0;
-const waiters: (() => void)[] = [];
-async function withSlot<T>(limit: number, fn: () => Promise<T>): Promise<T> {
-  while (running >= limit) await new Promise<void>((r) => waiters.push(r));
-  running++;
-  try {
-    return await fn();
-  } finally {
-    running--;
-    waiters.shift()?.();
-  }
-}
-
 async function translateViaBridge(s: Settings, segments: Segment[], context: PageContext): Promise<Map<number, string>> {
   const res = await callBridgeTool<{ translations: { id: number; text: string }[] }>(s.bridge.url, s.bridge.token, 'translate_batch', {
     provider: s.bridge.provider,
@@ -74,8 +60,9 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
     s.route === 'bridge'
       ? { provider: `bridge:${s.bridge.provider}`, model: s.bridge.model, targetLang: s.targetLang }
       : { provider: `direct:${s.direct.baseUrl}`, model: s.direct.model, targetLang: s.targetLang };
+  // 併發由 content 端控制(拿到名額才送訊息),這裡不排隊,事件時間只等於實際呼叫時間
   const translate = withCache(store, scope, (segs) =>
-    withSlot(s.concurrency, () => (s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context))),
+    s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context),
   );
   const toList = (m: Map<number, string>) => [...m].map(([id, text]) => ({ id, text }));
   try {
@@ -104,7 +91,7 @@ chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sende
     return true;
   }
   if (msg.type === 'getLimits') {
-    loadSettings().then((s) => sendResponse({ ...effectiveLimits(s), targetLang: s.targetLang } satisfies LimitsResponse), fail);
+    loadSettings().then((s) => sendResponse({ ...effectiveLimits(s), targetLang: s.targetLang, concurrency: s.concurrency } satisfies LimitsResponse), fail);
     return true;
   }
   if (msg.type === 'listProviders') {
