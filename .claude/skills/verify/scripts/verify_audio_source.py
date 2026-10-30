@@ -7,7 +7,8 @@
 4. 來源選 TTS → 開始 → 應出現與 TTS 句子相符的字幕;懸浮字幕有字。
 5. 執行中切到靜音播放器 → 12 秒內不得新增字幕(TTS 仍在唸);懸浮字幕 10 秒內收起。
 6. 切回 TTS → 應再出現相符字幕(正向對照,證明第 5 步不是因為 TTS 停了);懸浮字幕只顯示新句。
-7. 單段上限輸入框;「沒聲音幾秒後隱藏」設 0 → 靜音 8 秒仍顯示 → 改回 3 → 3 秒內收起。
+7. 單段上限輸入框;「沒聲音幾秒後隱藏」設 0 → 靜音 8 秒仍顯示 → 改回 3 → 3 秒內收起;
+   收起時解鎖拖曳看得到字幕、鎖定後回到收起;填 100 輸入框顯示 30。
 8. 停止、截圖、只關閉自己啟動的行程。證據寫到 evidence/<時間>/,run.log + exit_code.txt + 截圖 + result.json。
 
 用法(在專案根目錄):
@@ -362,6 +363,21 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
         run.result["phase5_hide3"] = seen3
         run.check("隱藏秒數改回 3 後 3 秒內收起", any(i == "1" for _, i in seen3), json.dumps(seen3))
         screenshot(run, "5-hide-3")
+
+        # 6) 收起時解鎖拖曳:字幕要看得到(對位置用);鎖定後回到收起
+        await js("window.__v.btn('解鎖以拖曳位置').click(), true")
+        drag = await wait_for(lambda: overlay_shown(-1), 5)
+        run.check("收起時解鎖拖曳,懸浮字幕看得到最後一句", bool(drag), json.dumps(drag or await overlay(), ensure_ascii=False)[:300])
+        screenshot(run, "6-drag")
+        await js("window.__v.btn('鎖定位置(恢復滑鼠穿透)').click(), true")
+        relock = await wait_for(lambda: opage.eval(f"({OVERLAY_STATE}).idle === '1'"), 5)
+        run.check("鎖定後懸浮字幕回到收起", bool(relock))
+
+        # 7) 秒數超出範圍:輸入框改顯示實際生效的值
+        await set_input(HIDE_LABEL, "100")
+        clamped = await wait_for(lambda: js(f"window.__v.input('{HIDE_LABEL}').value === '30' || null"), 5)
+        run.check("隱藏秒數填 100 後輸入框顯示 30", bool(clamped), await js(f"window.__v.input('{HIDE_LABEL}').value"))
+        await set_input(HIDE_LABEL, "3")
 
         await js("window.__v.btn('停止').click(), true")
         stopped = await wait_for(lambda: js("!!window.__v.btn('開始')"), 60)
