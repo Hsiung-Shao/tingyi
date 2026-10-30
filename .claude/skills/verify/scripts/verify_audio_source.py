@@ -272,7 +272,12 @@ async def drive(run: Run, tts_pid: int, silent_pid: int) -> bool:
 
         async def choose(value: str, pid: int, label: str) -> bool:
             await js(f"window.__v.choose('{value}')")
-            st = await wait_for(lambda: js(f"window.__v.state().then(s => s.source.kind === 'app' && s.source.pid === {pid} ? s : null)"), 5)
+
+            # 後端切好後,主視窗要再讀一次狀態才會更新下拉;兩者都到位才算(只等後端會差幾毫秒讀到舊值)
+            async def switched():
+                s = await js(f"window.__v.state().then(s => s.source.kind === 'app' && s.source.pid === {pid} ? s : null)")
+                return s if s and await js("window.__v.select().value") == value else None
+            st = await wait_for(switched, 5)
             shown = await js("window.__v.select().value")
             return run.check(f"來源切到{label}", bool(st) and shown == value, f"{json.dumps(st, ensure_ascii=False)};下拉顯示 {shown}")
 
