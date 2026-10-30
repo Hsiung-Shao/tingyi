@@ -12,6 +12,7 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): Provider {
   return {
     id: opts.id ?? 'openai-compatible',
     label: opts.label ?? `OpenAI 相容端點(${opts.baseUrl})`,
+    format,
     limits: format === 'single' ? { maxSegments: 1, maxChars: 4000 } : { maxSegments: 8, maxChars: 2500 },
     async detect() {
       try {
@@ -26,7 +27,7 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): Provider {
     },
     async translate(req: TranslateRequest) {
       const prompt = buildPrompt(req.segments, req.targetLang, format, req.context);
-      return callOpenAICompatible({ ...opts, model: req.model ?? opts.model }, prompt);
+      return callOpenAICompatible({ ...opts, model: req.model ?? opts.model, signal: req.signal }, prompt);
     },
   };
 }

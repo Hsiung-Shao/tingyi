@@ -1,4 +1,4 @@
-import type { ParseResult } from './types.ts';
+import type { BatchFormat, ParseResult } from './types.ts';
 
 const PREFIX =
   /^(?:以下是翻譯|以下為翻譯|以下是譯文|翻譯如下|譯文如下|以下是翻译|以下是译文|翻译如下|译文如下|譯文|翻譯|译文|翻译|translation|translated text|here is the translation)\s*[:：]\s*/i;
@@ -34,8 +34,9 @@ function extractJson(raw: string): unknown {
 /**
  * 解析後端輸出。先試 JSON `{"translations":[{id,text}]}`(可被 ```json 包住或前後有雜訊),
  * 失敗再用 `%%` 分隔、段數等於 expectedIds 時依位置對應。只收 expectedIds 內的 id。
+ * format 為 json 時不退回分隔解析:只送一段時,任何輸出都會被切成「一段」而誤當譯文。
  */
-export function parseTranslations(raw: string, expectedIds: number[]): ParseResult {
+export function parseTranslations(raw: string, expectedIds: number[], opts: { format?: BatchFormat } = {}): ParseResult {
   const expected = new Set(expectedIds);
   const translations = new Map<number, string>();
 
@@ -47,7 +48,7 @@ export function parseTranslations(raw: string, expectedIds: number[]): ParseResu
         translations.set(id, cleanText(item.text));
       }
     }
-  } else {
+  } else if (opts.format !== 'json') {
     const parts = raw.split(/\n?[ \t]*%%[ \t]*\n?/).map(cleanText);
     if (parts.length === expectedIds.length && parts.every((p) => p.length > 0)) {
       expectedIds.forEach((id, i) => translations.set(id, parts[i]!));

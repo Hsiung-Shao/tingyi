@@ -120,7 +120,8 @@ export function buildCliInvocation(kind: CliKind, opts: CliBuildOptions): CliInv
   writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify({ tools: { exclude: GEMINI_EXCLUDED_TOOLS } }));
   return {
     command: 'gemini',
-    args: ['-o', 'json', '-e', 'none', '--approval-mode', 'default', ...model],
+    // -e none 只關 extensions;只允許一個不存在的 MCP 名稱,等於擋掉使用者全域設定的 MCP server
+    args: ['-o', 'json', '-e', 'none', '--allowed-mcp-server-names', 'atx-none', '--approval-mode', 'default', ...model],
     stdin: `${opts.systemPrompt}\n\nINPUT:\n${opts.payload}`,
   };
 }

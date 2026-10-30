@@ -44,7 +44,7 @@ function rejectStatus(req: IncomingMessage, opts: BridgeOptions): number | null 
 
 const segmentSchema = z.object({ id: z.number().int(), text: z.string() });
 
-function buildMcpServer(providers: Provider[]): McpServer {
+function buildMcpServer(providers: Provider[], signal: AbortSignal): McpServer {
   const server = new McpServer({ name: 'agent-translator-bridge', version: '0.1.0' });
 
   server.registerTool(
@@ -92,7 +92,13 @@ function buildMcpServer(providers: Provider[]): McpServer {
       const started = Date.now();
       const result = new Map<number, string>();
       for (const batch of splitBatches(segments, provider.limits)) {
-        const got = await translateWithRetry(batch, (segs) => provider.translate({ segments: segs, targetLang, model, context }));
+        if (signal.aborted) break;
+        const got = await translateWithRetry(
+          batch,
+          (segs) => provider.translate({ segments: segs, targetLang, model, context, signal }),
+          1,
+          provider.format ?? 'json',
+        );
         for (const [id, text] of got) result.set(id, text);
       }
       const structuredContent = {
@@ -137,9 +143,12 @@ export async function createBridgeServer(opts: BridgeOptions): Promise<BridgeHan
 
       // stateless:每個請求一組 server + transport,不保留 session
       const body = await readBody(req);
-      const server = buildMcpServer(opts.providers);
+      // 客戶端斷線或放棄時,中止還在跑的 CLI,避免重送時兩組並跑
+      const abort = new AbortController();
+      const server = buildMcpServer(opts.providers, abort.signal);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on('close', () => {
+        if (!res.writableFinished) abort.abort();
         void transport.close();
         void server.close();
       });

@@ -1,11 +1,12 @@
 import { parseTranslations } from './parse.ts';
-import type { BatchCaller, Segment } from './types.ts';
+import type { BatchCaller, BatchFormat, Segment } from './types.ts';
 
 /** 呼叫一次;缺的 id 只重送缺的那些段,最多重試 retries 次。回傳拿得到的譯文 */
 export async function translateWithRetry(
   segments: Segment[],
   call: BatchCaller,
   retries = 1,
+  format?: BatchFormat,
 ): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   let todo = segments;
@@ -14,6 +15,7 @@ export async function translateWithRetry(
     const { translations, missing } = parseTranslations(
       raw,
       todo.map((s) => s.id),
+      { format },
     );
     for (const [id, text] of translations) result.set(id, text);
     const left = new Set(missing);

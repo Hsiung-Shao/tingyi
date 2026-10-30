@@ -60,6 +60,19 @@ describe('parseTranslations', () => {
   });
 });
 
+describe('parseTranslations json 格式', () => {
+  it('json 格式只送一段時非預期的 JSON 輸出不被當成譯文', () => {
+    const r = parseTranslations('{"translation":"你好"}', [5], { format: 'json' });
+    expect(r.translations.size).toBe(0);
+    expect(r.missing).toEqual([5]);
+  });
+
+  it('single 格式只送一段時純文字輸出即為譯文', () => {
+    const r = parseTranslations('你好世界', [5], { format: 'single' });
+    expect(r.translations.get(5)).toBe('你好世界');
+  });
+});
+
 describe('cleanText', () => {
   it('T8 清掉「以下是翻譯:」前綴', () => {
     expect(cleanText('以下是翻譯:你好世界')).toBe('你好世界');

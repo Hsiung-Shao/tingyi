@@ -44,6 +44,18 @@ describe('buildCliInvocation', () => {
     expect(after(args, '-e')).toBe('none');
   });
 
+  it('gemini 只允許一個不存在的 MCP server 名稱,擋掉使用者全域 MCP', () => {
+    const { args } = build('gemini');
+    const name = after(args, '--allowed-mcp-server-names');
+    expect(name).toBeDefined();
+    expect(name!.startsWith('-')).toBe(false);
+  });
+
+  it('claude 的 system prompt 參數不含頁面標題這類不可信內容的空間(只放固定指示)', () => {
+    const inv = buildCliInvocation('claude', { systemPrompt: 'FIXED', payload: PAYLOAD, workDir });
+    expect(after(inv.args, '--system-prompt')).toBe('FIXED');
+  });
+
   for (const kind of ['claude', 'codex', 'gemini'] as const) {
     it(`T14 ${kind} 的原文只走 stdin 不出現在任何參數`, () => {
       const inv = build(kind);

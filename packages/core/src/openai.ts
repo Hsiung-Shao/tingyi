@@ -10,6 +10,7 @@ export interface OpenAICompatibleConfig {
   /** 合併進 request body,例 {keep_alive:'5m'} */
   extraBody?: Record<string, unknown>;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 /** POST {baseUrl}/chat/completions,回傳 choices[0].message.content;非 2xx 時 throw 含狀態碼的 Error */
@@ -37,7 +38,7 @@ export async function callOpenAICompatible(
       ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(cfg.timeoutMs ?? 120_000),
+    signal: AbortSignal.any([AbortSignal.timeout(cfg.timeoutMs ?? 120_000), ...(cfg.signal ? [cfg.signal] : [])]),
   });
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);

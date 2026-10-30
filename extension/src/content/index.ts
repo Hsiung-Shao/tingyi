@@ -72,7 +72,13 @@ async function send(batch: Segment[], owners: Map<number, HTMLElement>, gen: num
 
 async function enable(): Promise<void> {
   enabled = state.enabled = true;
-  limits = (await chrome.runtime.sendMessage({ type: 'getLimits' })) as LimitsResponse;
+  const gen = ++generation;
+  const got = (await chrome.runtime.sendMessage({ type: 'getLimits' })) as LimitsResponse;
+  // 等設定的期間被關掉(或關了又開)就不再建立觀察
+  if (!enabled || gen !== generation) return;
+  limits = got;
+  io?.disconnect();
+  stopWatch?.();
   const opts: CollectOptions = { targetLang: limits.targetLang, minChars: 2 };
   io = new IntersectionObserver(
     (entries) => {

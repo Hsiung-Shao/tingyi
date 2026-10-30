@@ -84,6 +84,7 @@ export function createCliProvider(opts: CliProviderOptions): Provider {
           cwd: workDir,
           env: sanitizedEnv(),
           timeoutMs,
+          signal: req.signal,
         });
         const fileText = inv.outputFile ? await readFile(inv.outputFile, 'utf8').catch(() => undefined) : undefined;
         const out = extractCliOutput(kind, r.stdout, fileText);

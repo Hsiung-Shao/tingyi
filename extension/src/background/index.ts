@@ -59,8 +59,11 @@ async function translateDirect(s: Settings, segments: Segment[], context: PageCo
     jsonMode: s.direct.format === 'json' && s.direct.jsonMode,
     extraBody,
   };
-  return translateWithRetry(segments, (segs) =>
-    callOpenAICompatible(cfg, buildPrompt(segs, s.targetLang, s.direct.format, context)),
+  return translateWithRetry(
+    segments,
+    (segs) => callOpenAICompatible(cfg, buildPrompt(segs, s.targetLang, s.direct.format, context)),
+    1,
+    s.direct.format,
   );
 }
 

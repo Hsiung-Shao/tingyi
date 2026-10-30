@@ -20,6 +20,26 @@ async function waitUntilGone(pid: number, withinMs: number): Promise<boolean> {
   return !isAlive(pid);
 }
 
+describe('runProcess 中止', () => {
+  it('呼叫端中止時回錯誤且子程序已消失', async () => {
+    let pid: number | undefined;
+    const ctrl = new AbortController();
+    const run = runProcess({
+      command: process.execPath,
+      args: ['-e', 'setInterval(()=>{},1000)'],
+      stdin: '',
+      cwd: tmpdir(),
+      timeoutMs: 30_000,
+      signal: ctrl.signal,
+      onSpawn: (p) => (pid = p),
+    });
+    setTimeout(() => ctrl.abort(), 300);
+    await expect(run).rejects.toThrow(/abort/i);
+    expect(pid).toBeDefined();
+    expect(await waitUntilGone(pid!, 2000)).toBe(true);
+  });
+});
+
 describe('runProcess', () => {
   it('T15 假 CLI 一直不結束時回逾時錯誤且行程已消失', async () => {
     let pid: number | undefined;
