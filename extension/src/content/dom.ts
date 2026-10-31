@@ -129,6 +129,22 @@ function fillTarget(el: Element, target: HTMLElement, text: string): void {
   }
 }
 
+/** 影片字幕的一段(YouTube):字級、顏色、底色寫在這個 span 上,字幕框本身只有播放器的小字 */
+const CAPTION_SEGMENT_SELECTOR = '.ytp-caption-segment';
+const CAPTION_CLASS = 'atx-caption';
+
+/** 字幕的譯文照抄字幕那段的字級、字型、顏色與底色 */
+function matchCaptionStyle(el: Element, target: HTMLElement): void {
+  const seg = el.querySelector(CAPTION_SEGMENT_SELECTOR);
+  if (!seg) return;
+  const s = getComputedStyle(seg);
+  target.classList.add(CAPTION_CLASS);
+  target.style.fontSize = s.fontSize;
+  target.style.fontFamily = s.fontFamily;
+  target.style.color = s.color;
+  target.style.backgroundColor = s.backgroundColor;
+}
+
 /** 譯文放回雙語位置:有子區塊時放在第一個子區塊前,否則放最後 */
 function placeDual(el: Element, target: HTMLElement): void {
   const firstBlock = Array.from(el.children).find((c) => c !== target && c.matches(BLOCKISH_SELECTOR));
@@ -315,6 +331,7 @@ export function insertTranslation(el: HTMLElement, text: string, source?: string
     target.className = TARGET_CLASS;
     // 選單項目、按鈕這類短標籤:譯文接在同一行,不另起一行撐開版面
     if (!/^H[1-6]$/.test(el.tagName.toUpperCase()) && current.length <= INLINE_MAX_CHARS) target.classList.add(INLINE_CLASS);
+    matchCaptionStyle(el, target);
     placeDual(el, target);
     targets.set(el, target);
   }

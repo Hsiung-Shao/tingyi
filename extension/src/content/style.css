@@ -15,6 +15,21 @@ font.atx-target.atx-inline {
   margin-left: 0.4em;
 }
 
+/* 影片字幕:字級、顏色、底色由 dom.ts 照抄字幕那段;譯文自成一行字幕,不淡化 */
+font.atx-target.atx-caption {
+  display: inline-block;
+  margin: 0;
+  opacity: 1;
+  white-space: pre-wrap;
+}
+/* YouTube 依原文量出字幕框寬度,同字級的中文較寬會被擠成兩行:有譯文時改依內容寬度,仍置中 */
+.caption-window.ytp-caption-window-bottom:has(> font.atx-caption) {
+  width: max-content !important;
+  max-width: 96%;
+  margin-left: 0 !important;
+  transform: translateX(-50%);
+}
+
 [data-atx-state='pending'] {
   background-image: linear-gradient(90deg, transparent, rgba(120, 140, 255, 0.12), transparent);
   background-size: 200% 100%;
