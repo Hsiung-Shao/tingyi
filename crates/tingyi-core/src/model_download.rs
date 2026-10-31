@@ -37,6 +37,12 @@ pub struct ModelSpec {
     pub license: &'static str,
     pub license_url: &'static str,
     pub files: &'static [FileSpec],
+    /// 不在 Hugging Face 的套件(例如 GitHub Releases):檔案網址為 `{url_base}/{name}`。
+    pub url_base: Option<&'static str>,
+    /// 安裝後把 .zip 解壓到套件目錄。
+    pub unzip: bool,
+    /// 就緒還要有這個檔(例如解壓出來的 `llama-server.exe`)。
+    pub ready_marker: Option<&'static str>,
 }
 
 impl ModelSpec {
@@ -45,9 +51,35 @@ impl ModelSpec {
     }
 
     /// `{base}/{repo}/resolve/{commit}/{name}`;每次都從這個原始網址開始(HF 會 307 到會過期的 CDN 網址)。
+    /// 有 `url_base` 的套件(GitHub Releases)固定用 `{url_base}/{name}`。
     pub fn url(&self, base: &str, file: &FileSpec) -> String {
-        format!("{}/{}/resolve/{}/{}", base.trim_end_matches('/'), self.repo, self.commit, file.name)
+        match self.url_base {
+            Some(u) => format!("{}/{}", u.trim_end_matches('/'), file.name),
+            None => format!("{}/{}/resolve/{}/{}", base.trim_end_matches('/'), self.repo, self.commit, file.name),
+        }
     }
+}
+
+/// 把 zip 解壓到 dest(zip 內的子目錄照原樣建立,拒絕跳出 dest 的路徑;移植自 agent-translator)。
+pub fn extract_zip(zip_path: &Path, dest: &Path) -> io::Result<()> {
+    let mut archive = zip::ZipArchive::new(File::open(zip_path)?).map_err(io::Error::other)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(io::Error::other)?;
+        // enclosed_name 拒絕絕對路徑與 `..`(zip slip)
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("zip 內有不安全的路徑:{}", entry.name())));
+        };
+        let out = dest.join(rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&out)?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        io::copy(&mut entry, &mut File::create(&out)?)?;
+    }
+    Ok(())
 }
 
 pub const DEFAULT_BASE_URL: &str = "https://huggingface.co";
@@ -84,6 +116,9 @@ pub const REAZONSPEECH: ModelSpec = ModelSpec {
             sha256: "2c3ac659818a48a0c04010e0593bbc4d7c8a24a054340b01131499c05fd52def",
         },
     ],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
 };
 
 /// 英文 Parakeet TDT 0.6B v2 int8(與 sherpa-onnx 壓縮包內檔案 SHA256 相同)。
@@ -118,12 +153,59 @@ pub const PARAKEET: ModelSpec = ModelSpec {
             sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
         },
     ],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
 };
 
 pub const MODELS: &[ModelSpec] = &[REAZONSPEECH, PARAKEET];
 
+/// llama.cpp b11405 預編譯 Vulkan 版(NVIDIA/AMD/Intel 都能用),安裝到 `bin/llama`;與 `scripts/download-models.ps1` 相同。
+pub const LLAMA_CPP: ModelSpec = ModelSpec {
+    id: "llama-cpp",
+    lang: Lang::Unknown,
+    label: "llama.cpp b11405(Vulkan)",
+    dir_name: "llama",
+    repo: "ggml-org/llama.cpp",
+    commit: "b11405",
+    license: "MIT(ggml-org/llama.cpp)",
+    license_url: "https://github.com/ggml-org/llama.cpp",
+    files: &[FileSpec {
+        name: "llama-b11405-bin-win-vulkan-x64.zip",
+        size: 33_308_372,
+        sha256: "0f3764246cc4c365153dc33a24448921526d91bba5ee3195308fa692d2031884",
+    }],
+    url_base: Some("https://github.com/ggml-org/llama.cpp/releases/download/b11405"),
+    unzip: true,
+    ready_marker: Some("llama-server.exe"),
+};
+
+/// Hy-MT2 1.8B Q8_0 翻譯模型,安裝到 `models/hy-mt2-1.8b`;與 `scripts/download-models.ps1` 相同。
+pub const HY_MT2_1_8B: ModelSpec = ModelSpec {
+    id: "hy-mt2-1.8b",
+    lang: Lang::Unknown,
+    label: "Hy-MT2 1.8B 翻譯模型",
+    dir_name: "hy-mt2-1.8b",
+    repo: "tencent/Hy-MT2-1.8B-GGUF",
+    commit: "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+    license: "Apache-2.0(tencent/Hy-MT2)",
+    license_url: "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF",
+    files: &[FileSpec {
+        name: "Hy-MT2-1.8B-Q8_0.gguf",
+        size: 1_908_528_192,
+        sha256: "5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4",
+    }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// 翻譯用的套件:llama.cpp 裝在 `bin_dir()`,翻譯模型裝在 `models_dir()`。
+pub const TRANSLATE_PACKAGES: &[ModelSpec] = &[LLAMA_CPP, HY_MT2_1_8B];
+
+/// 依 id 找專用辨識模型或翻譯套件。
 pub fn spec(id: &str) -> Option<&'static ModelSpec> {
-    MODELS.iter().find(|m| m.id == id)
+    MODELS.iter().chain(TRANSLATE_PACKAGES).find(|m| m.id == id)
 }
 
 pub fn spec_for_dir(dir_name: &str) -> Option<&'static ModelSpec> {
@@ -160,12 +242,17 @@ pub fn model_status(spec: &ModelSpec, models_dir: &Path) -> ModelStatus {
     if !dir.is_dir() {
         return ModelStatus::Absent;
     }
-    let missing: Vec<String> = spec
+    let mut missing: Vec<String> = spec
         .files
         .iter()
         .filter(|f| file_len(&dir.join(f.name)) != Some(f.size))
         .map(|f| f.name.to_string())
         .collect();
+    if let Some(marker) = spec.ready_marker {
+        if !dir.join(marker).is_file() {
+            missing.push(marker.to_string());
+        }
+    }
     if missing.is_empty() {
         ModelStatus::Ready
     } else {
@@ -699,19 +786,33 @@ fn fetch_part(
 /// 把通過校驗的檔案放進正式目錄:目錄不存在就整個改名過去,否則逐檔移入(不刪使用者的檔案)。
 fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), DownloadError> {
     let final_dir = models_dir.join(spec.dir_name);
-    if !final_dir.exists() && retry_rename(staging, &final_dir, RENAME_MAX_WAIT).is_ok() {
-        return Ok(());
+    if final_dir.exists() || retry_rename(staging, &final_dir, RENAME_MAX_WAIT).is_err() {
+        fs::create_dir_all(&final_dir).map_err(io_err)?;
+        for f in spec.files {
+            let src = staging.join(f.name);
+            if src.exists() {
+                // Windows 的 rename 會取代既有檔案
+                retry_rename(&src, &final_dir.join(f.name), RENAME_MAX_WAIT).map_err(io_err)?;
+            }
+        }
+        let _ = fs::remove_dir_all(staging);
     }
-    fs::create_dir_all(&final_dir).map_err(io_err)?;
-    for f in spec.files {
-        let src = staging.join(f.name);
-        if src.exists() {
-            // Windows 的 rename 會取代既有檔案
-            retry_rename(&src, &final_dir.join(f.name), RENAME_MAX_WAIT).map_err(io_err)?;
+    // 壓縮檔留在目錄裡(就緒判斷要看它的大小),內容解到同一個目錄
+    if spec.unzip {
+        for f in spec.files.iter().filter(|f| f.name.ends_with(".zip")) {
+            extract_zip(&final_dir.join(f.name), &final_dir).map_err(io_err)?;
         }
     }
-    let _ = fs::remove_dir_all(staging);
     Ok(())
+}
+
+/// 套件要裝在哪個上層目錄:llama.cpp 在 `bin_dir()`,模型在 `models_dir()`。
+pub fn install_parent(spec: &ModelSpec) -> PathBuf {
+    if spec.id == LLAMA_CPP.id {
+        crate::paths::bin_dir()
+    } else {
+        crate::paths::models_dir()
+    }
 }
 
 /// 下載整個模型到 `models_dir/<dir_name>`;同步執行。
@@ -852,6 +953,9 @@ mod tests {
             license: "l",
             license_url: "u",
             files,
+            url_base: None,
+            unzip: false,
+            ready_marker: None,
         }));
         Fx { spec, big, small }
     }
@@ -1668,5 +1772,131 @@ mod tests {
         assert_eq!(r, Err(DownloadError::Cancelled), "實得 {r:?}");
         assert_eq!(srv.requests_for(BIG_PATH).len(), 1, "取消後不應重送請求");
         assert!(elapsed < Duration::from_secs(1), "應 1 秒內回傳,實得 {elapsed:?}");
+    }
+
+    // ---------- 翻譯套件(llama.cpp zip、Hy-MT2 gguf) ----------
+
+    /// 從 scripts/download-models.ps1 取出 (Name, Url, Sha256);`$llamaBuild` 先代入。
+    fn ps1_items() -> Vec<(String, String, String)> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/download-models.ps1");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("讀不到 {}: {e}", path.display()));
+        let build = regex::Regex::new(r"\$llamaBuild\s*=\s*'([^']+)'")
+            .unwrap()
+            .captures(&text)
+            .map(|c| c[1].to_string())
+            .expect("ps1 找不到 $llamaBuild");
+        let re = regex::Regex::new(r#"(?s)Name = ["']([^"']+)["'];.*?Url = ["']([^"']+)["'];.*?Sha256 = '([0-9a-f]{64})'"#).unwrap();
+        re.captures_iter(&text)
+            .map(|c| {
+                (
+                    c[1].replace("$llamaBuild", &build),
+                    c[2].replace("$llamaBuild", &build),
+                    c[3].to_string(),
+                )
+            })
+            .collect()
+    }
+
+    // T15:LLAMA_CPP、HY_MT2_1_8B 的檔名、網址、SHA256 與下載腳本一致
+    #[test]
+    fn t15_translate_packages_match_download_script() {
+        let items = ps1_items();
+        assert!(!items.is_empty(), "ps1 沒解析出任何項目");
+        for spec in [&LLAMA_CPP, &HY_MT2_1_8B] {
+            let f = &spec.files[0];
+            let (_, url, sha) = items
+                .iter()
+                .find(|(n, _, _)| n == f.name)
+                .unwrap_or_else(|| panic!("ps1 找不到 {}", f.name));
+            assert_eq!(&spec.url(DEFAULT_BASE_URL, f), url, "{} 網址與 ps1 不同", spec.id);
+            assert_eq!(f.sha256, sha, "{} SHA256 與 ps1 不同", spec.id);
+        }
+        assert!(TRANSLATE_PACKAGES.iter().any(|s| s.id == LLAMA_CPP.id));
+        assert!(TRANSLATE_PACKAGES.iter().any(|s| s.id == HY_MT2_1_8B.id));
+    }
+
+    // T15b:有 url_base 時網址不理會 base;沒有時維持 HF 格式
+    #[test]
+    fn t15b_url_uses_url_base_when_present() {
+        let f = &LLAMA_CPP.files[0];
+        let u = LLAMA_CPP.url("http://ignored.example", f);
+        assert!(!u.contains("ignored.example"), "url_base 應蓋過 base,實際 {u}");
+        assert_eq!(u, format!("https://github.com/ggml-org/llama.cpp/releases/download/b11405/{}", f.name));
+
+        let g = &HY_MT2_1_8B.files[0];
+        assert_eq!(
+            HY_MT2_1_8B.url("http://mirror.example/", g),
+            format!("http://mirror.example/{}/resolve/{}/{}", HY_MT2_1_8B.repo, HY_MT2_1_8B.commit, g.name)
+        );
+    }
+
+    fn make_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, body) in entries {
+            zw.start_file(*name, opts).unwrap();
+            zw.write_all(body).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+
+    const PKG_SPEC: ModelSpec = ModelSpec {
+        id: "pkg-test",
+        lang: Lang::Unknown,
+        label: "test",
+        dir_name: "pkg",
+        repo: "x/y",
+        commit: "c",
+        license: "MIT",
+        license_url: "http://x",
+        files: &[FileSpec { name: "a.bin", size: 3, sha256: "" }],
+        url_base: None,
+        unzip: false,
+        ready_marker: Some("llama-server.exe"),
+    };
+
+    // T16:zip 解到 dest 並保留子資料夾
+    #[test]
+    fn t16_extract_zip_extracts_files_and_subdirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zp = tmp.path().join("p.zip");
+        make_zip(&zp, &[("llama-server.exe", b"exe"), ("sub/dir/a.dll", b"dll")]);
+        let dest = tmp.path().join("out");
+        extract_zip(&zp, &dest).expect("解壓應成功");
+        let (exe, dll) = (dest.join("llama-server.exe"), dest.join("sub").join("dir").join("a.dll"));
+        assert!(exe.is_file(), "應解出 llama-server.exe");
+        assert!(dll.is_file(), "應解出子資料夾內的 a.dll");
+        assert_eq!(std::fs::read(&exe).unwrap_or_default(), b"exe");
+        assert_eq!(std::fs::read(&dll).unwrap_or_default(), b"dll");
+    }
+
+    // T16:zip 內含 ../ 跳出 dest 的路徑 → Err,dest 外不出現檔案
+    #[test]
+    fn t16_extract_zip_rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zp = tmp.path().join("evil.zip");
+        make_zip(&zp, &[("../evil.txt", b"x")]);
+        let dest = tmp.path().join("out");
+        let r = extract_zip(&zp, &dest);
+        assert!(r.is_err(), "含 ../ 的 zip 應回 Err,實際 {r:?}");
+        assert!(!tmp.path().join("evil.txt").exists(), "dest 外不該出現檔案");
+    }
+
+    // T16:files 大小正確但缺 marker → Partial 並列出 marker;補上 marker → Ready
+    #[test]
+    fn t16_status_requires_ready_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pkg");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), b"abc").unwrap();
+        match model_status(&PKG_SPEC, tmp.path()) {
+            ModelStatus::Partial { missing } => {
+                assert!(missing.iter().any(|m| m == "llama-server.exe"), "missing 應含 marker,實際 {missing:?}")
+            }
+            other => panic!("缺 marker 應為 Partial,實際 {other:?}"),
+        }
+        std::fs::write(dir.join("llama-server.exe"), b"exe").unwrap();
+        assert_eq!(model_status(&PKG_SPEC, tmp.path()), ModelStatus::Ready);
     }
 }

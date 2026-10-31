@@ -8,7 +8,7 @@
 //! 注意:在 MSIX 封裝的程式(例如 Claude 桌面版)內寫 `%LOCALAPPDATA%` 會被重導到
 //! `Packages\<app>\LocalCache\Local`,外部程式看不到;開發期因此改用專案內 `data/`。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 編譯期固定的 workspace 根目錄(`crates/tingyi-core` 的上兩層)。
 fn workspace_root() -> PathBuf {
@@ -77,7 +77,26 @@ pub fn silero_vad_model() -> PathBuf {
 
 /// 翻譯模型 GGUF;`name` 例如 `Hy-MT2-1.8B-Q8_0`。
 pub fn gguf_model(name: &str) -> PathBuf {
-    models_dir().join(format!("{name}.gguf"))
+    find_gguf(&models_dir(), name)
+}
+
+/// `models/<name>.gguf`;沒有就找 app 內下載放的一層子資料夾(例如 `models/hy-mt2-1.8b/<name>.gguf`)。
+/// 都沒有時回根目錄那個路徑(呼叫端據此報「找不到模型」)。
+pub fn find_gguf(models: &Path, name: &str) -> PathBuf {
+    let file = format!("{name}.gguf");
+    let root = models.join(&file);
+    if root.is_file() {
+        return root;
+    }
+    // `.download` 是下載暫存區,裡面的不算
+    std::fs::read_dir(models)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.path().is_dir())
+        .map(|e| e.path().join(&file))
+        .find(|p| p.is_file())
+        .unwrap_or(root)
 }
 
 /// 已知的翻譯模型選項(名稱、推估顯示記憶體)。
@@ -124,5 +143,32 @@ mod tests {
         assert_eq!(data_dir(), PathBuf::from("X:/somewhere"));
         assert_eq!(gguf_model("a"), PathBuf::from("X:/somewhere/models/a.gguf"));
         std::env::remove_var("TINGYI_DATA_DIR");
+    }
+
+    fn touch(p: &Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    }
+
+    // T16b:根目錄優先;只有子資料夾時回子資料夾路徑
+    #[test]
+    fn find_gguf_prefers_root_then_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = tmp.path();
+        touch(&m.join("hy-mt2-1.8b").join("M.gguf"));
+        assert_eq!(find_gguf(m, "M"), m.join("hy-mt2-1.8b").join("M.gguf"));
+        touch(&m.join("M.gguf"));
+        assert_eq!(find_gguf(m, "M"), m.join("M.gguf"));
+    }
+
+    // T16b:以 . 開頭的資料夾(下載暫存)不算;都沒有回根目錄路徑
+    #[test]
+    fn find_gguf_skips_dot_dirs_and_falls_back_to_root_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = tmp.path();
+        touch(&m.join(".download").join("hy").join("M.gguf"));
+        touch(&m.join(".download").join("M.gguf"));
+        assert_eq!(find_gguf(m, "M"), m.join("M.gguf"));
+        assert_eq!(find_gguf(m, "Nope"), m.join("Nope.gguf"));
     }
 }

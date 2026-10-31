@@ -32,6 +32,8 @@ pub struct AppState {
     pub downloads: Arc<DownloadRegistry>,
     pub pipeline: Mutex<Option<PipelineHandle>>,
     pub forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 瀏覽器擴充(網頁翻譯)的連線狀態。
+    pub web: crate::web::WebLink,
 }
 
 /// 鎖住共用翻譯伺服器;第一次用到時決定 port 與 api key,整個程式執行期間不變。

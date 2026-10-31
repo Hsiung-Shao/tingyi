@@ -65,6 +65,11 @@ fn recommend_model(total_mib: Option<u32>) -> String {
     }
 }
 
+/// 這台機器的預設翻譯模型;網頁翻譯在共用伺服器沒在跑時用它。
+pub(crate) fn default_mt_model() -> String {
+    recommend_model(gpu::nvidia_info().map(|g| g.1))
+}
+
 #[derive(Serialize)]
 pub struct ModelInfo {
     pub name: String,
@@ -475,12 +480,24 @@ pub struct RoutedModelState {
 /// 專用模型的就緒與下載狀態;只讀檔案大小,不呼叫 nvidia-smi(前端掛載與重載時查一次)。
 #[tauri::command]
 pub async fn routed_models_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
-    let registry = state.downloads.clone();
+    packages_status(state.downloads.clone(), md::MODELS).await
+}
+
+/// 翻譯用套件(llama.cpp、Hy-MT2 1.8B)的就緒與下載狀態;安裝版靠它在 app 內下載。
+#[tauri::command]
+pub async fn translate_packages_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
+    packages_status(state.downloads.clone(), md::TRANSLATE_PACKAGES).await
+}
+
+async fn packages_status(
+    registry: Arc<md::DownloadRegistry>,
+    specs: &'static [md::ModelSpec],
+) -> Result<Vec<RoutedModelState>, String> {
     tokio::task::spawn_blocking(move || {
-        let dir = paths::models_dir();
-        md::MODELS
+        specs
             .iter()
             .map(|m| {
+                let dir = md::install_parent(m);
                 let total = m.total_size();
                 let snapshot = registry.snapshot(m.id);
                 RoutedModelState {
@@ -507,7 +524,8 @@ pub async fn routed_models_status(state: State<'_, AppState>) -> Result<Vec<Rout
 pub async fn download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let spec = md::spec(&id).ok_or_else(|| format!("未知的模型:{id}"))?;
     let guard = state.downloads.try_begin(spec.id).ok_or("此模型已在下載中")?;
-    let models_dir = paths::models_dir();
+    // llama.cpp 裝在 bin/,其餘裝在 models/
+    let models_dir = md::install_parent(spec);
     let dir2 = models_dir.clone();
     tokio::task::spawn_blocking(move || md::check_disk_space(spec, &dir2))
         .await

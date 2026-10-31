@@ -16,7 +16,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tingyi-core = { path = "../crates/tingyi-core" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 anyhow.workspace = true
@@ -26,3 +27,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tauri-plugin-dialog = "2"
+winreg = "0.55"
+
+[dev-dependencies]
+tempfile = "3"

@@ -293,6 +293,7 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <RoutedModels group="translate" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
           </section>
 
           <section className="flex flex-col gap-2">

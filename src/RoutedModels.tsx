@@ -6,33 +6,54 @@ import type { ModelDownloadProgress, RoutedModelState } from "./lib/types";
 
 const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
-/** 專用模型(日文 ReazonSpeech / 英文 Parakeet)的下載卡:狀態、下載、進度、取消、繼續。
+/** 各組下載卡的狀態指令、標題與「改用腳本下載」的提示。 */
+const GROUPS = {
+  routed: {
+    command: "routed_models_status",
+    title: "專用模型(CPU,選「專用模型」引擎時使用)",
+    scriptFlag: (id: string) => (id === "reazonspeech" ? " -WithReazonSpeech" : " -WithParakeet"),
+  },
+  translate: {
+    command: "translate_packages_status",
+    title: "翻譯模型(本機翻譯與瀏覽器網頁翻譯共用)",
+    scriptFlag: () => "",
+  },
+} as const;
+
+/** 可下載模型的下載卡(專用辨識模型,或翻譯用的 llama.cpp 與 Hy-MT2):狀態、下載、進度、取消、繼續。
  *  進度只放在這個元件內,避免每則事件讓整個主視窗重繪。 */
 export default function RoutedModels({
+  group = "routed",
   running,
   dataDir,
   onChanged,
 }: {
+  group?: keyof typeof GROUPS;
   running: boolean;
   dataDir?: string;
   onChanged: () => void;
 }) {
+  const g = GROUPS[group];
   const [models, setModels] = useState<RoutedModelState[]>([]);
   const [progress, setProgress] = useState<Record<string, ModelDownloadProgress>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [finishedWhileRunning, setFinishedWhileRunning] = useState(false);
-  // 事件監聽只訂閱一次,用 ref 讀目前是否執行中
+  // 事件監聽只訂閱一次,用 ref 讀目前是否執行中與這組有哪些模型
   const runningRef = useRef(running);
+  const modelIds = useRef(new Set<string>());
+  modelIds.current = new Set(models.map((m) => m.id));
 
   const refresh = useCallback(
-    () => invoke<RoutedModelState[]>("routed_models_status").then(setModels).catch(() => {}),
-    [],
+    () => invoke<RoutedModelState[]>(g.command).then(setModels).catch(() => {}),
+    [g.command],
   );
 
   useEffect(() => {
     refresh();
     const un = listen<ModelDownloadProgress>("model-download", (e) => {
       const p = e.payload;
+      // 兩張卡共用同一個事件,只處理自己這組的模型
+      if (!modelIds.current.has(p.id)) return;
       setProgress((prev) => ({ ...prev, [p.id]: p }));
       if (p.phase === "error") setErrors((prev) => ({ ...prev, [p.id]: p.message ?? "下載失敗" }));
       if (p.phase === "done" || p.phase === "cancelled" || p.phase === "error") {
@@ -73,7 +94,7 @@ export default function RoutedModels({
 
   return (
     <div className="flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-2 text-xs">
-      <div className="text-neutral-400">專用模型(CPU,選「專用模型」引擎時使用)</div>
+      <div className="text-neutral-400">{g.title}</div>
       {models.map((m) => {
         const p = progress[m.id];
         const active = m.downloading || p?.phase === "downloading" || p?.phase === "verifying";
@@ -114,7 +135,7 @@ export default function RoutedModels({
               <div className="text-rose-400" data-role="model-error">
                 {errors[m.id]}
                 <div className="text-neutral-500">
-                  也可以用 repo 的 scripts/download-models.ps1 -With{m.id === "reazonspeech" ? "ReazonSpeech" : "Parakeet"} 下載到
+                  也可以用 repo 的 scripts/download-models.ps1{g.scriptFlag(m.id)} 下載到
                   {dataDir ? ` ${dataDir}\\models` : " 資料目錄的 models"}。
                 </div>
               </div>
