@@ -133,7 +133,7 @@ function fillTarget(el: Element, target: HTMLElement, text: string): void {
 const CAPTION_SEGMENT_SELECTOR = '.ytp-caption-segment';
 const CAPTION_CLASS = 'atx-caption';
 
-/** 字幕的譯文照抄字幕那段的字級、字型、顏色與底色 */
+/** 字幕的譯文照抄字幕那段的字級、字型、顏色、底色與外框 */
 function matchCaptionStyle(el: Element, target: HTMLElement): void {
   const seg = el.querySelector(CAPTION_SEGMENT_SELECTOR);
   if (!seg) return;
@@ -143,6 +143,8 @@ function matchCaptionStyle(el: Element, target: HTMLElement): void {
   target.style.fontFamily = s.fontFamily;
   target.style.color = s.color;
   target.style.backgroundColor = s.backgroundColor;
+  // 使用者在 YouTube 字幕選項改用外框或陰影(底色透明)時,譯文也要有,不然亮畫面看不清
+  target.style.textShadow = s.textShadow;
 }
 
 /** 譯文放回雙語位置:有子區塊時放在第一個子區塊前,否則放最後 */

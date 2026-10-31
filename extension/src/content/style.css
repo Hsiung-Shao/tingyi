@@ -22,8 +22,9 @@ font.atx-target.atx-caption {
   opacity: 1;
   white-space: pre-wrap;
 }
-/* YouTube 依原文量出字幕框寬度,同字級的中文較寬會被擠成兩行:有譯文時改依內容寬度,仍置中 */
-.caption-window.ytp-caption-window-bottom:has(> font.atx-caption) {
+/* YouTube 依原文量出字幕框寬度,同字級的中文較寬會被擠成兩行:有譯文時改依內容寬度,仍置中。
+   只動以 left:50% 置中的字幕框;作者指定位置或被拖過的字幕維持原位 */
+.caption-window.ytp-caption-window-bottom[style*='left: 50%']:has(> font.atx-caption) {
   width: max-content !important;
   max-width: 96%;
   margin-left: 0 !important;

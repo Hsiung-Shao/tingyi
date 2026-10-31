@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { collectBlocks, insertTranslation, setDisplayMode, TARGET_CLASS } from '../src/content/dom.ts';
 
-/** YouTube 字幕的實際結構(2026-10 量到):字級、顏色、底色寫在每段字幕的 span 上,字幕框本身是播放器的小字 */
+/** YouTube 字幕的實際結構(2026-10 量到):字級、顏色、底色寫在每段字幕的 span 上,字幕框本身是播放器的小字。
+ * jsdom 模擬不了 text-shadow(寫入即失效),外框改由實機驗 */
 const CAPTION = `<div id="movie_player" style="font-size: 11px">
 <div class="ytp-caption-window-container"><div class="caption-window ytp-caption-window-bottom" id="caption-window-_0" style="text-align: center; width: 640px;">
 <span class="captions-text" style="display: block;">
