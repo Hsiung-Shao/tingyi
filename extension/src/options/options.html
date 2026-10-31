@@ -11,6 +11,18 @@
   <body>
     <h1>Agent Translator 設定</h1>
 
+    <h2 id="app">本機程式</h2>
+    <p class="muted">
+      安裝「agent-translator 本機程式」後,它會下載並執行本地翻譯模型,擴充自動取得端點,不必手動填寫下面的網址與 token。
+      安裝檔:<code>agent-translator_0.1.0_x64-setup.exe</code>(只支援 Windows)。
+    </p>
+    <label for="connection">端點設定方式</label>
+    <select id="connection">
+      <option value="auto">自動連線本機程式(建議)</option>
+      <option value="manual">手動設定</option>
+    </select>
+    <div id="linkState" class="status muted"></div>
+
     <h2>bridge(MCP server)</h2>
     <p class="muted">在專案目錄執行 <code>pnpm bridge</code>,第一次啟動會印出 token。</p>
     <label for="bridgeUrl">MCP 端點</label>

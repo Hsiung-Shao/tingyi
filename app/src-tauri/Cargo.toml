@@ -1,0 +1,34 @@
+[package]
+name = "atx-app"
+version = "0.1.0"
+edition = "2021"
+description = "agent-translator 本機程式:管理本地翻譯模型並讓瀏覽器擴充自動連線"
+license = "MIT"
+
+[lib]
+# `_lib` 後綴避免 Windows 上與 bin 同名衝突(cargo#8519)
+name = "atx_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rand = "0.9"
+winreg = "0.55"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3"

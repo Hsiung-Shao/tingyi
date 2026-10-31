@@ -12,7 +12,8 @@ export type TranslateResponse =
 
 export type LimitsResponse = BatchLimits & { targetLang: string; concurrency: number };
 
-export type PopupRequest = { type: 'listProviders' };
+/** appLink:向本機程式要端點並更新設定,回 LinkStatus */
+export type PopupRequest = { type: 'listProviders' } | { type: 'appLink' };
 
 export type ProvidersResponse =
   | { ok: true; providers: { id: string; label: string; available: boolean; version?: string; note?: string }[] }

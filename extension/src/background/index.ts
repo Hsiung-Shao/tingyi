@@ -10,6 +10,7 @@ import {
 } from '@atx/core';
 import type { ContentRequest, LimitsResponse, PopupRequest, ProvidersResponse, TranslateResponse } from '../shared/messages.ts';
 import { effectiveLimits, loadSettings, type Settings } from '../shared/settings.ts';
+import { autoConnect } from './appLink.ts';
 import { callBridgeTool } from './mcp.ts';
 
 const store: KeyValueStore = {
@@ -59,7 +60,8 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
   const scope =
     s.route === 'bridge'
       ? { provider: `bridge:${s.bridge.provider}`, model: s.bridge.model, targetLang: s.targetLang }
-      : { provider: `direct:${s.direct.baseUrl}`, model: s.direct.model, targetLang: s.targetLang };
+      : // 本機程式每次啟動的 port 不同,自動連線時快取不綁 port
+        { provider: s.connection === 'auto' ? 'direct:local-app' : `direct:${s.direct.baseUrl}`, model: s.direct.model, targetLang: s.targetLang };
   // 併發由 content 端控制(拿到名額才送訊息),這裡不排隊,事件時間只等於實際呼叫時間
   const translate = withCache(store, scope, (segs) =>
     s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context),
@@ -71,6 +73,36 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
     if (e instanceof PartialTranslationError) return { ok: true, translations: toList(e.partial), error: e.message };
     throw e;
   }
+}
+
+/** 連不上端點(本機程式重啟換了 port、金鑰換了)時,自動向本機程式重新取得端點再試一次 */
+async function translateWithRelink(segments: Segment[], context: PageContext): Promise<TranslateResponse> {
+  const s = await loadSettings();
+  const retry = async (e: unknown): Promise<TranslateResponse> => {
+    if (s.connection !== 'auto' || !isConnectionError(e)) throw e;
+    let link = await autoConnect();
+    // 本機程式剛被喚起時模型還在載入,最多等 60 秒
+    for (let i = 0; i < 30 && link.state === 'connected' && link.status === 'starting'; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      link = await autoConnect();
+    }
+    if (link.state !== 'connected' || link.status !== 'ready') throw new Error(linkMessage(link) ?? String(e));
+    return handleTranslate(segments, context);
+  };
+  return handleTranslate(segments, context).catch(retry);
+}
+
+/** 網路層失敗或金鑰不符(端點換了) */
+function isConnectionError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return e instanceof TypeError || /Failed to fetch|ECONNREFUSED|端點回應 401|fetch failed/i.test(msg);
+}
+
+function linkMessage(link: Awaited<ReturnType<typeof autoConnect>>): string | undefined {
+  if (link.state === 'not-installed') return '找不到本機程式,請先安裝 agent-translator 本機程式';
+  if (link.state === 'app-error') return `本機程式沒有回應:${link.message}`;
+  if (link.state === 'connected' && link.status !== 'ready') return link.message ?? `本地模型尚未就緒(${link.status})`;
+  return undefined;
 }
 
 async function handleListProviders(): Promise<ProvidersResponse> {
@@ -87,7 +119,11 @@ async function handleListProviders(): Promise<ProvidersResponse> {
 chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sender, sendResponse) => {
   const fail = (e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
   if (msg.type === 'translate') {
-    handleTranslate(msg.segments, msg.context).then(sendResponse, fail);
+    translateWithRelink(msg.segments, msg.context).then(sendResponse, fail);
+    return true;
+  }
+  if (msg.type === 'appLink') {
+    autoConnect().then(sendResponse, fail);
     return true;
   }
   if (msg.type === 'getLimits') {
@@ -105,6 +141,10 @@ chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sende
   }
   return false;
 });
+
+// 瀏覽器啟動、擴充安裝或更新時先連一次本機程式,第一次使用就不必開設定
+chrome.runtime.onStartup.addListener(() => void autoConnect().catch(() => {}));
+chrome.runtime.onInstalled.addListener(() => void autoConnect().catch(() => {}));
 
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'toggle-translate' && tab?.id !== undefined) {

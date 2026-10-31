@@ -7,10 +7,17 @@
     <style>
       body { width: 300px; padding: 14px; }
       #toggle { width: 100%; margin-top: 4px; }
+      #appLink { display: flex; gap: 6px; align-items: center; margin: -4px 0 10px; }
+      #appLink .status { margin: 0; flex: 1; }
+      #appLinkAction { padding: 2px 8px; font-size: 12px; }
     </style>
   </head>
   <body>
     <h1>Agent Translator</h1>
+    <div id="appLink" hidden>
+      <div id="appLinkText" class="status muted"></div>
+      <button id="appLinkAction" class="secondary" hidden></button>
+    </div>
     <button id="toggle">翻譯此頁</button>
     <div id="pageState" class="status muted"></div>
     <div class="row seg" style="margin-top: 10px">

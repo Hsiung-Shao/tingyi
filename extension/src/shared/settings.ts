@@ -6,8 +6,14 @@ export type DisplayMode = 'dual' | 'only';
 /** main:跳過導覽列、頁首頁尾等介面區;page:整頁都翻 */
 export type Scope = 'main' | 'page';
 
+/** auto:端點由本機程式自動提供;manual:使用者自己填 */
+export type Connection = 'auto' | 'manual';
+
 export interface Settings {
   route: Route;
+  connection: Connection;
+  /** 是否曾經自動連上本機程式(第一次連上時才把 route 設成本地模型) */
+  linked: boolean;
   targetLang: string;
   displayMode: DisplayMode;
   scope: Scope;
@@ -27,6 +33,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   route: 'bridge',
+  connection: 'auto',
+  linked: false,
   targetLang: 'zh-TW',
   displayMode: 'dual',
   scope: 'main',

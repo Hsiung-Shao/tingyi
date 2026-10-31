@@ -1,3 +1,4 @@
+import type { LinkStatus } from '../background/appLink.ts';
 import type { ProvidersResponse, TabState } from '../shared/messages.ts';
 import { loadSettings, saveSettings, type DisplayMode, type Route, type Scope } from '../shared/settings.ts';
 
@@ -19,6 +20,47 @@ function renderState(s: TabState | undefined): void {
   toggle.textContent = s.enabled ? '顯示原文' : '翻譯此頁';
   box.textContent = s.enabled ? `已翻 ${s.done} 段、翻譯中 ${s.pending} 段、失敗 ${s.errors} 段${s.lastError ? `\n${s.lastError}` : ''}` : '';
   box.className = `status ${s.errors ? 'bad' : 'muted'}`;
+}
+
+const MODEL_STATUS: Record<string, string> = {
+  ready: '本地模型執行中',
+  downloading: '本機程式正在下載模型',
+  starting: '本地模型啟動中',
+  stopped: '本地模型已停止',
+  'not-downloaded': '本機程式尚未下載模型',
+  error: '本地模型發生錯誤',
+};
+
+/** 頂端一行:本機程式連線狀態(手動設定時不顯示) */
+async function refreshAppLink(): Promise<void> {
+  const box = $('appLink');
+  const text = $('appLinkText');
+  const action = $<HTMLButtonElement>('appLinkAction');
+  const link = (await chrome.runtime.sendMessage({ type: 'appLink' }).catch((e: unknown) => ({
+    state: 'app-error',
+    message: String(e),
+  }))) as LinkStatus;
+  box.hidden = link.state === 'manual';
+  action.hidden = true;
+  if (link.state === 'connected') {
+    text.textContent = link.status === 'ready' ? '✓ 已連上本機程式' : `${MODEL_STATUS[link.status] ?? link.status}${link.message ? `:${link.message}` : ''}`;
+    text.className = `status ${link.status === 'ready' ? 'ok' : 'muted'}`;
+    if (link.status !== 'ready') {
+      // 再送一次 hello:本機程式沒開會被喚起,開了就重抓狀態
+      action.textContent = '重新整理';
+      action.hidden = false;
+      action.onclick = () => void refreshAppLink().then(refreshProviders);
+    }
+  } else if (link.state === 'not-installed') {
+    text.textContent = '尚未安裝本機程式,本地翻譯需要它';
+    text.className = 'status bad';
+    action.textContent = '安裝說明';
+    action.hidden = false;
+    action.onclick = () => void chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html#app') });
+  } else if (link.state === 'app-error') {
+    text.textContent = `本機程式沒有回應:${link.message}`;
+    text.className = 'status bad';
+  }
 }
 
 async function refreshProviders(): Promise<void> {
@@ -105,6 +147,7 @@ async function init(): Promise<void> {
     const s = await chrome.tabs.sendMessage(tabId, { type: 'getState' }).catch(() => undefined);
     if (s) renderState(s as TabState);
   }, 1000);
+  await refreshAppLink();
   await refreshProviders();
 }
 

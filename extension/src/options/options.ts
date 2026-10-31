@@ -1,3 +1,4 @@
+import type { LinkStatus } from '../background/appLink.ts';
 import type { TranslateResponse } from '../shared/messages.ts';
 import { loadSettings, saveSettings, type Settings } from '../shared/settings.ts';
 
@@ -9,7 +10,17 @@ function show(msg: string, ok: boolean): void {
   status.className = `status ${ok ? 'ok' : 'bad'}`;
 }
 
+/** 自動連線時端點由本機程式提供,這些欄位唯讀 */
+const MANAGED = ['bridgeUrl', 'bridgeToken', 'baseUrl', 'model', 'apiKey', 'format', 'jsonMode'];
+const connection = document.getElementById('connection') as HTMLSelectElement;
+
+function applyConnection(): void {
+  for (const id of MANAGED) (document.getElementById(id) as HTMLInputElement).disabled = connection.value === 'auto';
+}
+
 function fill(s: Settings): void {
+  connection.value = s.connection;
+  applyConnection();
   input('bridgeUrl').value = s.bridge.url;
   input('bridgeToken').value = s.bridge.token;
   input('bridgeModel').value = s.bridge.model;
@@ -33,6 +44,7 @@ async function collect(): Promise<Settings> {
   const num = (id: string, min: number) => Math.max(min, Number(input(id).value) || min);
   return {
     ...s,
+    connection: connection.value as Settings['connection'],
     bridge: { ...s.bridge, url: input('bridgeUrl').value.trim(), token: input('bridgeToken').value.trim(), model: input('bridgeModel').value.trim() },
     direct: {
       baseUrl: input('baseUrl').value.trim().replace(/\/$/, ''),
@@ -77,4 +89,32 @@ document.getElementById('test')!.addEventListener('click', async () => {
   }
 });
 
-void loadSettings().then(fill);
+connection.addEventListener('change', async () => {
+  const s = await loadSettings();
+  s.connection = connection.value as Settings['connection'];
+  await saveSettings(s);
+  applyConnection();
+  if (s.connection === 'auto') await relink();
+});
+
+/** 向本機程式取端點,成功就把新值填回欄位 */
+async function relink(): Promise<void> {
+  const box = document.getElementById('linkState') as HTMLDivElement;
+  const link = (await chrome.runtime.sendMessage({ type: 'appLink' })) as LinkStatus;
+  if (link.state === 'connected') {
+    box.textContent = link.status === 'ready' ? '已連上本機程式,端點已自動更新' : `已連上本機程式,模型狀態:${link.status}`;
+    box.className = 'status ok';
+    fill(await loadSettings());
+  } else if (link.state === 'not-installed') {
+    box.textContent = '找不到本機程式,請先安裝,或改用手動設定';
+    box.className = 'status bad';
+  } else if (link.state === 'app-error') {
+    box.textContent = `本機程式沒有回應:${link.message}`;
+    box.className = 'status bad';
+  } else box.textContent = '';
+}
+
+void loadSettings().then(async (s) => {
+  fill(s);
+  if (s.connection === 'auto') await relink();
+});
