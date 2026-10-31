@@ -14,8 +14,10 @@ tokio.workspace = true
 tracing.workspace = true
 crossbeam-channel = "0.5"
 wasapi = "0.25"
-# 視窗列舉(音訊來源清單);與 wasapi 依賴的版本相同,不另編一份
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm"] }
+# 視窗列舉(音訊來源清單)與 Job Object(子程序跟著本程式結束);與 wasapi 依賴的版本相同,不另編一份
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+# 共用翻譯伺服器的 api key
+getrandom = "0.3"
 rubato = "0.16"
 sherpa-onnx = "1.13"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }

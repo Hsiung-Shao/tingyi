@@ -4617,6 +4617,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "futures-util",
+ "getrandom 0.3.4",
  "native-tls",
  "opencc-fmmseg",
  "regex",

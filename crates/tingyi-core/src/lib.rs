@@ -25,5 +25,6 @@ pub mod eval;
 pub mod model_download;
 pub mod paths;
 pub mod llama;
+pub mod job;
 pub mod translate_server;
 pub mod gpu;

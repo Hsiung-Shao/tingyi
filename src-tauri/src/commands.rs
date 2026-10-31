@@ -8,7 +8,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tingyi_core::asr::Lang;
 use tingyi_core::audio::source::{self, AudioSource, SourceEntry};
 use tingyi_core::cleanup::Replacement;
-use tingyi_core::llama::{LlamaServerProcess, LlamaServerSpec, WhisperServerProcess, WhisperServerSpec};
+use tingyi_core::llama::{WhisperServerProcess, WhisperServerSpec};
+use tingyi_core::translate_server::{Endpoint, Holder, SUBTITLE_SLOT};
 use tingyi_core::pipeline::AsrEngine;
 use tingyi_core::mt::{LlamaServerConfig, LlamaServerTranslator, Translator};
 use tingyi_core::pipeline::{self, PipelineConfig};
@@ -198,24 +199,23 @@ pub async fn start_session(
     // 回修只在 Whisper 引擎下生效;決定 llama-server 要不要開兩個 slot
     let refine_on = opts.refine.unwrap_or(true) && opts.asr_engine.as_deref() == Some("whisper-turbo");
 
-    // 1. 翻譯模型(可選)
+    // 1. 翻譯模型(可選):字幕與瀏覽器擴充共用同一個 llama-server
     let mut translator: Option<Arc<dyn Translator>> = None;
     if let Some(model) = opts.model.as_deref().filter(|m| !m.is_empty()) {
         emit_status(&format!("啟動 llama-server({model})…"));
-        let mut spec = LlamaServerSpec::new(paths::gguf_model(model), port);
-        if refine_on {
-            spec = spec.with_refine();
-        }
-        spec.log_file = Some(paths::data_dir().join("llama-server.log"));
         let before = gpu::nvidia_used_mib();
-        let proc_ = tokio::task::spawn_blocking(move || -> anyhow::Result<LlamaServerProcess> {
-            let mut p = LlamaServerProcess::spawn(spec)?;
-            p.wait_ready_blocking(Duration::from_secs(180))?;
-            Ok(p)
+        let slot = state.translate.clone();
+        let model_name = model.to_string();
+        let ep = tokio::task::spawn_blocking(move || -> anyhow::Result<(Endpoint, Option<u32>)> {
+            let mut g = crate::state::lock_translate(&slot)?;
+            let s = g.as_mut().expect("lock_translate 已建立");
+            let ep = s.acquire(Holder::Subtitles, &model_name, paths::gguf_model(&model_name))?;
+            Ok((ep, s.pid()))
         })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))?;
+        let (ep, server_pid) = ep;
         let after = gpu::nvidia_used_mib();
         if let (Some(a), Some(b)) = (before, after) {
             emit_status(&format!(
@@ -226,10 +226,9 @@ pub async fn start_session(
         } else {
             emit_status("llama-server 就緒");
         }
-        let tr = LlamaServerTranslator::new(LlamaServerConfig::for_model(
-            format!("http://127.0.0.1:{port}"),
-            model,
-        ));
+        let mut mt_cfg = LlamaServerConfig::for_model(ep.base_url.clone(), model);
+        mt_cfg.api_key = Some(ep.api_key.clone());
+        let tr = LlamaServerTranslator::new(mt_cfg);
         // 熱身:固定前綴進快取
         let mut noop = |_: &str| {};
         let _ = tr
@@ -237,15 +236,16 @@ pub async fn start_session(
                 tingyi_core::mt::TranslateRequest {
                     text: "Hello.".into(),
                     src_lang: Lang::En,
-                    slot: if refine_on { Some(0) } else { None },
+                    slot: Some(SUBTITLE_SLOT),
                     ..Default::default()
                 },
                 &mut noop,
             )
             .await;
         // 子程序 pid 立刻登錄到取樣器,不等前端拉 get_metrics
-        state.watched.lock().unwrap().push(("llama-server".into(), proc_.pid()));
-        *state.server.lock().unwrap() = Some(proc_);
+        if let Some(pid) = server_pid {
+            state.watched.lock().unwrap().push(("llama-server".into(), pid));
+        }
         translator = Some(Arc::new(tr));
     }
 
@@ -268,9 +268,7 @@ pub async fn start_session(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| {
-            if let Some(mut s) = state.server.lock().unwrap().take() {
-                s.shutdown();
-            }
+            release_subtitles(&state.translate);
             format!("{e:#}")
         })?;
         let after = gpu::nvidia_used_mib();
@@ -319,9 +317,7 @@ pub async fn start_session(
     let handle = match handle {
         Ok(h) => h,
         Err(e) => {
-            if let Some(mut s) = state.server.lock().unwrap().take() {
-                s.shutdown();
-            }
+            release_subtitles(&state.translate);
             if let Some(mut w) = state.whisper.lock().unwrap().take() {
                 w.shutdown();
             }
@@ -390,19 +386,25 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     if let Some(mut w) = whisper {
         let _ = tokio::task::spawn_blocking(move || w.shutdown()).await;
     }
-    let server = state.server.lock().unwrap().take();
-    if let Some(mut s) = server {
-        let ok = tokio::task::spawn_blocking(move || s.shutdown())
-            .await
-            .unwrap_or(false);
-        let _ = app.emit(
-            "status",
-            if ok { "已停止(llama-server 已結束)" } else { "已停止(llama-server 未確認結束)" }.to_string(),
-        );
-    } else {
-        let _ = app.emit("status", "已停止".to_string());
-    }
+    let slot = state.translate.clone();
+    let still_serving = tokio::task::spawn_blocking(move || release_subtitles(&slot)).await.unwrap_or(false);
+    let _ = app.emit(
+        "status",
+        if still_serving { "已停止(翻譯伺服器仍供網頁翻譯使用)" } else { "已停止" }.to_string(),
+    );
     Ok(())
+}
+
+/// 字幕不再使用共用翻譯伺服器;回傳伺服器是否仍在執行(網頁翻譯還在用)。
+fn release_subtitles(slot: &crate::state::TranslateSlot) -> bool {
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    match g.as_mut() {
+        Some(s) => {
+            s.release(Holder::Subtitles);
+            s.is_running()
+        }
+        None => false,
+    }
 }
 
 #[derive(Serialize)]
@@ -561,8 +563,9 @@ pub fn get_metrics(state: State<'_, AppState>) -> Metrics {
     {
         let mut w = state.watched.lock().unwrap();
         w.clear();
-        if let Some(p) = state.server.lock().unwrap().as_ref() {
-            w.push(("llama-server".into(), p.pid()));
+        // 啟動中會在鎖內等就緒;拿不到鎖就這輪不列,不卡住前端
+        if let Some(pid) = state.translate.try_lock().ok().and_then(|g| g.as_ref().and_then(|s| s.pid())) {
+            w.push(("llama-server".into(), pid));
         }
         if let Some(p) = state.whisper.lock().unwrap().as_ref() {
             w.push(("whisper-server".into(), p.pid()));

@@ -137,6 +137,11 @@ impl LlamaServerProcess {
         self.child.id()
     }
 
+    /// 給 Job Object 登錄子程序用。
+    pub(crate) fn child(&self) -> &Child {
+        &self.child
+    }
+
     pub fn spec(&self) -> &LlamaServerSpec {
         &self.spec
     }

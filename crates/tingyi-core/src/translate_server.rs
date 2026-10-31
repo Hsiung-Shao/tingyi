@@ -37,6 +37,10 @@ pub struct Endpoint {
 /// 執行中的伺服器(正式版是 `LlamaServerProcess`)。
 pub trait Running: Send {
     fn shutdown(&mut self);
+    /// 給效能面板取樣用。
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// 啟動伺服器並等到就緒。
@@ -129,6 +133,61 @@ impl SharedServer {
     pub fn holds(&self, holder: Holder) -> bool {
         self.holders.contains(&holder)
     }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.running.as_ref().and_then(|(_, p)| p.pid())
+    }
+}
+
+// ───────────────────────── 正式版的啟動方式 ─────────────────────────
+
+/// 啟動真正的 llama-server:登錄到 Job Object、寫 log、等 `/health` 就緒。
+pub struct LlamaLauncher {
+    pub job: Option<std::sync::Arc<crate::job::Job>>,
+    pub log_file: Option<PathBuf>,
+    /// 7B 冷啟動可能要一分鐘以上。
+    pub ready_wait: std::time::Duration,
+}
+
+impl Running for crate::llama::LlamaServerProcess {
+    fn shutdown(&mut self) {
+        crate::llama::LlamaServerProcess::shutdown(self);
+    }
+
+    fn pid(&self) -> Option<u32> {
+        Some(crate::llama::LlamaServerProcess::pid(self))
+    }
+}
+
+impl Launch for LlamaLauncher {
+    fn launch(&mut self, spec: &LlamaServerSpec) -> Result<Box<dyn Running>> {
+        let mut spec = spec.clone();
+        spec.log_file = self.log_file.clone();
+        let mut p = crate::llama::LlamaServerProcess::spawn(spec)?;
+        if let Some(job) = &self.job {
+            if let Err(e) = job.assign(p.child()) {
+                tracing::warn!("llama-server 加入 Job Object 失敗:{e}");
+            }
+        }
+        if let Err(e) = p.wait_ready_blocking(self.ready_wait) {
+            p.shutdown();
+            return Err(e);
+        }
+        Ok(Box::new(p))
+    }
+}
+
+/// 向系統要一個目前沒人用的本機 port。
+pub fn free_port() -> std::io::Result<u16> {
+    let l = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(l.local_addr()?.port())
+}
+
+/// 32 bytes 隨機值的 hex 字串(64 字元)。
+pub fn new_api_key() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("系統亂數來源");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
