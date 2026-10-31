@@ -16,14 +16,19 @@
   → 依語言判斷句子是否說完,未完則等下一段合併
   → Hy-MT2(llama-server sidecar,Vulkan GPU)串流翻譯 + 台灣用語後處理
   → Tauri 2 事件 → React 主視窗(紀錄、指標)+ 懸浮字幕視窗(置頂、透明、滑鼠穿透)
+
+網頁翻譯(Chrome 擴充 `web/extension`)
+  → native messaging host(同一個 tingyi.exe,`com.jerry.tingyi.host`)讀 runtime.json;聽譯沒開就背景喚起
+  → 與字幕共用同一個 llama-server(-np 4:slot 0 字幕、1 回修、2–3 網頁;api key 防其他網頁偷用)
 ```
 
 | 目錄 | 內容 |
 |---|---|
-| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`model_download`(專用模型下載)、`cleanup`、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`paths` |
+| `crates/tingyi-core` | 純 Rust 核心:`audio/`(擷取、音訊來源、重取樣)、`vad`、`asr`、`route`(依語言路由)、`model_download`(專用模型下載)、`cleanup`、`eval`(CER/WER)、`mt`、`postprocess`、`pipeline`、`metrics`、`llama`(子程序管理)、`translate_server`(字幕與網頁共用的翻譯伺服器)、`paths` |
 | `crates/tingyi-bench` | 量測 CLI:`devices` / `capture-probe` / `vad` / `asr` / `asr-file` / `asr-eval` / `mt` / `live` / `serve` / `download-model` |
-| `src-tauri` | Tauri 2 後端:命令、狀態、事件轉發 |
+| `src-tauri` | Tauri 2 後端:命令、狀態、事件轉發;網頁翻譯的 native host、runtime.json、系統匣(`web.rs`、`native_host.rs`) |
 | `src` | React 19 + Tailwind 4 前端:`App.tsx` 主視窗、`Overlay.tsx` 懸浮字幕 |
+| `web` | 網頁翻譯擴充(原 agent-translator,以 git subtree 併入):`extension/`(Chrome MV3)、`packages/core`、`bridge/`(選用的 CLI agent MCP server,目前未接進聽譯);獨立的 pnpm workspace,`pnpm --dir web test` |
 | `scripts/download-models.ps1` | 下載模型與 llama-server 到資料目錄(`-WithWhisper` 加 Whisper 模型;`-WithReazonSpeech`、`-WithParakeet` 加專用辨識模型;安裝版也能在主視窗「辨識引擎」下方直接下載專用模型;Hugging Face 網址固定到 commit,每個檔案校驗 SHA256,`-Verify` 重驗已存在的檔案,`-DataDir` 指定資料目錄) |
 | `scripts/fetch-eval.py` | 從 Hugging Face parquet 抓 CER 評測集(ReazonSpeech test、JSUT、FLEURS ja/en/ko)到 `data/eval/` |
 | `scripts/build-whisper.ps1` | 以 CUDA 自行編譯 whisper.cpp 的 whisper-server(官方無 Windows Vulkan 版;需 CUDA 12.8+、Ninja) |
