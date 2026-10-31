@@ -12,6 +12,7 @@ import type { ContentRequest, LimitsResponse, PopupRequest, ProvidersResponse, T
 import { effectiveLimits, loadSettings, type Settings } from '../shared/settings.ts';
 import { autoConnect } from './appLink.ts';
 import { callBridgeTool } from './mcp.ts';
+import { needsRelink } from './relink.ts';
 import { createSlotPicker, withSlot } from './slots.ts';
 
 const store: KeyValueStore = {
@@ -81,20 +82,26 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
   const translate = withCache(store, scope, (segs) =>
     s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context),
   );
-  const toList = (m: Map<number, string>) => [...m].map(([id, text]) => ({ id, text }));
   try {
     return { ok: true, translations: toList(await translate(segments)) };
   } catch (e) {
-    if (e instanceof PartialTranslationError) return { ok: true, translations: toList(e.partial), error: e.message };
+    // 連線錯誤要交給 translateWithRelink 重新取得端點,不能當成部分失敗吞掉
+    if (e instanceof PartialTranslationError && !needsRelink(e)) return partialResponse(e);
     throw e;
   }
 }
+
+const toList = (m: Map<number, string>) => [...m].map(([id, text]) => ({ id, text }));
+const partialResponse = (e: PartialTranslationError): TranslateResponse => ({ ok: true, translations: toList(e.partial), error: e.message });
 
 /** 連不上端點(本機程式重啟換了 port、金鑰換了)時,自動向本機程式重新取得端點再試一次 */
 async function translateWithRelink(segments: Segment[], context: PageContext): Promise<TranslateResponse> {
   const s = await loadSettings();
   const retry = async (e: unknown): Promise<TranslateResponse> => {
-    if (s.connection !== 'auto' || !isConnectionError(e)) throw e;
+    if (s.connection !== 'auto' || !needsRelink(e)) {
+      if (e instanceof PartialTranslationError) return partialResponse(e);
+      throw e;
+    }
     let link = await autoConnect();
     // 本機程式剛被喚起時模型還在載入,最多等 60 秒
     for (let i = 0; i < 30 && link.state === 'connected' && link.status === 'starting'; i++) {
@@ -105,12 +112,6 @@ async function translateWithRelink(segments: Segment[], context: PageContext): P
     return handleTranslate(segments, context);
   };
   return handleTranslate(segments, context).catch(retry);
-}
-
-/** 網路層失敗或金鑰不符(端點換了) */
-function isConnectionError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return e instanceof TypeError || /Failed to fetch|ECONNREFUSED|端點回應 401|fetch failed/i.test(msg);
 }
 
 function linkMessage(link: Awaited<ReturnType<typeof autoConnect>>): string | undefined {

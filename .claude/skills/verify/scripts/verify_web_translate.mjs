@@ -326,6 +326,17 @@ async function main() {
   if (rt2?.pid) startedPids.add(rt2.pid);
   check('翻新段落時擴充自動喚起聽譯並恢復翻譯', re.ok && rt2?.pid && rt2.pid !== oldPid, `state=${re.st} newPid=${rt2?.pid} model=${rt2?.llama?.model} ${Math.round(re.ms / 1000)}s`);
   log(`  譯文:${await page.evalJs(`document.querySelector('#p5 font.atx-target')?.textContent`)}`);
+  if (!re.ok) {
+    // 診斷:分頁記下的最後錯誤、此刻直接 hello 的回覆、舊 pid 是否被判定還活著
+    const tabState = await bg.evalJs(`(async()=>{const [tab]=await chrome.tabs.query({url:${JSON.stringify(pageUrl + '*')}});return chrome.tabs.sendMessage(tab.id,{type:'getState'})})()`).catch((e) => String(e));
+    log(`  診斷 分頁狀態:${JSON.stringify(tabState)}`);
+    log(`  診斷 舊 pid ${oldPid} 是否存活:${alive(oldPid)};runtime:${JSON.stringify(readRuntime())}`);
+    const hello = await bg.evalJs(`chrome.runtime.sendNativeMessage('com.jerry.tingyi.host',{type:'hello'}).then(r=>r,e=>({error:String(e)}))`).catch((e) => String(e));
+    log(`  診斷 直接 hello:${JSON.stringify(hello)}`);
+    const rt3 = readRuntime();
+    if (rt3?.pid) startedPids.add(rt3.pid);
+    log(`  診斷 hello 後 runtime:${JSON.stringify(rt3)}`);
+  }
   await screenshot(page, '05-page-relaunched.png');
   result.runtime = { first: rt, afterStop: rtS, relaunched: rt2 };
 }
