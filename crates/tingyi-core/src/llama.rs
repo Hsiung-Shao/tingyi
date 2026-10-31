@@ -142,6 +142,11 @@ impl LlamaServerProcess {
         &self.child
     }
 
+    /// 程序是否還在跑(沒結束、也查得到狀態)。
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     pub fn spec(&self) -> &LlamaServerSpec {
         &self.spec
     }

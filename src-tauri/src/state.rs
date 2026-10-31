@@ -71,9 +71,16 @@ impl AppState {
             // drop 即釋放擷取執行緒;worker 會隨 channel 斷線結束。
             p.take();
         }
-        if let Some(s) = self.translate.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            s.release(Holder::Subtitles);
-            s.release(Holder::Web);
+        // 伺服器啟動中會在鎖內等就緒(最長 180 s),結束時不等它:
+        // llama-server 在 Job Object 裡,本程式一結束就會被系統一起關掉
+        match self.translate.try_lock() {
+            Ok(mut g) => {
+                if let Some(s) = g.as_mut() {
+                    s.release(Holder::Subtitles);
+                    s.release(Holder::Web);
+                }
+            }
+            Err(_) => tracing::info!("翻譯伺服器啟動中,交給 Job Object 隨程式結束"),
         }
         if let Ok(mut w) = self.whisper.lock() {
             if let Some(mut proc) = w.take() {

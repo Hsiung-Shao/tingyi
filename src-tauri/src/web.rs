@@ -142,6 +142,64 @@ pub fn stop_web(app: &AppHandle) {
     });
 }
 
+/// app 內下載完翻譯套件後:原本「未下載」且套件齊了 → 改成 Stopped,擴充下次 hello 就會喚起網頁翻譯。
+pub fn refresh_after_download(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let status = st.web.runtime.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|rt| rt.status);
+    let Some(status) = status else { return };
+    let ready = packages_ready(&crate::commands::default_mt_model());
+    if let Some(next) = runtime::after_download(status, st.web.serving(), ready) {
+        update(app, |rt| {
+            rt.status = next;
+            rt.message = None;
+        });
+    }
+}
+
+/// 每 2 秒比對網頁翻譯狀態與共用伺服器實況:伺服器意外結束 → 寫 Error、放掉網頁持有
+/// (擴充下次 hello 會重新喚起);字幕換了模型 → 更新 runtime 的模型名稱。
+pub fn start_watch(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let st = app.state::<AppState>();
+        let rt_model = {
+            let g = st.web.runtime.lock().unwrap_or_else(|e| e.into_inner());
+            match g.as_ref() {
+                // 只在網頁翻譯已就緒時比對,啟動中的狀態由 serve_web 自己寫
+                Some(rt) if st.web.serving() && rt.status == LlamaStatus::Ready => rt.llama.as_ref().map(|l| l.model.clone()),
+                _ => continue,
+            }
+        };
+        // 啟動或換模型中會持有鎖,這輪先略過
+        let Ok(mut g) = st.translate.try_lock() else { continue };
+        let Some(s) = g.as_mut() else { continue };
+        let alive = s.check_alive();
+        let sync = runtime::web_sync(true, alive, s.holds(Holder::Web), s.model(), rt_model.as_deref());
+        match sync {
+            runtime::WebSync::Keep => {}
+            runtime::WebSync::Lost => {
+                s.release(Holder::Web);
+                drop(g);
+                st.web.serving.store(false, Ordering::SeqCst);
+                update(&app, |rt| {
+                    rt.status = LlamaStatus::Error;
+                    rt.llama = None;
+                    rt.message = Some("本地翻譯模型已停止,下次翻譯時會重新啟動".into());
+                });
+            }
+            runtime::WebSync::Model(m) => {
+                drop(g);
+                update(&app, |rt| {
+                    if let Some(l) = rt.llama.as_mut() {
+                        l.model = m;
+                    }
+                });
+            }
+        }
+    });
+}
+
 /// 程式結束時刪掉 runtime.json(native host 另外也會檢查 pid)。
 pub fn remove_runtime_file() {
     let _ = std::fs::remove_file(runtime_file());

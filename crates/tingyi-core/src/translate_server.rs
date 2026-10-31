@@ -41,6 +41,10 @@ pub trait Running: Send {
     fn pid(&self) -> Option<u32> {
         None
     }
+    /// 程序是否還在(意外結束要能察覺)。
+    fn is_alive(&mut self) -> bool {
+        true
+    }
 }
 
 /// 啟動伺服器並等到就緒。
@@ -80,9 +84,16 @@ pub struct SharedServer {
     port: u16,
     api_key: String,
     launcher: Box<dyn Launch>,
-    /// 執行中的(模型名稱, 程序)。
-    running: Option<(String, Box<dyn Running>)>,
+    /// 執行中的伺服器。
+    running: Option<Active>,
     holders: HashSet<Holder>,
+}
+
+struct Active {
+    model: String,
+    /// 換模型失敗時要用它恢復。
+    path: PathBuf,
+    proc: Box<dyn Running>,
 }
 
 impl SharedServer {
@@ -97,14 +108,31 @@ impl SharedServer {
 
     /// `holder` 要用 `model_name`(檔案 `model_path`)的伺服器;沒在跑就啟動,模型不同就以同一 port/key 重啟。
     pub fn acquire(&mut self, holder: Holder, model_name: &str, model_path: PathBuf) -> Result<Endpoint> {
+        // 意外結束的程序當作沒在跑,同模型也要重啟
+        self.check_alive();
         if self.model() != Some(model_name) {
+            let previous = self.running.as_ref().map(|a| (a.model.clone(), a.path.clone()));
             self.stop();
-            let spec = shared_spec(self.exe.clone(), model_path, self.port, &self.api_key);
-            let proc = self.launcher.launch(&spec)?;
-            self.running = Some((model_name.to_string(), proc));
+            if let Err(e) = self.launch(model_name, model_path) {
+                // 其他持有者(例如網頁翻譯)還在用:以原模型恢復,不讓它跟著斷線
+                let others = self.holders.iter().any(|h| *h != holder);
+                if let (true, Some((name, path))) = (others, previous) {
+                    if let Err(e2) = self.launch(&name, path) {
+                        tracing::warn!("換模型失敗後以 {name} 恢復也失敗:{e2:#}");
+                    }
+                }
+                return Err(e);
+            }
         }
         self.holders.insert(holder);
         Ok(self.endpoint())
+    }
+
+    fn launch(&mut self, model_name: &str, path: PathBuf) -> Result<()> {
+        let spec = shared_spec(self.exe.clone(), path.clone(), self.port, &self.api_key);
+        let proc = self.launcher.launch(&spec)?;
+        self.running = Some(Active { model: model_name.to_string(), path, proc });
+        Ok(())
     }
 
     /// `holder` 不再使用;沒有人使用時停止伺服器。
@@ -116,8 +144,8 @@ impl SharedServer {
     }
 
     fn stop(&mut self) {
-        if let Some((_, mut proc)) = self.running.take() {
-            proc.shutdown();
+        if let Some(mut a) = self.running.take() {
+            a.proc.shutdown();
         }
     }
 
@@ -127,7 +155,7 @@ impl SharedServer {
 
     /// 執行中的模型名稱。
     pub fn model(&self) -> Option<&str> {
-        self.running.as_ref().map(|(m, _)| m.as_str())
+        self.running.as_ref().map(|a| a.model.as_str())
     }
 
     pub fn holds(&self, holder: Holder) -> bool {
@@ -135,7 +163,16 @@ impl SharedServer {
     }
 
     pub fn pid(&self) -> Option<u32> {
-        self.running.as_ref().and_then(|(_, p)| p.pid())
+        self.running.as_ref().and_then(|a| a.proc.pid())
+    }
+
+    /// 檢查伺服器程序是否還在;意外結束就當作沒在跑(持有者不變,下次 acquire 會重啟)。
+    pub fn check_alive(&mut self) -> bool {
+        if self.running.as_mut().is_some_and(|a| !a.proc.is_alive()) {
+            tracing::warn!("llama-server 意外結束");
+            self.running = None;
+        }
+        self.is_running()
     }
 }
 
@@ -156,6 +193,10 @@ impl Running for crate::llama::LlamaServerProcess {
 
     fn pid(&self) -> Option<u32> {
         Some(crate::llama::LlamaServerProcess::pid(self))
+    }
+
+    fn is_alive(&mut self) -> bool {
+        crate::llama::LlamaServerProcess::is_alive(self)
     }
 }
 
@@ -354,5 +395,114 @@ mod tests {
     fn close_action_depends_on_web_holder() {
         assert_eq!(close_action(true), CloseAction::HideToTray);
         assert_eq!(close_action(false), CloseAction::Quit);
+    }
+
+    // ---------- 程序存活與換模型失敗恢復 ----------
+
+    #[derive(Default)]
+    struct State2 {
+        specs: Vec<LlamaServerSpec>,
+        /// 第幾次 launch(從 0 算)要失敗。
+        fail_idx: Vec<usize>,
+        /// 目前這個程序是否活著(每次成功 launch 會重設為 true)。
+        alive: bool,
+    }
+
+    struct AliveRunning(Arc<Mutex<State2>>);
+    impl Running for AliveRunning {
+        fn shutdown(&mut self) {}
+        fn is_alive(&mut self) -> bool {
+            self.0.lock().unwrap().alive
+        }
+    }
+
+    struct FailLaunch(Arc<Mutex<State2>>);
+    impl Launch for FailLaunch {
+        fn launch(&mut self, spec: &LlamaServerSpec) -> Result<Box<dyn Running>> {
+            let mut g = self.0.lock().unwrap();
+            let idx = g.specs.len();
+            g.specs.push(spec.clone());
+            if g.fail_idx.contains(&idx) {
+                return Err(anyhow::anyhow!("fake launch {idx} failed"));
+            }
+            g.alive = true;
+            Ok(Box::new(AliveRunning(self.0.clone())))
+        }
+    }
+
+    fn new_server2(fail_idx: &[usize]) -> (SharedServer, Arc<Mutex<State2>>) {
+        let st = Arc::new(Mutex::new(State2 { fail_idx: fail_idx.to_vec(), ..Default::default() }));
+        let srv = SharedServer::new(PathBuf::from("llama-server.exe"), 51234, "k1".into(), Box::new(FailLaunch(st.clone())));
+        (srv, st)
+    }
+
+    fn model_7b() -> PathBuf {
+        PathBuf::from("models/Hy-MT2-7B-Q4_K_M.gguf")
+    }
+
+    fn spec_args(st: &Arc<Mutex<State2>>, i: usize) -> Vec<String> {
+        let g = st.lock().unwrap();
+        match g.specs.get(i) {
+            Some(s) => s.args(),
+            None => Vec::new(),
+        }
+    }
+
+    // T21:換模型失敗時回 Err,並以原模型(同 port/key)恢復給其他持有者
+    #[test]
+    fn failed_model_switch_recovers_original_model() {
+        let (mut srv, st) = new_server2(&[1]);
+        srv.acquire(Holder::Web, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire web");
+        let r = srv.acquire(Holder::Subtitles, "Hy-MT2-7B-Q4_K_M", model_7b());
+        assert!(r.is_err(), "7B 啟動失敗應回 Err");
+        assert_eq!(st.lock().unwrap().specs.len(), 3, "應依序 launch 1.8B、7B、1.8B");
+        let (a1, a2, a3) = (spec_args(&st, 0), spec_args(&st, 1), spec_args(&st, 2));
+        assert_eq!(flag_value(&a2, "-m"), Some(model_7b().to_string_lossy().to_string()));
+        assert_eq!(flag_value(&a3, "-m"), Some(model_1_8b().to_string_lossy().to_string()), "第 3 次應是原模型");
+        assert_eq!(flag_value(&a3, "--port"), flag_value(&a1, "--port"));
+        assert_eq!(flag_value(&a3, "--api-key"), flag_value(&a1, "--api-key"));
+        assert_eq!(srv.model(), Some("Hy-MT2-1.8B-Q8_0"));
+        assert!(srv.holds(Holder::Web));
+        assert!(!srv.holds(Holder::Subtitles), "失敗的要求者不算取得");
+        assert!(srv.is_running());
+    }
+
+    // T21b:原模型恢復也失敗 → Err、沒在跑,其他持有者仍記著
+    #[test]
+    fn failed_model_switch_and_failed_recovery() {
+        let (mut srv, _st) = new_server2(&[1, 2]);
+        srv.acquire(Holder::Web, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire web");
+        let r = srv.acquire(Holder::Subtitles, "Hy-MT2-7B-Q4_K_M", model_7b());
+        assert!(r.is_err());
+        assert!(!srv.is_running());
+        assert!(srv.holds(Holder::Web));
+        assert!(!srv.holds(Holder::Subtitles));
+    }
+
+    // T22:程序意外結束後,同模型 acquire 也要重新 launch
+    #[test]
+    fn acquire_relaunches_when_process_died() {
+        let (mut srv, st) = new_server2(&[]);
+        srv.acquire(Holder::Web, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire web");
+        st.lock().unwrap().alive = false;
+        let ep = srv.acquire(Holder::Subtitles, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire subtitles");
+        assert_eq!(st.lock().unwrap().specs.len(), 2, "程序已死應重新 launch");
+        assert_eq!(ep, srv.endpoint());
+        assert!(srv.is_running());
+    }
+
+    // T22b:check_alive 察覺程序已死,持有者不變;活著回 true
+    #[test]
+    fn check_alive_detects_dead_process() {
+        let (mut srv, st) = new_server2(&[]);
+        assert!(!srv.check_alive(), "沒在跑回 false");
+        srv.acquire(Holder::Web, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire web");
+        assert!(srv.check_alive(), "程序活著回 true");
+        assert!(srv.is_running());
+        st.lock().unwrap().alive = false;
+        assert!(!srv.check_alive());
+        assert!(!srv.is_running());
+        assert_eq!(srv.model(), None);
+        assert!(srv.holds(Holder::Web), "持有者不變");
     }
 }

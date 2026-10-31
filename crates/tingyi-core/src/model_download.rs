@@ -806,6 +806,19 @@ fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), Do
     Ok(())
 }
 
+/// 翻譯套件實際能不能用(不論是 app 內下載或 `scripts/download-models.ps1` 放的位置):
+/// llama.cpp 看 `<data>/bin/llama/llama-server.exe`,翻譯模型看 `paths::find_gguf`;其他模型照 `model_status`。
+pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
+    if spec.id == LLAMA_CPP.id {
+        data_dir.join("bin").join("llama").join("llama-server.exe").is_file()
+    } else if spec.id == HY_MT2_1_8B.id {
+        let stem = HY_MT2_1_8B.files[0].name.trim_end_matches(".gguf");
+        crate::paths::find_gguf(&data_dir.join("models"), stem).is_file()
+    } else {
+        model_status(spec, &data_dir.join("models")) == ModelStatus::Ready
+    }
+}
+
 /// 套件要裝在哪個上層目錄:llama.cpp 在 `bin_dir()`,模型在 `models_dir()`。
 pub fn install_parent(spec: &ModelSpec) -> PathBuf {
     if spec.id == LLAMA_CPP.id {
@@ -1898,5 +1911,43 @@ mod tests {
         }
         std::fs::write(dir.join("llama-server.exe"), b"exe").unwrap();
         assert_eq!(model_status(&PKG_SPEC, tmp.path()), ModelStatus::Ready);
+    }
+
+    fn touch_file(p: &std::path::Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    }
+
+    // T24:腳本布局與 app 內布局都算可用;什麼都沒有或只有空資料夾為 false
+    #[test]
+    fn t24_package_usable_accepts_script_and_app_layouts() {
+        // 腳本布局:zip 在 bin 根層、exe 在 bin/llama、gguf 在 models 根層
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        touch_file(&d.join("bin").join("llama-b11405-bin-win-vulkan-x64.zip"));
+        touch_file(&d.join("bin").join("llama").join("llama-server.exe"));
+        touch_file(&d.join("models").join("Hy-MT2-1.8B-Q8_0.gguf"));
+        assert!(package_usable(&LLAMA_CPP, d), "腳本布局的 llama.cpp 應可用");
+        assert!(package_usable(&HY_MT2_1_8B, d), "腳本布局的翻譯模型應可用");
+
+        // app 內布局:zip 與 exe 在 bin/llama、gguf 在 models/hy-mt2-1.8b
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        touch_file(&d.join("bin").join("llama").join("llama-b11405-bin-win-vulkan-x64.zip"));
+        touch_file(&d.join("bin").join("llama").join("llama-server.exe"));
+        touch_file(&d.join("models").join("hy-mt2-1.8b").join("Hy-MT2-1.8B-Q8_0.gguf"));
+        assert!(package_usable(&LLAMA_CPP, d), "app 布局的 llama.cpp 應可用");
+        assert!(package_usable(&HY_MT2_1_8B, d), "app 布局的翻譯模型應可用");
+
+        // 什麼都沒有
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!package_usable(&LLAMA_CPP, tmp.path()));
+        assert!(!package_usable(&HY_MT2_1_8B, tmp.path()));
+        assert!(!package_usable(&REAZONSPEECH, tmp.path()));
+
+        // 只有 bin/llama 資料夾、沒有 exe
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("bin").join("llama")).unwrap();
+        assert!(!package_usable(&LLAMA_CPP, tmp.path()), "沒有 llama-server.exe 不算可用");
     }
 }

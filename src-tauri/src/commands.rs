@@ -505,7 +505,8 @@ async fn packages_status(
                     label: m.label.into(),
                     lang: m.lang,
                     size_bytes: total,
-                    ready: md::model_status(m, &dir) == ModelStatus::Ready,
+                    // 腳本放的位置(zip 在 bin 根層、gguf 在 models 根層)也算已下載
+                    ready: md::package_usable(m, &paths::data_dir()),
                     downloading: snapshot.is_some(),
                     done: snapshot.map(|(d, _)| d).unwrap_or_else(|| total.saturating_sub(md::bytes_needed(m, &dir))),
                     license: m.license.into(),
@@ -523,6 +524,10 @@ async fn packages_status(
 #[tauri::command]
 pub async fn download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let spec = md::spec(&id).ok_or_else(|| format!("未知的模型:{id}"))?;
+    if md::package_usable(spec, &paths::data_dir()) {
+        // 已經能用(含腳本放的位置)就不重下;llama.cpp 執行中時重新解壓也會覆寫失敗
+        return Ok(());
+    }
     let guard = state.downloads.try_begin(spec.id).ok_or("此模型已在下載中")?;
     // llama.cpp 裝在 bin/,其餘裝在 models/
     let models_dir = md::install_parent(spec);
@@ -553,6 +558,10 @@ pub async fn download_model(app: AppHandle, state: State<'_, AppState>, id: Stri
             };
             if let Err(e) = &result {
                 tracing::warn!("下載 {} 未完成:{e}", spec.id);
+            }
+            // 翻譯套件下載完:讓擴充下次連線就能喚起網頁翻譯,不必重開程式
+            if result.is_ok() && md::TRANSLATE_PACKAGES.iter().any(|p| p.id == spec.id) {
+                crate::web::refresh_after_download(&app);
             }
             emit(&Progress {
                 id: spec.id.into(),
