@@ -371,6 +371,59 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 系統音訊完全沒有串流時是否還送封包,仍未實測;「封包停止視同沒聲音」只有單元測試。
 - 背景音樂被 VAD 當成講話時,字幕不會收起(設計取捨)。
 
+## 6n. 併入網頁翻譯擴充與共用翻譯伺服器(2026-11-01 加入)
+
+**需求**:把 agent-translator(Chrome 網頁翻譯擴充 + 本機程式)併入聽譯。使用者選定:
+- 一個程式;字幕與網頁共用一個 llama-server。
+- 擴充第一次連線時才啟動伺服器。
+- host 改名,擴充 ID 沿用。
+- 用 subtree 帶入歷史。
+
+**做法**:
+- **擴充程式碼**:`web/`(subtree,107 筆歷史),atx-app 的 Rust 部分移植後刪除。
+- **共用伺服器**(`translate_server.rs`):
+  - 參數 `-np 4 -c 12288 --api-key`;slot 0 字幕、1 回修、2–3 網頁。
+  - port 與 api key 在程式執行期間固定。
+- **native host**:`tingyi.exe chrome-extension://…`,讀 `runtime.json`;以 `--background --serve-web` 喚起或轉交給執行中的聽譯。
+- **系統匣**:網頁翻譯使用中時,關主視窗只縮到系統匣。
+- **安裝版**:可在 app 內下載 llama.cpp 與 Hy-MT2 1.8B。
+
+**M1 / M2(`scripts/bench-shared-server.py`,RTX 5070,量測時其他程式已佔 4.2 GB)**:
+
+| 模型 / 設定 | 顯示記憶體增量 | 字幕首字 p50/p95 無負載 | 同時翻網頁 | 網頁每段 p50 |
+|---|---|---|---|---|
+| 1.8B Q8,np 4、ctx 12288 | 2,675 MiB | 22.8 / 51.7 ms | 25.3 / 42.9 ms | 853 ms |
+| 7B Q4,np 4、ctx 12288 | 2,051 MiB | 168 / 294 ms | 286 / 383 ms | 21.7 s |
+| 7B Q4,np 1、ctx 4096(對照) | 2,033 MiB | 186 / 328 ms | — | — |
+
+- 1.8B 共用不拖慢字幕,通過門檻:p95 ≤ 300 ms,且不超過無負載的 2 倍。
+- 7B 在這次的環境下,單 slot 也一樣慢,而且顯示記憶體只增加約 2 GB(模型本身 4.4 GB)。推論是顯示卡被其他程式佔用,模型沒有全部放上 GPU,和共用無關。10-06 顯示卡空閒時,7B 首字是 45 ms。
+
+**M3(`verify_audio_source.py`,證據 `20261101-042042`)**:字幕旅程 28 項全 PASS,gate PASS(回歸)。
+
+**M4(`verify_web_translate.mjs`,證據 `20261031-205113-web`)**:22 項全 PASS,gate PASS。
+- 擴充自動取得端點與 slots `[2,3]`。
+- 網頁沿用字幕的 1.8B,只有一個 llama-server。
+- 沒帶 api key 回 401。
+- fixture 頁 1 s 翻好。
+- 停止字幕後網頁照翻。
+- 強制結束聽譯後,llama-server 跟著結束;擴充 10 s 內喚起聽譯並恢復翻譯(喚起時用預設模型 7B)。
+
+**實跑抓到的問題**:
+- **旅程本身**:開 popup 分頁後,翻譯頁變成背景分頁,IntersectionObserver 不觸發,新段落一直不送翻。已改成關掉 popup 並把翻譯頁拉回前景。
+- **擴充 bug**:快取層把連線錯誤包成「部分失敗」,所以「連不上就重新取得端點」從來沒有觸發(原 agent-translator 沒驗證過這條路徑)。已修,測試 T27–T27c。
+
+**審查**:bug reviewer 與 cross-reviewer。「一定要改」共修 7 條:
+- 伺服器意外結束、換模型失敗會殺掉網頁的伺服器。
+- 下載後要重開程式才能用;結束時卡住;腳本安裝被誤判成未下載。
+- 當機後網頁改用預設模型。
+- bridge 路線多送 hello。
+
+**未驗**:
+- M5:安裝版真實流程。Claude 環境內登錄檔與 LOCALAPPDATA 被重導,要使用者從檔案總管驗;中文安裝路徑能否啟動 native host 也還沒驗。
+- bridge 沒有接進聽譯。
+- 只有字幕在用時伺服器當機,字幕不會自動重啟(既有行為)。
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。
