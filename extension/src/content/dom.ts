@@ -233,7 +233,8 @@ const RETRANSLATE_WINDOW_MS = 30_000;
 export function resetForRetranslate(el: HTMLElement): boolean {
   const now = Date.now();
   const prev = retranslated.get(el);
-  const count = prev && now - prev.last < RETRANSLATE_WINDOW_MS ? prev.count : 0;
+  // 影片字幕(自動字幕整段影片重複使用同一個字幕框)本來就一直換字,不受次數上限
+  const count = prev && now - prev.last < RETRANSLATE_WINDOW_MS && !el.querySelector(CAPTION_SEGMENT_SELECTOR) ? prev.count : 0;
   retranslated.set(el, { count: Math.min(count + 1, MAX_RETRANSLATE + 1), last: now });
   restoreDual(el);
   targetOf(el)?.remove();

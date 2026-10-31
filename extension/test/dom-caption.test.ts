@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { collectBlocks, insertTranslation, setDisplayMode, TARGET_CLASS } from '../src/content/dom.ts';
+import { collectBlocks, insertTranslation, resetForRetranslate, setDisplayMode, TARGET_CLASS } from '../src/content/dom.ts';
 
 /** YouTube 字幕的實際結構(2026-10 量到):字級、顏色、底色寫在每段字幕的 span 上,字幕框本身是播放器的小字。
  * jsdom 模擬不了 text-shadow(寫入即失效),外框改由實機驗 */
@@ -27,6 +27,18 @@ describe('YouTube 字幕', () => {
     expect(style.color).toBe('rgb(255, 255, 255)');
     expect(style.backgroundColor).toBe('rgba(8, 8, 8, 0.75)');
     expect(style.fontFamily).toBe('Roboto, Arial, sans-serif');
+  });
+
+  it('自動字幕同一個字幕框連續換句仍持續重翻,不會標成過期', () => {
+    document.body.innerHTML = CAPTION;
+    const [block] = collectBlocks(document.body, { targetLang: 'zh-TW', minChars: 2, scope: 'page' });
+    // 實測:ASR 字幕整段影片重複使用同一個 caption-window,幾秒換一次字
+    for (let i = 0; i < 8; i++) {
+      insertTranslation(block!, `第 ${i} 句`);
+      block!.dataset.atxState = 'done';
+      expect(resetForRetranslate(block!)).toBe(true);
+      expect(block!.dataset.atxState).toBeUndefined();
+    }
   });
 
   it('一般段落的譯文不加任何字幕樣式', () => {
