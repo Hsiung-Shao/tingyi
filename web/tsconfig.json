@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true
   },
-  "include": ["packages/*/src", "packages/*/test", "bridge/src", "bridge/test", "extension/src", "extension/test", "app/src"]
+  "include": ["packages/*/src", "packages/*/test", "bridge/src", "bridge/test", "extension/src", "extension/test"]
 }
