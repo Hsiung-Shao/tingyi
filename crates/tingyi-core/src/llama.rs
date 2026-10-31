@@ -20,6 +20,8 @@ pub struct LlamaServerSpec {
     /// 額外參數(例如 `--jinja`)。
     pub extra_args: Vec<String>,
     pub log_file: Option<PathBuf>,
+    /// `--api-key`;共用伺服器給瀏覽器擴充直連時用,避免其他網頁偷用本機 GPU。
+    pub api_key: Option<String>,
 }
 
 impl LlamaServerSpec {
@@ -41,11 +43,36 @@ impl LlamaServerSpec {
             parallel: 1,
             extra_args,
             log_file: None,
+            api_key: None,
         }
     }
 
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// llama-server 的完整參數(不含 exe)。
+    pub fn args(&self) -> Vec<String> {
+        let mut a: Vec<String> = vec![
+            "-m".into(),
+            self.model.to_string_lossy().into_owned(),
+            "-ngl".into(),
+            self.gpu_layers.clone(),
+            "-c".into(),
+            self.ctx_size.to_string(),
+            "-np".into(),
+            self.parallel.to_string(),
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--port".into(),
+            self.port.to_string(),
+        ];
+        a.extend(self.extra_args.iter().cloned());
+        if let Some(k) = &self.api_key {
+            a.push("--api-key".into());
+            a.push(k.clone());
+        }
+        a
     }
 
     /// 回修模式:兩個 slot(快路徑 0、回修 1),ctx 加大到 6144 讓每個 slot 仍有 3072 token
@@ -72,19 +99,7 @@ impl LlamaServerProcess {
             return Err(anyhow!("找不到模型:{}", spec.model.display()));
         }
         let mut cmd = Command::new(&spec.exe);
-        cmd.arg("-m")
-            .arg(&spec.model)
-            .arg("-ngl")
-            .arg(&spec.gpu_layers)
-            .arg("-c")
-            .arg(spec.ctx_size.to_string())
-            .arg("-np")
-            .arg(spec.parallel.to_string())
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(spec.port.to_string())
-            .args(&spec.extra_args)
+        cmd.args(spec.args())
             .current_dir(spec.exe.parent().unwrap_or(Path::new(".")))
             .stdin(Stdio::null());
         match &spec.log_file {

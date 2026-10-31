@@ -978,6 +978,11 @@ async fn mt_loop(
     tracing::info!("mt task 結束");
 }
 
+/// 快路徑翻譯用的 llama-server slot:共用伺服器上一律固定,不被網頁翻譯洗掉提示快取。
+pub(crate) fn fast_slot(_refine: bool) -> Option<u32> {
+    Some(crate::translate_server::SUBTITLE_SLOT)
+}
+
 async fn translate_one(
     cfg: &PipelineConfig,
     translator: &Arc<dyn Translator>,
@@ -995,7 +1000,7 @@ async fn translate_one(
         glossary: hits.clone(),
         lookahead: Vec::new(),
         // 有回修時固定用 slot 0,回修用 slot 1,前綴快取互不干擾
-        slot: if refine_tx.is_some() { Some(0) } else { None },
+        slot: fast_slot(refine_tx.is_some()),
     };
     let id = u.id;
     let ev = events.clone();
@@ -1088,5 +1093,12 @@ mod tests {
         assert_eq!(incomplete_wait(&cfg), normal, "慢檔不縮短");
         cfg.seg_control.offset_ms.store(-100, Relaxed);
         assert_eq!(incomplete_wait(&cfg), fast, "改回快檔立即反映");
+    }
+
+    // T7c:字幕快路徑不論回修開關都固定 slot 0
+    #[test]
+    fn fast_slot_is_always_zero() {
+        assert_eq!(fast_slot(false), Some(0));
+        assert_eq!(fast_slot(true), Some(0));
     }
 }

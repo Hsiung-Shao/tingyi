@@ -241,6 +241,8 @@ pub struct LlamaServerConfig {
     pub style: PromptStyle,
     /// 核取樣;None 用伺服器預設。Sakura README 建議 0.3。
     pub top_p: Option<f32>,
+    /// 本機 llama-server(認得 `id_slot`);雲端 OpenAI 相容端點為 false。
+    pub slot_aware: bool,
 }
 
 impl Default for LlamaServerConfig {
@@ -254,12 +256,13 @@ impl Default for LlamaServerConfig {
             timeout: Duration::from_secs(15),
             style: PromptStyle::HyMt2,
             top_p: None,
+            slot_aware: false,
         }
     }
 }
 
 impl LlamaServerConfig {
-    /// 依模型檔名挑範本與取樣參數(Sakura README:temperature 0.1、top_p 0.3)。
+    /// 本機 llama-server 用:依模型檔名挑範本與取樣參數(Sakura README:temperature 0.1、top_p 0.3)。
     pub fn for_model(base_url: impl Into<String>, model_name: &str) -> Self {
         let style = PromptStyle::for_model(model_name);
         let (temperature, top_p) = match style {
@@ -273,6 +276,7 @@ impl LlamaServerConfig {
             temperature,
             top_p,
             style,
+            slot_aware: true,
             ..Default::default()
         }
     }
@@ -290,6 +294,45 @@ impl LlamaServerTranslator {
             .build()
             .expect("reqwest client");
         Self { cfg, client }
+    }
+
+    /// 組出串流翻譯請求(端點、內容、`id_slot`、金鑰);不送出,測試可 `.build()` 檢查。
+    pub(crate) fn build_request(&self, req: &TranslateRequest) -> reqwest::RequestBuilder {
+        let base = self.cfg.base_url.trim_end_matches('/');
+        let msgs = build_messages(req, self.cfg.style);
+        let raw_prompt = build_raw_prompt(req, self.cfg.style);
+        // 雲端 OpenAI 相容端點不認 id_slot(只有本機 llama-server 用)
+        let id_slot = if self.cfg.slot_aware { req.slot } else { None };
+        let mut rb = if self.cfg.style.raw_completion() {
+            self.client.post(format!("{base}/completion")).json(&CompletionRequest {
+                prompt: &raw_prompt,
+                stream: true,
+                id_slot,
+                temperature: self.cfg.temperature,
+                top_p: self.cfg.top_p,
+                n_predict: self.cfg.max_tokens,
+                cache_prompt: true,
+            })
+        } else {
+            self.client.post(format!("{base}/v1/chat/completions")).json(&ChatRequest {
+                model: &self.cfg.model,
+                messages: msgs
+                    .iter()
+                    .map(|(role, content)| ChatMessage { role, content })
+                    .collect(),
+                stream: true,
+                id_slot,
+                temperature: self.cfg.temperature,
+                top_p: self.cfg.top_p,
+                max_tokens: self.cfg.max_tokens,
+                cache_prompt: true,
+                stream_options: StreamOptions { include_usage: true },
+            })
+        };
+        if let Some(k) = &self.cfg.api_key {
+            rb = rb.bearer_auth(k);
+        }
+        rb
     }
 
     pub async fn health(&self) -> Result<bool> {
@@ -409,40 +452,7 @@ impl Translator for LlamaServerTranslator {
         Box::pin(async move {
             let t0 = Instant::now();
             let raw = self.cfg.style.raw_completion();
-            let base = self.cfg.base_url.trim_end_matches('/');
-            let msgs = build_messages(&req, self.cfg.style);
-            let raw_prompt = build_raw_prompt(&req, self.cfg.style);
-            // 雲端 OpenAI 相容端點不認 id_slot(只有本機 llama-server 用)
-            let id_slot = if self.cfg.api_key.is_some() { None } else { req.slot };
-            let mut rb = if raw {
-                self.client.post(format!("{base}/completion")).json(&CompletionRequest {
-                    prompt: &raw_prompt,
-                    stream: true,
-                    id_slot,
-                    temperature: self.cfg.temperature,
-                    top_p: self.cfg.top_p,
-                    n_predict: self.cfg.max_tokens,
-                    cache_prompt: true,
-                })
-            } else {
-                self.client.post(format!("{base}/v1/chat/completions")).json(&ChatRequest {
-                    model: &self.cfg.model,
-                    messages: msgs
-                        .iter()
-                        .map(|(role, content)| ChatMessage { role, content })
-                        .collect(),
-                    stream: true,
-                    id_slot,
-                    temperature: self.cfg.temperature,
-                    top_p: self.cfg.top_p,
-                    max_tokens: self.cfg.max_tokens,
-                    cache_prompt: true,
-                    stream_options: StreamOptions { include_usage: true },
-                })
-            };
-            if let Some(k) = &self.cfg.api_key {
-                rb = rb.bearer_auth(k);
-            }
+            let rb = self.build_request(&req);
             let resp = rb.send().await.context("POST 翻譯端點")?;
             if !resp.status().is_success() {
                 let st = resp.status();
@@ -653,5 +663,36 @@ mod tests {
         assert!(tg.ends_with("Please translate the following Japanese text into Chinese:\n\n\n配信ありがとう<end_of_turn>\n<start_of_turn>model\n"));
         // greedy
         assert_eq!(LlamaServerConfig::for_model("http://x", "Seed-X-PPO-7B-Q4_K_M").temperature, 0.0);
+    }
+
+    fn slot_request_body(cfg: LlamaServerConfig, slot: Option<u32>) -> (reqwest::Request, serde_json::Value) {
+        let tr = LlamaServerTranslator::new(cfg);
+        let req = TranslateRequest { text: "Hello".into(), src_lang: Lang::En, slot, ..Default::default() };
+        let built = tr.build_request(&req).build().expect("build request");
+        let bytes = built.body().and_then(|b| b.as_bytes()).expect("body bytes").to_vec();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("body json");
+        (built, json)
+    }
+
+    // T7a:本機共用伺服器的請求帶 Bearer 金鑰與 id_slot
+    #[test]
+    fn local_shared_server_request_has_key_and_slot() {
+        for slot in [0u32, 1] {
+            let cfg = LlamaServerConfig { slot_aware: true, api_key: Some("k".into()), ..Default::default() };
+            let (built, json) = slot_request_body(cfg, Some(slot));
+            let auth = built.headers().get("authorization").map(|v| v.to_str().unwrap().to_string());
+            assert_eq!(auth.as_deref(), Some("Bearer k"), "slot {slot} 缺 Bearer");
+            assert_eq!(json.get("id_slot").and_then(|v| v.as_u64()), Some(slot as u64), "slot {slot} body 的 id_slot 不對");
+        }
+    }
+
+    // T7b:雲端端點(slot_aware=false)不帶 id_slot,仍帶 Bearer
+    #[test]
+    fn cloud_endpoint_request_has_no_slot_but_keeps_key() {
+        let cfg = LlamaServerConfig { slot_aware: false, api_key: Some("k".into()), ..Default::default() };
+        let (built, json) = slot_request_body(cfg, Some(0));
+        let auth = built.headers().get("authorization").map(|v| v.to_str().unwrap().to_string());
+        assert_eq!(auth.as_deref(), Some("Bearer k"));
+        assert!(json.get("id_slot").is_none(), "雲端 body 不該有 id_slot: {json}");
     }
 }

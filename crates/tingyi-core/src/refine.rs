@@ -608,7 +608,7 @@ pub(crate) async fn refine_mt_loop(
             context: job.context.clone(),
             glossary: job.glossary.clone(),
             lookahead: job.lookahead.clone(),
-            slot: Some(1),
+            slot: Some(crate::translate_server::REFINE_SLOT),
         };
         let mut noop = |_: &str| {};
         match tokio::time::timeout(cfg.mt_timeout * 2, translator.translate(req, &mut noop)).await {
