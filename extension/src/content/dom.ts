@@ -189,7 +189,8 @@ function applyOnly(el: HTMLElement): void {
       if (n === target) flush(n);
       else if (n.nodeType !== Node.ELEMENT_NODE) run.push(n);
       else if (isKept(n as Element)) flush(n);
-      else if (hasKept(n as Element)) {
+      // 元件(shadow host)的子元素靠 slot 掛載,搬進容器會脫離 slot(Reddit 整卡連結因此失效):留在原位、只包裡面的文字
+      else if (hasKept(n as Element) || (n as Element).hasAttribute('slot') || parent.shadowRoot) {
         flush(n);
         wrap(n as Element);
       } else run.push(n);

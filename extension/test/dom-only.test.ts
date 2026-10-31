@@ -235,4 +235,19 @@ describe('僅譯文模式的審查修正', () => {
     expect(dup.querySelector(origSel)?.textContent).toContain('Getting started guide here');
     expect(dup.querySelector(targetSel)?.parentElement).toBe(dup);
   });
+
+  it('F4 元件以 slot 掛載的子元素在僅譯文時仍留在元件下,不被包走', () => {
+    // 實測 Reddit:<shreddit-post> 用 slot 掛整卡連結與標題,被包進 atx-orig 後整卡點不進文章
+    document.body.innerHTML = '<div id="card"><x-post><span slot="credit-bar">u/notfromholl posted</span><a slot="full-post-link" href="/p/1"></a><a slot="title" href="/p/1">Please help me optimize my character</a><div slot="text-body"><p>Body paragraph of the post.</p></div></x-post></div>';
+    const host = q('x-post');
+    host.attachShadow({ mode: 'open' }).innerHTML = '<slot name="credit-bar"></slot><slot name="full-post-link"></slot><slot name="title"></slot><slot name="text-body"></slot>';
+    const card = q('#card');
+    translate(card, '請幫我優化我的角色');
+    setDisplayMode('only', document);
+
+    for (const c of Array.from(host.querySelectorAll("[slot]"))) expect(c.parentElement).toBe(host);
+    expect(host.querySelector(`:scope > ${origSel}`)).toBeNull();
+    expect(q('a[slot=title]').querySelector(origSel)?.textContent).toBe('Please help me optimize my character');
+    expect(card.querySelector(targetSel)?.textContent).toBe('請幫我優化我的角色');
+  });
 });
