@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Translator</title>
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <style>
+      body { width: 300px; padding: 14px; }
+      #toggle { width: 100%; margin-top: 4px; }
+      #appLink { display: flex; gap: 6px; align-items: center; margin: -4px 0 10px; }
+      #appLink .status { margin: 0; flex: 1; }
+      #appLinkAction { padding: 2px 8px; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agent Translator</h1>
+    <div id="appLink" hidden>
+      <div id="appLinkText" class="status muted"></div>
+      <button id="appLinkAction" class="secondary" hidden></button>
+    </div>
+    <button id="toggle">翻譯此頁</button>
+    <div id="pageState" class="status muted"></div>
+    <div class="row seg" style="margin-top: 10px">
+      <select id="displayMode" aria-label="顯示模式">
+        <option value="dual">雙語對照</option>
+        <option value="only">僅譯文</option>
+      </select>
+      <select id="scope" aria-label="翻譯範圍">
+        <option value="main">主要內容</option>
+        <option value="page">整頁</option>
+      </select>
+    </div>
+    <label for="route">翻譯後端</label>
+    <select id="route">
+      <option value="bridge">bridge(MCP:訂閱 agent)</option>
+      <option value="direct">直連 OpenAI 相容端點</option>
+    </select>
+    <div id="bridgeBox">
+      <label for="provider">agent</label>
+      <select id="provider"></select>
+    </div>
+    <label for="targetLang">目標語言</label>
+    <select id="targetLang">
+      <option value="zh-TW">繁體中文(台灣)</option>
+      <option value="zh-CN">簡體中文</option>
+      <option value="en">English</option>
+      <option value="ja">日本語</option>
+      <option value="ko">한국어</option>
+    </select>
+    <div id="providerState" class="status muted"></div>
+    <p><a href="#" id="openOptions">進階設定</a></p>
+    <script src="popup.js"></script>
+  </body>
+</html>

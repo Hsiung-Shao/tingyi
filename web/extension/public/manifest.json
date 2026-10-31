@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Translator",
+  "description": "用自己訂閱的 agent(Claude Code / Codex / Gemini CLI,經 MCP)或本地模型做雙語對照網頁翻譯",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup/popup.html", "default_title": "Agent Translator" },
+  "options_page": "options/options.html",
+  "permissions": ["storage", "unlimitedStorage", "nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-translate": {
+      "suggested_key": { "default": "Alt+A" },
+      "description": "切換翻譯此頁"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+font.atx-target {
+  display: block;
+  margin-top: 0.25em;
+  color: inherit;
+  opacity: 0.78;
+  font-weight: inherit;
+  line-height: inherit;
+  white-space: normal;
+}
+
+/* 短標籤(選單項目、按鈕文字)同行顯示,不撐開版面 */
+font.atx-target.atx-inline {
+  display: inline;
+  margin-top: 0;
+  margin-left: 0.4em;
+}
+
+/* 影片字幕:字級、顏色、底色由 dom.ts 照抄字幕那段;譯文自成一行字幕,不淡化 */
+font.atx-target.atx-caption {
+  display: inline-block;
+  margin: 0;
+  opacity: 1;
+  white-space: pre-wrap;
+}
+/* YouTube 依原文量出字幕框寬度,同字級的中文較寬會被擠成兩行:有譯文時改依內容寬度,仍置中。
+   只動以 left:50% 置中的字幕框;作者指定位置或被拖過的字幕維持原位 */
+.caption-window.ytp-caption-window-bottom[style*='left: 50%']:has(> font.atx-caption) {
+  width: max-content !important;
+  max-width: 96%;
+  margin-left: 0 !important;
+  transform: translateX(-50%);
+}
+
+[data-atx-state='pending'] {
+  background-image: linear-gradient(90deg, transparent, rgba(120, 140, 255, 0.12), transparent);
+  background-size: 200% 100%;
+  animation: atx-pending 1.4s linear infinite;
+}
+
+[data-atx-state='error'] {
+  text-decoration: underline dotted rgba(220, 60, 60, 0.7);
+}
+
+@keyframes atx-pending {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+/* 僅譯文:原文包進隱藏容器,譯文佔原文的位置;只在僅譯文模式隱藏,網站複製出的殘留容器切回雙語仍看得到 */
+html[data-atx-mode='only'] font.atx-orig {
+  display: none !important;
+}
+html[data-atx-mode='only'] [data-atx-state='done'] font.atx-target {
+  display: inline;
+  opacity: 1;
+  margin: 0;
+}

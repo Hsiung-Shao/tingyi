@@ -1,0 +1,5 @@
+packages:
+  - packages/*
+  - bridge
+  - extension
+  - app
