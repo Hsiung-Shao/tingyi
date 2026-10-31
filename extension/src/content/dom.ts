@@ -64,10 +64,14 @@ const CONTAINER_TAGS = new Set(['DIV', 'SECTION', 'ARTICLE', 'MAIN', 'ASIDE', 'H
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'PRE', 'CODE', 'KBD', 'SAMP', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'BUTTON', 'SVG', 'MATH', 'CANVAS', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'HEAD']);
 /** 段落文字裡要拿掉的:看不到或屬於表單的內容。行內 code/kbd 是句子的一部分,要保留 */
 const HIDDEN_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'SELECT', 'OPTION']);
+/** 只給螢幕閱讀器的隱藏文字(Reddit 的「Go to …」等),翻出來會變成畫面上多一行字 */
+const SCREEN_READER_SELECTOR = 'faceplate-screen-reader-content,.sr-only,.screen-reader-only,.visually-hidden,[hidden]';
+function isHiddenText(el: Element): boolean {
+  return HIDDEN_TEXT_TAGS.has(el.tagName.toUpperCase()) || el.matches(SCREEN_READER_SELECTOR);
+}
 /** 判斷「裡面還有沒有區塊」用:多了 pre、ul、table 這類不翻但會斷段的元素 */
-const BLOCKISH_SELECTOR = [...LEAF_TAGS, ...CONTAINER_TAGS, 'PRE', 'UL', 'OL', 'DL', 'TABLE', 'TR', 'HR']
-  .map((t) => t.toLowerCase())
-  .join(',');
+// 元件以 slot 掛載的子元素(Reddit 卡片的標題、作者列)各自成段,譯文才會留在它原本的位置
+const BLOCKISH_SELECTOR = [...[...LEAF_TAGS, ...CONTAINER_TAGS, 'PRE', 'UL', 'OL', 'DL', 'TABLE', 'TR', 'HR'].map((t) => t.toLowerCase()), '[slot]'].join(',');
 
 function isSkipped(el: Element, opts: CollectOptions): boolean {
   if (SKIP_TAGS.has(el.tagName.toUpperCase())) return true;
@@ -166,12 +170,14 @@ function applyOnly(el: HTMLElement): void {
   const translated = target.textContent ?? '';
   const keptLinks = new Set<Element>(urlLinks(el).filter((a) => !translated.includes(a.textContent!.trim())));
   const soleLink = Array.from(el.querySelectorAll('a')).find(
-    (a) => isOwnInline(el, a) && !keptLinks.has(a) && !a.querySelector(BLOCKISH_SELECTOR) &&
+    (a) => text !== '' && isOwnInline(el, a) && !keptLinks.has(a) && !a.querySelector(BLOCKISH_SELECTOR) &&
       (a.textContent ?? '').replace(/\s+/g, ' ').trim() === text,
   );
   const isKept = (n: Element) => n.matches(`${BLOCKISH_SELECTOR},${KEEP_VISIBLE_SELECTOR}`) || keptLinks.has(n);
   const hasKept = (n: Element) =>
     n.querySelector(`${BLOCKISH_SELECTOR},${KEEP_VISIBLE_SELECTOR}`) !== null || [...keptLinks].some((a) => n.contains(a));
+  // 沒有文字的元素(元件自己畫的返回鍵、空的整卡連結、圖示)不是原文,包起來只會讓它消失
+  const isBlank = (n: Element) => !/^(BR|WBR)$/.test(n.tagName.toUpperCase()) && !(n.textContent ?? '').trim();
   const doc = el.ownerDocument;
   const made: HTMLElement[] = [];
   const wrap = (parent: Element) => {
@@ -188,9 +194,12 @@ function applyOnly(el: HTMLElement): void {
     for (const n of Array.from(parent.childNodes)) {
       if (n === target) flush(n);
       else if (n.nodeType !== Node.ELEMENT_NODE) run.push(n);
-      else if (isKept(n as Element)) flush(n);
       // 元件(shadow host)的子元素靠 slot 掛載,搬進容器會脫離 slot(Reddit 整卡連結因此失效):留在原位、只包裡面的文字
-      else if (hasKept(n as Element) || (n as Element).hasAttribute('slot') || parent.shadowRoot) {
+      else if ((n as Element).hasAttribute('slot') || parent.shadowRoot) {
+        flush(n);
+        wrap(n as Element);
+      } else if (isKept(n as Element) || isBlank(n as Element)) flush(n);
+      else if (hasKept(n as Element)) {
         flush(n);
         wrap(n as Element);
       } else run.push(n);
@@ -252,7 +261,7 @@ export function resetForRetranslate(el: HTMLElement): boolean {
 
 function isCandidate(el: Element, opts: CollectOptions): el is HTMLElement {
   const tag = el.tagName.toUpperCase();
-  if (!LEAF_TAGS.has(tag) && !CONTAINER_TAGS.has(tag)) return false;
+  if (!LEAF_TAGS.has(tag) && !CONTAINER_TAGS.has(tag) && !el.hasAttribute('slot')) return false;
   if ((el as HTMLElement).dataset?.atxState !== undefined) return false;
   if (targetOf(el)) return false;
   const text = getBlockText(el);
@@ -272,7 +281,7 @@ function hasTextOutsideCode(el: Element): boolean {
     let inCode = false;
     for (let p = n.parentElement; p && p !== el; p = p.parentElement) {
       const tag = p.tagName.toUpperCase();
-      if (CODE_TAGS.has(tag) || p.classList.contains(TARGET_CLASS) || HIDDEN_TEXT_TAGS.has(tag)) {
+      if (CODE_TAGS.has(tag) || p.classList.contains(TARGET_CLASS) || isHiddenText(p)) {
         inCode = true;
         break;
       }
@@ -311,7 +320,7 @@ export function getBlockText(el: Element): string {
   const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       for (let p = node.parentElement; p && p !== el; p = p.parentElement) {
-        if (p.classList.contains(TARGET_CLASS) || HIDDEN_TEXT_TAGS.has(p.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
+        if (p.classList.contains(TARGET_CLASS) || isHiddenText(p)) return NodeFilter.FILTER_REJECT;
         if (p.matches(BLOCKISH_SELECTOR)) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;

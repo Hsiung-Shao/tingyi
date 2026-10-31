@@ -6,6 +6,8 @@ import {
   setDisplayMode,
   watchNewBlocks,
   ORIG_CLASS,
+  collectBlocks,
+  getBlockText,
   TARGET_CLASS,
 } from '../src/content/dom.ts';
 
@@ -242,12 +244,43 @@ describe('僅譯文模式的審查修正', () => {
     const host = q('x-post');
     host.attachShadow({ mode: 'open' }).innerHTML = '<slot name="credit-bar"></slot><slot name="full-post-link"></slot><slot name="title"></slot><slot name="text-body"></slot>';
     const card = q('#card');
-    translate(card, '請幫我優化我的角色');
+    // slot 掛的標題自成一段(F5),實際送翻的是標題
+    translate(q('a[slot=title]'), '請幫我優化我的角色');
     setDisplayMode('only', document);
 
     for (const c of Array.from(host.querySelectorAll("[slot]"))) expect(c.parentElement).toBe(host);
     expect(host.querySelector(`:scope > ${origSel}`)).toBeNull();
     expect(q('a[slot=title]').querySelector(origSel)?.textContent).toBe('Please help me optimize my character');
     expect(card.querySelector(targetSel)?.textContent).toBe('請幫我優化我的角色');
+  });
+
+  it('F5 卡片元件以 slot 掛的標題自成一段,僅譯文時譯文留在標題連結裡', () => {
+    // 實測 Reddit 列表:整張卡片當一段時,譯文跑到按鈕列下方
+    document.body.innerHTML = '<article id="card"><x-post><span slot="credit-bar">Posted by wertgzhj five days ago</span><a slot="title" href="/p/1">Made a leveling overlay for testers</a></x-post></article>';
+    q('x-post').attachShadow({ mode: 'open' }).innerHTML = '<slot name="credit-bar"></slot><slot name="title"></slot>';
+    const blocks = collectBlocks(document.body, { targetLang: 'zh-TW', minChars: 2, scope: 'page' });
+    const title = q('a[slot=title]');
+    expect(blocks).toContain(title);
+    expect(blocks).not.toContain(q('#card'));
+    translate(title, '做了一個升級提示工具,想找測試者');
+    setDisplayMode('only', document);
+    expect(title.parentElement).toBe(q('x-post'));
+    expect(title.querySelector(targetSel)?.textContent).toBe('做了一個升級提示工具,想找測試者');
+  });
+
+  it('F6 沒有文字的元素(元件自己畫的返回鍵、圖示)在僅譯文時保持可見', () => {
+    // 實測 Reddit 文章頁:返回鍵是空的元件,被包進 atx-orig 後消失
+    document.body.innerHTML = '<div id="hdr"><x-back-button></x-back-button><span>Posted in pathofexiledev fifteen days ago</span></div>';
+    const hdr = q('#hdr');
+    translate(hdr, '十五天前發布於 pathofexiledev');
+    setDisplayMode('only', document);
+    expect(q('x-back-button').closest(origSel)).toBeNull();
+    expect(q('span').closest(origSel)).not.toBeNull();
+  });
+
+  it('F7 螢幕閱讀器專用的隱藏文字不送翻', () => {
+    // 實測 Reddit:<faceplate-screen-reader-content> 的「Go to ...」被翻出來顯示成「前往 pathofexiledev」
+    document.body.innerHTML = '<div id="hdr"><a href="/r/x">r/pathofexiledev</a> fifteen days ago<faceplate-screen-reader-content>Go to pathofexiledev</faceplate-screen-reader-content><span class="sr-only">Hidden helper text</span></div>';
+    expect(getBlockText(q('#hdr'))).toBe('r/pathofexiledev fifteen days ago');
   });
 });
