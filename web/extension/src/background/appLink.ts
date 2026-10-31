@@ -1,7 +1,7 @@
 import { loadSettings, saveSettings, type Settings } from '../shared/settings.ts';
 
 /** 本機程式登錄的 native messaging host 名稱 */
-export const HOST_NAME = 'com.agent_translator.host';
+export const HOST_NAME = 'com.jerry.tingyi.host';
 
 /** 本地模型狀態(與本機程式 runtime.json 的 status 相同) */
 export type ModelStatus = 'ready' | 'downloading' | 'starting' | 'stopped' | 'not-downloaded' | 'error';
@@ -12,6 +12,8 @@ export type HostReply =
       ok: true;
       status: ModelStatus;
       llama: { baseUrl: string; model: string; apiKey: string } | null;
+      /** 網頁翻譯可用的 llama-server slot(聽譯的共用伺服器才有;字幕固定用其他 slot) */
+      slots?: number[];
       bridge: { url: string; token: string } | null;
       message?: string | null;
       appVersion: string;
@@ -40,6 +42,8 @@ export function applyHostReply(s: Settings, reply: HostReply): Settings {
     next.direct.baseUrl = reply.llama.baseUrl;
     next.direct.model = reply.llama.model;
     next.direct.apiKey = reply.llama.apiKey;
+    // 舊版本機程式沒有 slot 分工
+    next.direct.slots = reply.slots ?? [];
     // 本地翻譯專用小模型一次只送一段,也不要求 JSON 格式
     next.direct.format = 'single';
     next.direct.jsonMode = false;

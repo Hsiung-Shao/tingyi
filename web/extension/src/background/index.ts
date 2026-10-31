@@ -12,6 +12,7 @@ import type { ContentRequest, LimitsResponse, PopupRequest, ProvidersResponse, T
 import { effectiveLimits, loadSettings, type Settings } from '../shared/settings.ts';
 import { autoConnect } from './appLink.ts';
 import { callBridgeTool } from './mcp.ts';
+import { createSlotPicker, withSlot } from './slots.ts';
 
 const store: KeyValueStore = {
   async get(keys) {
@@ -38,6 +39,16 @@ async function translateViaBridge(s: Settings, segments: Segment[], context: Pag
   return new Map(res.translations.map((t) => [t.id, t.text]));
 }
 
+// 跨請求輪用聽譯指派的 slot;slot 清單變了才換新的選擇器
+let picker = { key: '', next: createSlotPicker([]) };
+function nextSlot(s: Settings): number | undefined {
+  // 手動設定的端點不是聽譯,不帶 id_slot
+  if (s.connection !== 'auto') return undefined;
+  const key = s.direct.slots.join(',');
+  if (key !== picker.key) picker = { key, next: createSlotPicker(s.direct.slots) };
+  return picker.next();
+}
+
 async function translateDirect(s: Settings, segments: Segment[], context: PageContext): Promise<Map<number, string>> {
   const extraBody = JSON.parse(s.direct.extraBody || '{}') as Record<string, unknown>;
   const cfg = {
@@ -49,7 +60,11 @@ async function translateDirect(s: Settings, segments: Segment[], context: PageCo
   };
   return translateWithRetry(
     segments,
-    (segs) => callOpenAICompatible(cfg, buildPrompt(segs, s.targetLang, s.direct.format, context)),
+    (segs) =>
+      callOpenAICompatible(
+        { ...cfg, extraBody: withSlot(extraBody, nextSlot(s)) },
+        buildPrompt(segs, s.targetLang, s.direct.format, context),
+      ),
     1,
     s.direct.format,
   );

@@ -26,6 +26,8 @@ export interface Settings {
     format: BatchFormat;
     /** JSON 字串,合併進 request body */
     extraBody: string;
+    /** 本機程式指派給網頁翻譯的 llama-server slot(輪流帶 id_slot);空 = 不帶 */
+    slots: number[];
   };
   limits: { bridge: BatchLimits; direct: BatchLimits };
   concurrency: number;
@@ -46,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
     jsonMode: true,
     format: 'json',
     extraBody: '{}',
+    slots: [],
   },
   limits: { bridge: { maxSegments: 20, maxChars: 6000 }, direct: { maxSegments: 8, maxChars: 2500 } },
   concurrency: 2,

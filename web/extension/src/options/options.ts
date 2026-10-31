@@ -53,6 +53,8 @@ async function collect(): Promise<Settings> {
       format: (document.getElementById('format') as HTMLSelectElement).value as Settings['direct']['format'],
       jsonMode: input('jsonMode').checked,
       extraBody,
+      // slot 由本機程式指派,不在選項頁編輯
+      slots: s.direct.slots,
     },
     limits: {
       bridge: { maxSegments: num('bridgeSeg', 1), maxChars: num('bridgeChars', 200) },
