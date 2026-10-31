@@ -17,7 +17,10 @@ python .claude/skills/verify/scripts/verify_audio_source.py
 python .claude/skills/verify/scripts/verify_model_download.py
 python .claude/skills/verify/scripts/verify_download_script.py --existing D:\codeproject\translate\data
 python .claude/skills/verify/scripts/verify_release_build.py      # 先 pnpm tauri build;在 main 的工作目錄跑
+node .claude/skills/verify/scripts/verify_web_translate.mjs        # 網頁翻譯(擴充 + 共用翻譯伺服器)
 ```
+
+第五支驗網頁翻譯(見 `features/web-translate.md`):`pnpm tauri dev` 啟動聽譯(`TINGYI_REGISTER_HOST=1` 讓開發版寫 native host 註冊),主視窗以 1.8B 開始字幕,再用 ms-playwright 的 Chromium 載入 `web/extension/dist`(腳本會先建置)。檢查:擴充自動取得端點與 slots `[2,3]`、網頁與字幕只有一個 llama-server、沒帶 api key 被拒、fixture 頁翻好、停止字幕後網頁照翻、強制結束聽譯後 llama-server 跟著結束且擴充自動喚起聽譯恢復翻譯。證據在 `evidence/<時間>-web/`。在 Claude 環境內登錄檔與 LOCALAPPDATA 會被重導(Chromium 與聽譯同在重導範圍內,所以旅程本身一致),真實環境要另由使用者從檔案總管驗。
 
 第二支驗專用模型的 app 內下載(見 `features/routed-models.md`):自己架假 Hugging Face(本機 Range 伺服器,提供 `data/models` 的真實檔、限速),`TINGYI_DATA_DIR` 指向證據目錄裡的臨時資料目錄,結束後刪掉臨時資料目錄(只留檔案清單)。選項 `--source-data`、`--rate-mbps`。
 
@@ -81,6 +84,8 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 - `scripts/verify_model_download.py`:專用模型下載旅程(見 `features/routed-models.md`)。
 - `scripts/verify_download_script.py`:開發用下載腳本的 SHA256 校驗(見上方說明)。
 - `scripts/verify_release_build.py`:正式版執行檔與安裝檔的實跑(見上方說明)。
+- `scripts/verify_web_translate.mjs`:網頁翻譯旅程(Node 24 內建 WebSocket;見 `features/web-translate.md`)。
+- `scripts/bench-shared-server.py`(專案根目錄 `scripts/`):共用伺服器的字幕首字延遲與顯示記憶體量測。
 - 專案腳本:`scripts/tts-smoke.ps1`(TTS 供音)、`scripts/shot-windows.ps1`(截圖)。
 
 ## 破壞對照紀錄
