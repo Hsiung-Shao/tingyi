@@ -86,7 +86,7 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
     return { ok: true, translations: toList(await translate(segments)) };
   } catch (e) {
     // 連線錯誤要交給 translateWithRelink 重新取得端點,不能當成部分失敗吞掉
-    if (e instanceof PartialTranslationError && !needsRelink(e)) return partialResponse(e);
+    if (e instanceof PartialTranslationError && !needsRelink(e, s.route)) return partialResponse(e);
     throw e;
   }
 }
@@ -98,7 +98,7 @@ const partialResponse = (e: PartialTranslationError): TranslateResponse => ({ ok
 async function translateWithRelink(segments: Segment[], context: PageContext): Promise<TranslateResponse> {
   const s = await loadSettings();
   const retry = async (e: unknown): Promise<TranslateResponse> => {
-    if (s.connection !== 'auto' || !needsRelink(e)) {
+    if (s.connection !== 'auto' || !needsRelink(e, s.route)) {
       if (e instanceof PartialTranslationError) return partialResponse(e);
       throw e;
     }
@@ -115,7 +115,7 @@ async function translateWithRelink(segments: Segment[], context: PageContext): P
 }
 
 function linkMessage(link: Awaited<ReturnType<typeof autoConnect>>): string | undefined {
-  if (link.state === 'not-installed') return '找不到本機程式,請先安裝 agent-translator 本機程式';
+  if (link.state === 'not-installed') return '找不到本機程式,請先安裝聽譯(tingyi)';
   if (link.state === 'app-error') return `本機程式沒有回應:${link.message}`;
   if (link.state === 'connected' && link.status !== 'ready') return link.message ?? `本地模型尚未就緒(${link.status})`;
   return undefined;

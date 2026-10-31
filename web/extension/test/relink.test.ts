@@ -18,4 +18,14 @@ describe('翻譯失敗時是否重新連線本機程式', () => {
     expect(needsRelink(new PartialTranslationError(new Map([[0, '你好']]), new Error('OpenAI 相容端點回應 500:busy')))).toBe(false);
     expect(needsRelink(new Error('JSON 解析失敗'))).toBe(false);
   });
+
+  // T27c
+  it('bridge 路線的連線錯誤不重新連線,direct 路線才重新連線', () => {
+    const raw = new TypeError('Failed to fetch');
+    const wrapped = new PartialTranslationError(new Map(), new TypeError('Failed to fetch'));
+    expect(needsRelink(raw, 'bridge')).toBe(false);
+    expect(needsRelink(wrapped, 'bridge')).toBe(false);
+    expect(needsRelink(raw, 'direct')).toBe(true);
+    expect(needsRelink(wrapped, 'direct')).toBe(true);
+  });
 });
