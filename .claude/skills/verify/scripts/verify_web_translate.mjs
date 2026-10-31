@@ -75,7 +75,9 @@ const killTree = (pid, label) => {
   if (!pid || !alive(pid)) return;
   try {
     execFileSync('taskkill', ['/PID', String(pid), '/T', '/F']);
-  } catch {}
+  } catch {
+    // 程序已經結束時 taskkill 回非 0,下一行的 alive() 會記錄實際結果
+  }
   log(`關閉 ${label} pid ${pid}:${alive(pid) ? '仍存活!' : '已結束'}`);
 };
 const healthy = async (port) => fetch(`http://127.0.0.1:${port}/health`).then((r) => r.status === 200, () => false);
@@ -309,7 +311,9 @@ async function main() {
   const oldPort = rtS.llama.port;
   try {
     execFileSync('taskkill', ['/F', '/PID', String(oldPid)]);
-  } catch {}
+  } catch {
+    // 程序已經結束也沒關係,下面的檢查會確認它與 llama-server 都不在了
+  }
   await sleep(2000);
   check('聽譯被強制結束後 llama-server 也跟著結束(Job Object)', !alive(oldPid) && !(await healthy(oldPort)), `pid ${oldPid} port ${oldPort}`);
   await page.evalJs(`(()=>{const p=document.createElement('p');p.id='p5';p.textContent='After the app was closed, the extension started it again in the background and kept translating.';document.getElementById('later').appendChild(p)})()`);
