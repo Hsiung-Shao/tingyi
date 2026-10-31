@@ -9,3 +9,4 @@ app/data/
 app/dist/
 app/src-tauri/target/
 app/src-tauri/gen/
+release/
