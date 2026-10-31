@@ -283,4 +283,35 @@ describe('僅譯文模式的審查修正', () => {
     document.body.innerHTML = '<div id="hdr"><a href="/r/x">r/pathofexiledev</a> fifteen days ago<faceplate-screen-reader-content>Go to pathofexiledev</faceplate-screen-reader-content><span class="sr-only">Hidden helper text</span></div>';
     expect(getBlockText(q('#hdr'))).toBe('r/pathofexiledev fifteen days ago');
   });
+
+  it('F8 祖先段落與 slot 標題都翻好後切僅譯文,標題譯文與未送翻的 slot 文字仍可見', () => {
+    document.body.innerHTML = '<div id="hdr">Posted by someone yesterday<x-post><a slot="title" href="/p/1">Title of the post here</a><span slot="score">1.2k</span></x-post></div>';
+    q('x-post').attachShadow({ mode: 'open' }).innerHTML = '<slot name="title"></slot><slot name="score"></slot>';
+    const title = q('a[slot=title]');
+    translate(title, '貼文標題');
+    translate(q('#hdr'), '某人昨天發布');
+    setDisplayMode('only', document);
+    expect(title.querySelector(targetSel)?.closest(origSel)).toBeNull();
+    expect(q('span[slot=score]').closest(origSel)).toBeNull();
+  });
+
+  it('F9 標題連結含螢幕閱讀器提示時仍視為整段在連結內,譯文可點', () => {
+    document.body.innerHTML = '<h3 id="h"><a href="/news/1">Headline of the news story<span class="sr-only"> (opens in new tab)</span></a></h3>';
+    const h = q('#h');
+    translate(h, '新聞標題');
+    setDisplayMode('only', document);
+    expect(h.querySelector(targetSel)?.closest('a')).toBe(q('a'));
+    expect(q('a').closest(origSel)).toBeNull();
+  });
+
+  it('F8b 僅譯文模式下標題譯文先到、祖先段落後到,標題譯文仍可見', () => {
+    document.body.innerHTML = '<div id="hdr">Posted by someone yesterday<x-post><a slot="title" href="/p/1">Title of the post here</a><span slot="score">1.2k</span></x-post></div>';
+    q('x-post').attachShadow({ mode: 'open' }).innerHTML = '<slot name="title"></slot><slot name="score"></slot>';
+    setDisplayMode('only', document);
+    const title = q('a[slot=title]');
+    translate(title, '貼文標題');
+    translate(q('#hdr'), '某人昨天發布');
+    expect(title.querySelector(targetSel)?.closest(origSel)).toBeNull();
+    expect(q('span[slot=score]').closest(origSel)).toBeNull();
+  });
 });

@@ -171,7 +171,7 @@ function applyOnly(el: HTMLElement): void {
   const keptLinks = new Set<Element>(urlLinks(el).filter((a) => !translated.includes(a.textContent!.trim())));
   const soleLink = Array.from(el.querySelectorAll('a')).find(
     (a) => text !== '' && isOwnInline(el, a) && !keptLinks.has(a) && !a.querySelector(BLOCKISH_SELECTOR) &&
-      (a.textContent ?? '').replace(/\s+/g, ' ').trim() === text,
+      getBlockText(a) === text,
   );
   const isKept = (n: Element) => n.matches(`${BLOCKISH_SELECTOR},${KEEP_VISIBLE_SELECTOR}`) || keptLinks.has(n);
   const hasKept = (n: Element) =>
@@ -194,12 +194,10 @@ function applyOnly(el: HTMLElement): void {
     for (const n of Array.from(parent.childNodes)) {
       if (n === target) flush(n);
       else if (n.nodeType !== Node.ELEMENT_NODE) run.push(n);
-      // 元件(shadow host)的子元素靠 slot 掛載,搬進容器會脫離 slot(Reddit 整卡連結因此失效):留在原位、只包裡面的文字
-      else if ((n as Element).hasAttribute('slot') || parent.shadowRoot) {
-        flush(n);
-        wrap(n as Element);
-      } else if (isKept(n as Element) || isBlank(n as Element)) flush(n);
-      else if (hasKept(n as Element)) {
+      // 帶 slot 的子元素是獨立段落(BLOCKISH),由 isKept 留在原位,不包它也不包它的譯文
+      else if (isKept(n as Element) || isBlank(n as Element)) flush(n);
+      // 元件(shadow host)的子元素搬進容器會脫離 slot(Reddit 整卡連結因此失效):留在原位、只包裡面的文字
+      else if (hasKept(n as Element) || parent.shadowRoot) {
         flush(n);
         wrap(n as Element);
       } else run.push(n);
