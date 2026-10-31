@@ -286,7 +286,8 @@ async function main() {
   check('fixture 段落經聽譯的共用伺服器翻好(字幕同時在跑)', tr.ok, `n=${tr.n} ${tr.ms}ms`);
   log(`  譯文:${await page.evalJs(`document.querySelector('#p1 font.atx-target')?.textContent`)}`);
   await screenshot(page, '02-page-translated.png');
-  const popup = connect((await cdpJson(CHROME_PORT, `/json/new?chrome-extension://${EXT_ID}/popup/popup.html`)).webSocketDebuggerUrl);
+  const popupT = await cdpJson(CHROME_PORT, `/json/new?chrome-extension://${EXT_ID}/popup/popup.html`);
+  const popup = connect(popupT.webSocketDebuggerUrl);
   await popup.send('Page.enable');
   const pop = await waitFor(async () => {
     const tx = (await popup.evalJs(`document.getElementById('appLinkText')?.textContent??''`)) ?? '';
@@ -294,6 +295,9 @@ async function main() {
   }, 15_000);
   check('popup 顯示已連上本機程式', pop.ok, pop.tx);
   await screenshot(popup, '03-popup-linked.png');
+  // popup 分頁會跑到最前面;擴充只翻畫面上的段落(IntersectionObserver),背景分頁不觸發,要把翻譯頁拉回前面
+  await fetch(`http://127.0.0.1:${CHROME_PORT}/json/close/${popupT.id}`).catch(() => null);
+  await page.send('Page.bringToFront');
 
   // ── 4. 停止字幕:網頁翻譯不受影響 ──
   await js(`__w.btn('停止').click(), true`);
