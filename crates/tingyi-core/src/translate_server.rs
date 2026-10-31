@@ -87,6 +87,8 @@ pub struct SharedServer {
     /// 執行中的伺服器。
     running: Option<Active>,
     holders: HashSet<Holder>,
+    /// 意外結束前的模型(見 `last_model`)。
+    last: Option<String>,
 }
 
 struct Active {
@@ -98,7 +100,7 @@ struct Active {
 
 impl SharedServer {
     pub fn new(exe: PathBuf, port: u16, api_key: String, launcher: Box<dyn Launch>) -> Self {
-        Self { exe, port, api_key, launcher, running: None, holders: HashSet::new() }
+        Self { exe, port, api_key, launcher, running: None, holders: HashSet::new(), last: None }
     }
 
     /// 固定的連線資訊(伺服器沒在跑也能查)。
@@ -132,6 +134,7 @@ impl SharedServer {
         let spec = shared_spec(self.exe.clone(), path.clone(), self.port, &self.api_key);
         let proc = self.launcher.launch(&spec)?;
         self.running = Some(Active { model: model_name.to_string(), path, proc });
+        self.last = None;
         Ok(())
     }
 
@@ -140,6 +143,7 @@ impl SharedServer {
         self.holders.remove(&holder);
         if self.holders.is_empty() {
             self.stop();
+            self.last = None;
         }
     }
 
@@ -166,11 +170,21 @@ impl SharedServer {
         self.running.as_ref().and_then(|a| a.proc.pid())
     }
 
+    /// 意外結束前執行中的模型(還有人持有時才記;重新啟動成功或全部放掉後清除)。
+    /// 網頁翻譯重新取得伺服器時優先沿用,字幕才不會被換成別的模型。
+    pub fn last_model(&self) -> Option<&str> {
+        self.last.as_deref()
+    }
+
     /// 檢查伺服器程序是否還在;意外結束就當作沒在跑(持有者不變,下次 acquire 會重啟)。
     pub fn check_alive(&mut self) -> bool {
         if self.running.as_mut().is_some_and(|a| !a.proc.is_alive()) {
             tracing::warn!("llama-server 意外結束");
-            self.running = None;
+            if let Some(a) = self.running.take() {
+                if !self.holders.is_empty() {
+                    self.last = Some(a.model);
+                }
+            }
         }
         self.is_running()
     }
@@ -504,5 +518,29 @@ mod tests {
         assert!(!srv.is_running());
         assert_eq!(srv.model(), None);
         assert!(srv.holds(Holder::Web), "持有者不變");
+    }
+
+    // T26:當機後記住原模型,重啟成功就清掉
+    #[test]
+    fn crash_remembers_model_until_relaunch() {
+        let (mut srv, st) = new_server2(&[]);
+        srv.acquire(Holder::Subtitles, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("acquire subtitles");
+        srv.acquire(Holder::Web, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("acquire web");
+        assert_eq!(srv.last_model(), None, "活著時應為 None");
+        st.lock().unwrap().alive = false;
+        assert!(!srv.check_alive());
+        assert_eq!(srv.last_model(), Some("Hy-MT2-7B-Q4_K_M"), "當機後應記住原模型");
+        srv.acquire(Holder::Web, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("relaunch");
+        assert_eq!(srv.last_model(), None, "重啟成功後應清掉");
+    }
+
+    // T26b:正常全部釋放停止時不記
+    #[test]
+    fn normal_stop_does_not_remember_model() {
+        let (mut srv, _st) = new_server2(&[]);
+        srv.acquire(Holder::Subtitles, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire");
+        srv.release(Holder::Subtitles);
+        assert!(!srv.is_running());
+        assert_eq!(srv.last_model(), None);
     }
 }

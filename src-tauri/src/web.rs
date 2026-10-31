@@ -90,7 +90,8 @@ pub fn serve_web(app: &AppHandle) {
         let result = (|| -> anyhow::Result<(u16, String, String)> {
             let mut g = crate::state::lock_translate(&slot)?;
             let s = g.as_mut().expect("lock_translate 已建立");
-            let model = s.model().map(str::to_string).unwrap_or_else(crate::commands::default_mt_model);
+            // 伺服器在跑就沿用;剛當機就用當機前的模型(字幕還在用它);都沒有才用預設
+            let model = s.model().or(s.last_model()).map(str::to_string).unwrap_or_else(crate::commands::default_mt_model);
             if !packages_ready(&model) {
                 anyhow::bail!("not-downloaded");
             }
