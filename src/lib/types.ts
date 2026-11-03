@@ -106,6 +106,30 @@ export interface Info {
   seg_current_ms: number;
 }
 
+/** 網頁翻譯(Chrome 擴充)的狀態,`web_status` 回傳 */
+export interface WebStatus {
+  status: "not-downloaded" | "downloading" | "stopped" | "starting" | "ready" | "error";
+  message: string | null;
+  /** 網頁翻譯設定的模型 */
+  web_model: string;
+  /** 共用伺服器執行中的模型;沒在跑為 null */
+  server_model: string | null;
+  /** 字幕正在使用共用伺服器(此時跑的是字幕的模型) */
+  subtitles: boolean;
+}
+
+/** 主視窗的開始選項;存進 settings.json,背景喚起時也用得到 */
+export interface Prefs {
+  model: string;
+  translate: boolean;
+  asr_engine: string;
+  lang: string;
+  speaker_id: boolean;
+  refine: boolean;
+  glossary: string;
+  replacements: string;
+}
+
 export type Sensitivity = "fast" | "normal" | "slow";
 
 export interface GpuSample {

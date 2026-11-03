@@ -10,6 +10,9 @@
       #appLink { display: flex; gap: 6px; align-items: center; margin: -4px 0 10px; }
       #appLink .status { margin: 0; flex: 1; }
       #appLinkAction { padding: 2px 8px; font-size: 12px; }
+      #siteBox h2 { margin: 12px 0 2px; }
+      label.check { display: flex; gap: 6px; align-items: center; margin: 4px 0; color: inherit; }
+      .small { font-size: 12px; }
     </style>
   </head>
   <body>
@@ -20,6 +23,14 @@
     </div>
     <button id="toggle">翻譯此頁</button>
     <div id="pageState" class="status muted"></div>
+    <div id="siteBox" hidden>
+      <h2>這個網站:<span id="siteHost"></span></h2>
+      <label class="check"><input id="siteAuto" type="checkbox" /> 開啟時自動翻譯</label>
+      <div id="ytBox" hidden>
+        <label class="check"><input id="siteCaptions" type="checkbox" /> 翻譯影片字幕</label>
+        <div class="muted small">YouTube 上「翻譯此頁」不含字幕,字幕只看這個開關。</div>
+      </div>
+    </div>
     <div class="row seg" style="margin-top: 10px">
       <select id="displayMode" aria-label="顯示模式">
         <option value="dual">雙語對照</option>

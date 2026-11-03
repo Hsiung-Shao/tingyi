@@ -16,6 +16,18 @@ export interface CollectOptions {
    * 不在 article/main 裡的 header/footer;page:不跳過。
    */
   scope?: Scope;
+  /** YouTube 字幕框:exclude 不收(頁面翻譯)、only 只收(字幕翻譯);未指定照舊 */
+  captions?: 'exclude' | 'only';
+}
+
+/** YouTube 播放器的字幕框容器 */
+export const CAPTION_CONTAINER_SELECTOR = '.ytp-caption-window-container';
+
+/** 區塊是否符合字幕篩選 */
+function captionOk(el: Element, opts: CollectOptions): boolean {
+  if (!opts.captions) return true;
+  const inCaption = el.closest(CAPTION_CONTAINER_SELECTOR) !== null;
+  return opts.captions === 'only' ? inCaption : !inCaption;
 }
 
 /**
@@ -75,6 +87,7 @@ const BLOCKISH_SELECTOR = [...[...LEAF_TAGS, ...CONTAINER_TAGS, 'PRE', 'UL', 'OL
 
 function isSkipped(el: Element, opts: CollectOptions): boolean {
   if (SKIP_TAGS.has(el.tagName.toUpperCase())) return true;
+  if (opts.captions === 'exclude' && el.matches(CAPTION_CONTAINER_SELECTOR)) return true;
   if (opts.scope !== 'page' && isChrome(el)) return true;
   if (el.classList.contains(TARGET_CLASS) || el.classList.contains('notranslate')) return true;
   if (el.getAttribute('translate') === 'no') return true;
@@ -294,7 +307,7 @@ function walk(el: Element, opts: CollectOptions, out: HTMLElement[], includeSelf
   if (includeSelf) {
     const hasBlocks = el.querySelector(BLOCKISH_SELECTOR) !== null;
     // 有子區塊時,自己行內那段文字(例如 <li>父項<ul>…</ul></li>)也算一段
-    if (isCandidate(el, opts)) out.push(el);
+    if (isCandidate(el, opts) && captionOk(el, opts)) out.push(el);
     if (!hasBlocks) return;
   }
   for (const child of Array.from(el.children)) walk(child, opts, out, true);
@@ -352,8 +365,19 @@ export function insertTranslation(el: HTMLElement, text: string, source?: string
   return source !== undefined && source !== current;
 }
 
-/** 移除 root 底下所有譯文、僅譯文包裝與 data-atx-state 標記,還原頁面 */
-export function removeAllTranslations(root: Element): void {
+/** 移除 root 底下所有譯文、僅譯文包裝與 data-atx-state 標記,還原頁面;給 captions 時只動那一邊的區塊 */
+export function removeAllTranslations(root: Element, captions?: CollectOptions['captions']): void {
+  if (captions) {
+    const opts = { captions } as CollectOptions;
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-atx-state]'))) {
+      if (!captionOk(el, opts)) continue;
+      restoreDual(el);
+      targetOf(el)?.remove();
+      targets.delete(el);
+      el.removeAttribute('data-atx-state');
+    }
+    return;
+  }
   const marked = [root, ...Array.from(root.querySelectorAll<HTMLElement>('[data-atx-state]'))];
   marked.forEach((el) => restoreDual(el as HTMLElement));
   // 網站複製過的區塊(黏性標題、輪播複本)帶著我們的容器,但不在紀錄裡,也要解開
@@ -377,7 +401,8 @@ export function watchNewBlocks(
       const at = r.target.nodeType === Node.ELEMENT_NODE ? (r.target as Element) : r.target.parentElement;
       // stale:之前重翻太頻繁被擋下的區塊,時間窗過後文字再變就恢復重翻
       const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"],[data-atx-state="stale"]') : null;
-      if (done && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
+      // 頁面翻譯與字幕翻譯各有一組監看,只處理自己那邊的區塊
+      if (done && captionOk(done, opts) && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
         if (resetForRetranslate(done) && isCandidate(done, opts)) found.add(done);
       }
       for (const node of Array.from(r.addedNodes)) {

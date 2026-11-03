@@ -1,4 +1,5 @@
 import type { BatchFormat, BatchLimits } from '@atx/core';
+import type { SiteRule } from './sites.ts';
 
 export type Route = 'bridge' | 'direct';
 /** dual:原文下方加譯文;only:隱藏原文只顯示譯文 */
@@ -31,6 +32,8 @@ export interface Settings {
   };
   limits: { bridge: BatchLimits; direct: BatchLimits };
   concurrency: number;
+  /** 網站規則,鍵是網域(含子網域) */
+  sites: Record<string, SiteRule>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -52,6 +55,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   limits: { bridge: { maxSegments: 20, maxChars: 6000 }, direct: { maxSegments: 8, maxChars: 2500 } },
   concurrency: 2,
+  sites: {},
 };
 
 export const SETTINGS_KEY = 'atx:settings';
@@ -64,6 +68,7 @@ export async function loadSettings(): Promise<Settings> {
     bridge: { ...DEFAULT_SETTINGS.bridge, ...raw?.bridge },
     direct: { ...DEFAULT_SETTINGS.direct, ...raw?.direct },
     limits: { ...DEFAULT_SETTINGS.limits, ...raw?.limits },
+    sites: { ...raw?.sites },
   };
 }
 

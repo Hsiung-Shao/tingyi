@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useSubtitles } from "./lib/useSubtitles";
-import type { Info, OverlayMode, Sensitivity, Sentence } from "./lib/types";
+import type { Info, OverlayMode, Prefs, Sensitivity, Sentence } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
 import RoutedModels from "./RoutedModels";
+import WebTranslateCard from "./WebTranslateCard";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
 
@@ -82,6 +83,42 @@ export default function App() {
     }
   }, [info?.recommended_model]);
 
+  // 開始選項存進 settings.json:下次開啟沿用,擴充在背景喚起聽譯時也照這些選項開始
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  useEffect(() => {
+    invoke<Prefs | null>("get_prefs")
+      .then((p) => {
+        if (!p) return;
+        modelDefaulted.current = true;
+        setModel(p.model);
+        setTranslate(p.translate);
+        setAsrEngine(p.asr_engine);
+        setLang(p.lang as LangOpt);
+        setSpeakerId(p.speaker_id);
+        setRefine(p.refine);
+        setGlossaryText(p.glossary);
+        setReplaceText(p.replacements);
+      })
+      .catch(() => {})
+      .finally(() => setPrefsLoaded(true));
+  }, []);
+  useEffect(() => {
+    // 讀回之前不寫,免得用預設值蓋掉存檔;打字時等停下來再寫
+    if (!prefsLoaded) return;
+    const prefs: Prefs = {
+      model,
+      translate,
+      asr_engine: asrEngine,
+      lang,
+      speaker_id: speakerId,
+      refine,
+      glossary: glossaryText,
+      replacements: replaceText,
+    };
+    const t = setTimeout(() => invoke("save_prefs", { prefs }).catch(() => {}), 500);
+    return () => clearTimeout(t);
+  }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText]);
+
   useEffect(() => {
     // 開發用自動開始(TINGYI_AUTOSTART=1):只在 autostart 旗標首次為 true 時觸發一次;
     // 刻意不把 start / info 放進依賴,否則每次 info 刷新都會重跑這個 effect。
@@ -97,10 +134,13 @@ export default function App() {
     const un = listen<string>("status", (e) => setStatus(e.payload));
     // 後端停止時會自動退出拖曳模式,按鈕狀態跟著同步
     const un2 = listen<boolean>("overlay-interactive", (e) => setUnlocked(e.payload));
+    // 回合也可能由後端開始或停止(擴充觸發),按鈕狀態跟著後端
+    const un3 = listen<boolean>("session-running", (e) => setRunning(e.payload));
     const t = setInterval(refreshInfo, 10000);
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
+      un3.then((f) => f());
       clearInterval(t);
     };
   }, []);
@@ -295,6 +335,8 @@ export default function App() {
             </select>
             <RoutedModels group="translate" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
           </section>
+
+          <WebTranslateCard models={info?.models ?? []} />
 
           <section className="flex flex-col gap-2">
             <label className="text-neutral-400">辨識引擎</label>

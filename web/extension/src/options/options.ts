@@ -1,6 +1,7 @@
 import type { LinkStatus } from '../background/appLink.ts';
 import type { TranslateResponse } from '../shared/messages.ts';
 import { loadSettings, saveSettings, type Settings } from '../shared/settings.ts';
+import { isYouTube, updateSiteRule, type SiteRule } from '../shared/sites.ts';
 
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 const status = document.getElementById('status') as HTMLDivElement;
@@ -116,7 +117,59 @@ async function relink(): Promise<void> {
   } else box.textContent = '';
 }
 
+/** 網站規則清單:每條可切換、刪除;改了立刻存(各分頁由 storage.onChanged 套用) */
+function renderSites(sites: Settings['sites']): void {
+  const box = document.getElementById('sites') as HTMLDivElement;
+  const keys = Object.keys(sites).sort();
+  if (keys.length === 0) {
+    box.innerHTML = '<p class="muted">還沒有設定任何網站。</p>';
+    return;
+  }
+  box.replaceChildren(
+    ...keys.map((key) => {
+      const rule = sites[key]!;
+      const row = document.createElement('div');
+      row.className = 'row';
+      const name = document.createElement('span');
+      name.textContent = key;
+      const check = (label: string, field: keyof SiteRule) => {
+        const l = document.createElement('label');
+        const c = document.createElement('input');
+        c.type = 'checkbox';
+        c.checked = rule[field] === true;
+        c.addEventListener('change', () => void editSite(key, { [field]: c.checked }));
+        l.append(c, ` ${label}`);
+        return l;
+      };
+      const del = document.createElement('button');
+      del.className = 'secondary';
+      del.textContent = '刪除';
+      del.style.flex = '0';
+      del.addEventListener('click', () => void editSite(key, { auto: false, captions: false, listen: false }));
+      row.append(name, check('自動翻譯', 'auto'), ...(isYouTube(key) ? [check('翻譯字幕', 'captions')] : []), del);
+      return row;
+    }),
+  );
+}
+
+async function editSite(key: string, patch: Partial<SiteRule>): Promise<void> {
+  const s = await loadSettings();
+  s.sites = updateSiteRule(s.sites, key, patch);
+  await saveSettings(s);
+  renderSites(s.sites);
+}
+
+document.getElementById('addSite')!.addEventListener('click', () => {
+  const el = input('newSite');
+  // 貼網址也行:只取網域
+  const key = el.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '').toLowerCase();
+  if (!key) return;
+  el.value = '';
+  void editSite(key, { auto: true });
+});
+
 void loadSettings().then(async (s) => {
   fill(s);
+  renderSites(s.sites);
   if (s.connection === 'auto') await relink();
 });

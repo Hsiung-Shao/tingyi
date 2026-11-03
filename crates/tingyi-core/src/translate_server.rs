@@ -1,13 +1,14 @@
 //! 共用翻譯伺服器:即時字幕與瀏覽器擴充共用一個 llama-server。
 //!
 //! - 誰需要就 `acquire`(字幕在按「開始」時、擴充在第一次 hello 時),都 `release` 才停止。
+//! - 字幕優先:字幕持有時跑字幕要的模型,否則跑網頁要的模型;該跑的模型變了就重啟。
 //! - port 與 api key 在程式啟動時決定一次;換模型重啟也沿用,擴充不必重新取得端點。
 //! - slot 分配:0 字幕快路徑、1 回修、2–3 網頁,互不洗掉提示快取。
 //! - 啟動與等待就緒交給 `Launch`(正式版用 `llama.rs`,測試換成假的)。
 
 use crate::llama::LlamaServerSpec;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub const SUBTITLE_SLOT: u32 = 0;
@@ -86,9 +87,8 @@ pub struct SharedServer {
     launcher: Box<dyn Launch>,
     /// 執行中的伺服器。
     running: Option<Active>,
-    holders: HashSet<Holder>,
-    /// 意外結束前的模型(見 `last_model`)。
-    last: Option<String>,
+    /// 持有者與它想要的模型(名稱、檔案)。
+    holders: HashMap<Holder, (String, PathBuf)>,
 }
 
 struct Active {
@@ -100,7 +100,7 @@ struct Active {
 
 impl SharedServer {
     pub fn new(exe: PathBuf, port: u16, api_key: String, launcher: Box<dyn Launch>) -> Self {
-        Self { exe, port, api_key, launcher, running: None, holders: HashSet::new(), last: None }
+        Self { exe, port, api_key, launcher, running: None, holders: HashMap::new() }
     }
 
     /// 固定的連線資訊(伺服器沒在跑也能查)。
@@ -108,43 +108,90 @@ impl SharedServer {
         Endpoint { base_url: format!("http://127.0.0.1:{}", self.port), port: self.port, api_key: self.api_key.clone() }
     }
 
-    /// `holder` 要用 `model_name`(檔案 `model_path`)的伺服器;沒在跑就啟動,模型不同就以同一 port/key 重啟。
+    /// `holder` 要用 `model_name`(檔案 `model_path`);依「字幕優先」決定實際跑的模型,沒在跑就啟動。
     pub fn acquire(&mut self, holder: Holder, model_name: &str, model_path: PathBuf) -> Result<Endpoint> {
         // 意外結束的程序當作沒在跑,同模型也要重啟
         self.check_alive();
-        if self.model() != Some(model_name) {
-            let previous = self.running.as_ref().map(|a| (a.model.clone(), a.path.clone()));
-            self.stop();
-            if let Err(e) = self.launch(model_name, model_path) {
-                // 其他持有者(例如網頁翻譯)還在用:以原模型恢復,不讓它跟著斷線
-                let others = self.holders.iter().any(|h| *h != holder);
-                if let (true, Some((name, path))) = (others, previous) {
-                    if let Err(e2) = self.launch(&name, path) {
-                        tracing::warn!("換模型失敗後以 {name} 恢復也失敗:{e2:#}");
-                    }
+        let before = self.holders.insert(holder, (model_name.to_string(), model_path));
+        if let Err(e) = self.apply(Some(holder)) {
+            // 失敗的要求者不算取得;原本就持有的保留原本想要的模型
+            match before {
+                Some(b) => {
+                    self.holders.insert(holder, b);
                 }
-                return Err(e);
+                None => {
+                    self.holders.remove(&holder);
+                }
             }
+            return Err(e);
         }
-        self.holders.insert(holder);
         Ok(self.endpoint())
+    }
+
+    /// 改 `holder` 想要的模型(沒持有就忽略);字幕持有中改網頁的模型,要等字幕放手才生效。
+    pub fn set_wanted(&mut self, holder: Holder, model_name: &str, model_path: PathBuf) -> Result<()> {
+        let Some(w) = self.holders.get_mut(&holder) else { return Ok(()) };
+        *w = (model_name.to_string(), model_path);
+        self.check_alive();
+        self.apply(Some(holder))
+    }
+
+    /// `holder` 想要的模型(沒持有回 None)。
+    pub fn wanted(&self, holder: Holder) -> Option<&str> {
+        self.holders.get(&holder).map(|(m, _)| m.as_str())
+    }
+
+    /// 現在該跑的模型:字幕持有時跑字幕的,否則網頁的。
+    fn target(&self) -> Option<(String, PathBuf)> {
+        self.holders.get(&Holder::Subtitles).or_else(|| self.holders.get(&Holder::Web)).cloned()
+    }
+
+    /// 讓執行中的模型符合 `target`;換模型失敗時以原模型恢復給其他持有者。
+    fn apply(&mut self, requester: Option<Holder>) -> Result<()> {
+        let Some((name, path)) = self.target() else {
+            self.stop();
+            return Ok(());
+        };
+        if self.model() == Some(name.as_str()) {
+            return Ok(());
+        }
+        let previous = self.running.as_ref().map(|a| (a.model.clone(), a.path.clone()));
+        self.stop();
+        if let Err(e) = self.launch(&name, path) {
+            // 其他持有者(例如網頁翻譯)還在用:以原模型恢復,不讓它跟著斷線
+            let others = self.holders.keys().any(|h| Some(*h) != requester);
+            if let (true, Some((pname, ppath))) = (others, previous) {
+                if let Err(e2) = self.launch(&pname, ppath) {
+                    tracing::warn!("換模型失敗後以 {pname} 恢復也失敗:{e2:#}");
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn launch(&mut self, model_name: &str, path: PathBuf) -> Result<()> {
         let spec = shared_spec(self.exe.clone(), path.clone(), self.port, &self.api_key);
         let proc = self.launcher.launch(&spec)?;
         self.running = Some(Active { model: model_name.to_string(), path, proc });
-        self.last = None;
         Ok(())
     }
 
-    /// `holder` 不再使用;沒有人使用時停止伺服器。
+    /// `holder` 不再使用;沒有人使用時停止伺服器,還有人用而模型不同就切成它的模型。
     pub fn release(&mut self, holder: Holder) {
-        self.holders.remove(&holder);
-        if self.holders.is_empty() {
-            self.stop();
-            self.last = None;
+        if self.holders.remove(&holder).is_none() {
+            return;
         }
+        self.check_alive();
+        if let Err(e) = self.apply(None) {
+            tracing::warn!("切回其他持有者的模型失敗:{e:#}");
+        }
+    }
+
+    /// 程式結束:全部放掉並停止,不切換模型。
+    pub fn release_all(&mut self) {
+        self.holders.clear();
+        self.stop();
     }
 
     fn stop(&mut self) {
@@ -163,28 +210,18 @@ impl SharedServer {
     }
 
     pub fn holds(&self, holder: Holder) -> bool {
-        self.holders.contains(&holder)
+        self.holders.contains_key(&holder)
     }
 
     pub fn pid(&self) -> Option<u32> {
         self.running.as_ref().and_then(|a| a.proc.pid())
     }
 
-    /// 意外結束前執行中的模型(還有人持有時才記;重新啟動成功或全部放掉後清除)。
-    /// 網頁翻譯重新取得伺服器時優先沿用,字幕才不會被換成別的模型。
-    pub fn last_model(&self) -> Option<&str> {
-        self.last.as_deref()
-    }
-
     /// 檢查伺服器程序是否還在;意外結束就當作沒在跑(持有者不變,下次 acquire 會重啟)。
     pub fn check_alive(&mut self) -> bool {
         if self.running.as_mut().is_some_and(|a| !a.proc.is_alive()) {
             tracing::warn!("llama-server 意外結束");
-            if let Some(a) = self.running.take() {
-                if !self.holders.is_empty() {
-                    self.last = Some(a.model);
-                }
-            }
+            self.running = None;
         }
         self.is_running()
     }
@@ -518,29 +555,5 @@ mod tests {
         assert!(!srv.is_running());
         assert_eq!(srv.model(), None);
         assert!(srv.holds(Holder::Web), "持有者不變");
-    }
-
-    // T26:當機後記住原模型,重啟成功就清掉
-    #[test]
-    fn crash_remembers_model_until_relaunch() {
-        let (mut srv, st) = new_server2(&[]);
-        srv.acquire(Holder::Subtitles, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("acquire subtitles");
-        srv.acquire(Holder::Web, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("acquire web");
-        assert_eq!(srv.last_model(), None, "活著時應為 None");
-        st.lock().unwrap().alive = false;
-        assert!(!srv.check_alive());
-        assert_eq!(srv.last_model(), Some("Hy-MT2-7B-Q4_K_M"), "當機後應記住原模型");
-        srv.acquire(Holder::Web, "Hy-MT2-7B-Q4_K_M", model_7b()).expect("relaunch");
-        assert_eq!(srv.last_model(), None, "重啟成功後應清掉");
-    }
-
-    // T26b:正常全部釋放停止時不記
-    #[test]
-    fn normal_stop_does_not_remember_model() {
-        let (mut srv, _st) = new_server2(&[]);
-        srv.acquire(Holder::Subtitles, "Hy-MT2-1.8B-Q8_0", model_1_8b()).expect("acquire");
-        srv.release(Holder::Subtitles);
-        assert!(!srv.is_running());
-        assert_eq!(srv.last_model(), None);
     }
 }

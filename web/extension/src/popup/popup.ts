@@ -1,12 +1,39 @@
 import type { LinkStatus } from '../background/appLink.ts';
 import type { ProvidersResponse, TabState } from '../shared/messages.ts';
 import { loadSettings, saveSettings, type DisplayMode, type Route, type Scope } from '../shared/settings.ts';
+import { isYouTube, siteKey, updateSiteRule, type SiteRule } from '../shared/sites.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-async function activeTabId(): Promise<number | undefined> {
+async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.id;
+  return tab;
+}
+
+/** 「這個網站」:開啟時自動翻譯;YouTube 另有字幕開關。改了寫回設定,分頁由 storage.onChanged 套用 */
+async function initSite(url: string | undefined): Promise<void> {
+  let host = '';
+  try {
+    if (url && /^https?:/.test(url)) host = new URL(url).hostname;
+  } catch {
+    // 網址解析不了(瀏覽器內建頁)就不顯示這一區
+  }
+  if (!host) return;
+  const s = await loadSettings();
+  const key = siteKey(host, s.sites);
+  const rule = s.sites[key];
+  $('siteBox').hidden = false;
+  $('siteHost').textContent = key;
+  $<HTMLInputElement>('siteAuto').checked = rule?.auto === true;
+  $('ytBox').hidden = !isYouTube(host);
+  $<HTMLInputElement>('siteCaptions').checked = rule?.captions === true;
+  const save = async (patch: Partial<SiteRule>) => {
+    const cur = await loadSettings();
+    cur.sites = updateSiteRule(cur.sites, key, patch);
+    await saveSettings(cur);
+  };
+  $('siteAuto').addEventListener('change', (e) => void save({ auto: (e.target as HTMLInputElement).checked }));
+  $('siteCaptions').addEventListener('change', (e) => void save({ captions: (e.target as HTMLInputElement).checked }));
 }
 
 function renderState(s: TabState | undefined): void {
@@ -98,9 +125,11 @@ async function init(): Promise<void> {
   $<HTMLSelectElement>('targetLang').value = settings.targetLang;
   $('bridgeBox').hidden = settings.route !== 'bridge';
 
-  const tabId = await activeTabId();
+  const tab = await activeTab();
+  const tabId = tab?.id;
   const state = tabId === undefined ? undefined : await chrome.tabs.sendMessage(tabId, { type: 'getState' }).catch(() => undefined);
   renderState(state as TabState | undefined);
+  await initSite(tab?.url);
 
   $('toggle').addEventListener('click', async () => {
     if (tabId === undefined) return;

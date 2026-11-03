@@ -8,7 +8,7 @@ use tingyi_core::model_download::DownloadRegistry;
 use tingyi_core::llama::WhisperServerProcess;
 use tingyi_core::pipeline::PipelineHandle;
 use tingyi_core::sysmon::{Sampler, Watched};
-use tingyi_core::translate_server::{self as ts, Holder, LlamaLauncher, SharedServer};
+use tingyi_core::translate_server::{self as ts, LlamaLauncher, SharedServer};
 use tingyi_core::tuner::SegControl;
 use tingyi_core::paths;
 
@@ -75,9 +75,9 @@ impl AppState {
         // llama-server 在 Job Object 裡,本程式一結束就會被系統一起關掉
         match self.translate.try_lock() {
             Ok(mut g) => {
+                // 一次放掉,不讓「字幕放手 → 切回網頁模型」在結束時重啟伺服器
                 if let Some(s) = g.as_mut() {
-                    s.release(Holder::Subtitles);
-                    s.release(Holder::Web);
+                    s.release_all();
                 }
             }
             Err(_) => tracing::info!("翻譯伺服器啟動中,交給 Job Object 隨程式結束"),

@@ -23,6 +23,14 @@
     </select>
     <div id="linkState" class="status muted"></div>
 
+    <h2>網站規則</h2>
+    <p class="muted">在 popup 的「這個網站」勾選後會列在這裡。子網域也算(reddit.com 包含 www.reddit.com)。</p>
+    <div id="sites"></div>
+    <div class="row">
+      <input id="newSite" placeholder="新增網站,例:reddit.com" />
+      <button id="addSite" class="secondary" style="flex: 0">新增</button>
+    </div>
+
     <h2>bridge(MCP server)</h2>
     <p class="muted">在專案目錄執行 <code>pnpm bridge</code>,第一次啟動會印出 token。</p>
     <label for="bridgeUrl">MCP 端點</label>

@@ -21,6 +21,20 @@ pub fn runtime_file() -> PathBuf {
     paths::data_dir().join("runtime.json")
 }
 
+pub fn settings_file() -> PathBuf {
+    paths::data_dir().join("settings.json")
+}
+
+/// 網頁翻譯要用的模型:設定的模型沒下載就退回這台機器的預設。
+fn web_model() -> String {
+    let m = crate::settings::load(&settings_file()).web_model;
+    if paths::gguf_model(&m).is_file() {
+        m
+    } else {
+        crate::commands::default_mt_model()
+    }
+}
+
 pub fn native_host_manifest() -> PathBuf {
     paths::data_dir().join("native-host.json")
 }
@@ -65,7 +79,7 @@ fn packages_ready(model: &str) -> bool {
 /// 程式啟動時寫出初始狀態(網頁翻譯尚未啟動)。
 pub fn init(app: &AppHandle) {
     let _ = std::fs::create_dir_all(paths::data_dir());
-    let model = crate::commands::default_mt_model();
+    let model = web_model();
     update(app, |rt| {
         rt.status = if packages_ready(&model) { LlamaStatus::Stopped } else { LlamaStatus::NotDownloaded };
         rt.llama = None;
@@ -73,7 +87,7 @@ pub fn init(app: &AppHandle) {
     });
 }
 
-/// 讓網頁翻譯持有共用伺服器(擴充 hello 喚起時)。伺服器已在跑就沿用它的模型,否則用預設模型。
+/// 讓網頁翻譯持有共用伺服器(擴充 hello 喚起、主視窗「啟動」)。用網頁自己的模型;字幕正在用別的模型時暫用字幕的。
 pub fn serve_web(app: &AppHandle) {
     let st = app.state::<AppState>();
     if st.web.serving.swap(true, Ordering::SeqCst) {
@@ -90,13 +104,14 @@ pub fn serve_web(app: &AppHandle) {
         let result = (|| -> anyhow::Result<(u16, String, String)> {
             let mut g = crate::state::lock_translate(&slot)?;
             let s = g.as_mut().expect("lock_translate 已建立");
-            // 伺服器在跑就沿用;剛當機就用當機前的模型(字幕還在用它);都沒有才用預設
-            let model = s.model().or(s.last_model()).map(str::to_string).unwrap_or_else(crate::commands::default_mt_model);
+            let model = web_model();
             if !packages_ready(&model) {
                 anyhow::bail!("not-downloaded");
             }
             let ep = s.acquire(Holder::Web, &model, paths::gguf_model(&model))?;
-            Ok((ep.port, ep.api_key, model))
+            // 實際跑的可能是字幕的模型
+            let running = s.model().unwrap_or(&model).to_string();
+            Ok((ep.port, ep.api_key, running))
         })();
         let st = app.state::<AppState>();
         match result {
@@ -148,13 +163,71 @@ pub fn refresh_after_download(app: &AppHandle) {
     let st = app.state::<AppState>();
     let status = st.web.runtime.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|rt| rt.status);
     let Some(status) = status else { return };
-    let ready = packages_ready(&crate::commands::default_mt_model());
+    let ready = packages_ready(&web_model());
     if let Some(next) = runtime::after_download(status, st.web.serving(), ready) {
         update(app, |rt| {
             rt.status = next;
             rt.message = None;
         });
     }
+}
+
+/// 主視窗卡片用的網頁翻譯狀態。
+#[derive(serde::Serialize)]
+pub struct WebStatus {
+    pub status: LlamaStatus,
+    pub message: Option<String>,
+    pub web_model: String,
+    pub server_model: Option<String>,
+    pub subtitles: bool,
+}
+
+pub fn status(app: &AppHandle) -> WebStatus {
+    let st = app.state::<AppState>();
+    let rt = st.web.runtime.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // 換模型中會持有鎖:改用 runtime 記的模型,不卡主視窗
+    let (server_model, subtitles) = match st.translate.try_lock() {
+        Ok(g) => g.as_ref().map(|s| (s.model().map(str::to_string), s.holds(Holder::Subtitles))).unwrap_or((None, false)),
+        Err(_) => (rt.as_ref().and_then(|r| r.llama.as_ref().map(|l| l.model.clone())), false),
+    };
+    WebStatus {
+        status: rt.as_ref().map(|r| r.status).unwrap_or(LlamaStatus::Stopped),
+        message: rt.and_then(|r| r.message),
+        web_model: crate::settings::load(&settings_file()).web_model,
+        server_model,
+        subtitles,
+    }
+}
+
+/// 改網頁翻譯的模型並存檔;網頁正在用時依「字幕優先」切換(字幕在用就等它放手)。
+pub fn set_web_model(app: &AppHandle, model: String) -> anyhow::Result<()> {
+    let mut s = crate::settings::load(&settings_file());
+    s.web_model = model.clone();
+    crate::settings::save(&settings_file(), &s)?;
+    let st = app.state::<AppState>();
+    if !st.web.serving() {
+        refresh_after_download(app);
+        return Ok(());
+    }
+    let slot = st.translate.clone();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let r = (|| -> anyhow::Result<Option<String>> {
+            let mut g = crate::state::lock_translate(&slot)?;
+            let s = g.as_mut().expect("lock_translate 已建立");
+            s.set_wanted(Holder::Web, &model, paths::gguf_model(&model))?;
+            Ok(s.model().map(str::to_string))
+        })();
+        match r {
+            Ok(m) => update(&app, |rt| {
+                if let (Some(l), Some(m)) = (rt.llama.as_mut(), m) {
+                    l.model = m;
+                }
+            }),
+            Err(e) => update(&app, |rt| rt.message = Some(format!("切換網頁翻譯模型失敗:{e:#}"))),
+        }
+    });
+    Ok(())
 }
 
 /// 每 2 秒比對網頁翻譯狀態與共用伺服器實況:伺服器意外結束 → 寫 Error、放掉網頁持有

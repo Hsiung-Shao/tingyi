@@ -273,7 +273,7 @@ pub async fn start_session(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| {
-            release_subtitles(&state.translate);
+            release_subtitles_blocking(&state.translate);
             format!("{e:#}")
         })?;
         let after = gpu::nvidia_used_mib();
@@ -322,7 +322,7 @@ pub async fn start_session(
     let handle = match handle {
         Ok(h) => h,
         Err(e) => {
-            release_subtitles(&state.translate);
+            release_subtitles_blocking(&state.translate);
             if let Some(mut w) = state.whisper.lock().unwrap().take() {
                 w.shutdown();
             }
@@ -362,6 +362,7 @@ pub async fn start_session(
     *state.forwarder.lock().unwrap() = Some(fwd);
     *state.pipeline.lock().unwrap() = Some(handle);
     emit_status("執行中");
+    let _ = app.emit("session-running", true);
     if let Err(e) = keep_main_focus(&app, || set_overlay_visible(&app, true)) {
         tracing::warn!("顯示懸浮字幕失敗:{e}");
     }
@@ -393,6 +394,7 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     }
     let slot = state.translate.clone();
     let still_serving = tokio::task::spawn_blocking(move || release_subtitles(&slot)).await.unwrap_or(false);
+    let _ = app.emit("session-running", false);
     let _ = app.emit(
         "status",
         if still_serving { "已停止(翻譯伺服器仍供網頁翻譯使用)" } else { "已停止" }.to_string(),
@@ -400,7 +402,13 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     Ok(())
 }
 
-/// 字幕不再使用共用翻譯伺服器;回傳伺服器是否仍在執行(網頁翻譯還在用)。
+/// 失敗路徑也要放掉字幕;放手可能切回網頁的模型(要數秒),不在 async 執行緒上等。
+fn release_subtitles_blocking(slot: &crate::state::TranslateSlot) {
+    let slot = slot.clone();
+    tokio::task::spawn_blocking(move || release_subtitles(&slot));
+}
+
+/// 字幕不再使用共用翻譯伺服器(網頁還在用時切回網頁的模型);回傳伺服器是否仍在執行。
 fn release_subtitles(slot: &crate::state::TranslateSlot) -> bool {
     let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
     match g.as_mut() {
@@ -814,4 +822,38 @@ pub async fn export_transcript(path: String, sentences: Vec<ExportSentence>, exp
     .map_err(|e| e.to_string())?
     .map_err(|e| format!("{e:#}"))?;
     Ok(n)
+}
+
+#[tauri::command]
+pub fn web_status(app: AppHandle) -> crate::web::WebStatus {
+    crate::web::status(&app)
+}
+
+#[tauri::command]
+pub fn web_start(app: AppHandle) {
+    crate::web::serve_web(&app);
+}
+
+#[tauri::command]
+pub fn web_stop(app: AppHandle) {
+    crate::web::stop_web(&app);
+}
+
+#[tauri::command]
+pub fn set_web_model(app: AppHandle, model: String) -> Result<(), String> {
+    crate::web::set_web_model(&app, model).map_err(|e| format!("{e:#}"))
+}
+
+/// 主視窗的開始選項(沒存過回 None,前端用建議模型)。
+#[tauri::command]
+pub fn get_prefs() -> Option<crate::settings::Prefs> {
+    crate::settings::load(&crate::web::settings_file()).prefs
+}
+
+#[tauri::command]
+pub fn save_prefs(prefs: crate::settings::Prefs) -> Result<(), String> {
+    let path = crate::web::settings_file();
+    let mut s = crate::settings::load(&path);
+    s.prefs = Some(prefs);
+    crate::settings::save(&path, &s).map_err(|e| e.to_string())
 }

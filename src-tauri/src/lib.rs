@@ -5,6 +5,7 @@ mod commands;
 pub mod native_host;
 pub mod register;
 pub mod runtime;
+pub mod settings;
 mod state;
 mod web;
 
@@ -74,6 +75,12 @@ pub fn run() {
             commands::translate_packages_status,
             commands::download_model,
             commands::cancel_model_download,
+            commands::web_status,
+            commands::web_start,
+            commands::web_stop,
+            commands::set_web_model,
+            commands::get_prefs,
+            commands::save_prefs,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。
