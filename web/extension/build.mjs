@@ -12,6 +12,8 @@ await build({
   entryPoints: {
     background: path.join(root, 'src/background/index.ts'),
     content: path.join(root, 'src/content/index.ts'),
+    // YouTube 頁面世界(MAIN world):讀播放器有沒有字幕,轉告 content script
+    'yt-main': path.join(root, 'src/content/ytMain.ts'),
     'popup/popup': path.join(root, 'src/popup/popup.ts'),
     'options/options': path.join(root, 'src/options/options.ts'),
   },

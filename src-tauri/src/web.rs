@@ -64,6 +64,7 @@ fn update(app: &AppHandle, f: impl FnOnce(&mut Runtime)) {
         llama: None,
         bridge: None,
         message: None,
+        listen_pipe: None,
     });
     f(rt);
     if let Err(e) = runtime::write_atomic(&runtime_file(), rt) {

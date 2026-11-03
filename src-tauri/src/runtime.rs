@@ -46,6 +46,9 @@ pub struct Runtime {
     pub bridge: Option<BridgeInfo>,
     /// 錯誤或進度說明(給擴充 popup 顯示)
     pub message: Option<String>,
+    /// 「YouTube 沒字幕改用聽譯」的 named pipe 名稱;native host 長連線時連它
+    #[serde(default)]
+    pub listen_pipe: Option<String>,
 }
 
 /// 先寫同目錄暫存檔再改名,讀的一方不會讀到半份檔

@@ -153,7 +153,7 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct StartOptions {
     /// 翻譯模型名稱;None 或空字串 = 只辨識不翻譯。
     pub model: Option<String>,
@@ -172,6 +172,8 @@ pub struct StartOptions {
     pub asr_threads: Option<i32>,
     /// 回修(慢路徑):幾秒後用更長的音訊重新辨識並重翻;僅 Whisper 引擎生效(預設開)。
     pub refine: Option<bool>,
+    /// 開始時顯示懸浮字幕(預設顯示;擴充觸發時字幕放在播放器裡,不顯示)。
+    pub show_overlay: Option<bool>,
 }
 
 fn parse_lang(s: &str) -> Option<Lang> {
@@ -193,6 +195,7 @@ pub async fn start_session(
         return Err("已在執行中".into());
     }
     let port = opts.port.unwrap_or(8178);
+    let show_overlay = opts.show_overlay.unwrap_or(true);
     let emit_status = |msg: &str| {
         let _ = app.emit("status", msg.to_string());
     };
@@ -363,8 +366,10 @@ pub async fn start_session(
     *state.pipeline.lock().unwrap() = Some(handle);
     emit_status("執行中");
     let _ = app.emit("session-running", true);
-    if let Err(e) = keep_main_focus(&app, || set_overlay_visible(&app, true)) {
-        tracing::warn!("顯示懸浮字幕失敗:{e}");
+    if show_overlay {
+        if let Err(e) = keep_main_focus(&app, || set_overlay_visible(&app, true)) {
+            tracing::warn!("顯示懸浮字幕失敗:{e}");
+        }
     }
     Ok(())
 }

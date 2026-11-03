@@ -150,3 +150,45 @@ pub fn reply_from_runtime(rt: &Runtime, app_version: &str) -> Value {
         "appVersion": app_version,
     })
 }
+
+/// 會發出聲音的瀏覽器主程式;host 由它啟動。
+const BROWSERS: [&str; 2] = ["chrome.exe", "msedge.exe"];
+
+/// 從 host 自己往上找啟動它的瀏覽器,回傳該瀏覽器最上層的程序(擷取整棵程序樹的聲音)。
+pub fn find_browser(host_pid: u32, table: &tingyi_core::audio::source::ProcTable) -> Option<tingyi_core::audio::source::AudioSource> {
+    use tingyi_core::audio::source::{find_root, AudioSource};
+    let mut cur = table.get(&host_pid)?;
+    let mut seen = std::collections::HashSet::from([host_pid]);
+    loop {
+        // 父 pid 被比自己晚啟動的程序重用時不算父(Windows 不清父 pid)
+        let parent = table.get(&cur.parent?).filter(|p| p.start_time <= cur.start_time)?;
+        if !seen.insert(parent.pid) {
+            return None;
+        }
+        if BROWSERS.iter().any(|b| parent.exe.eq_ignore_ascii_case(b)) {
+            let root = table.get(&find_root(parent.pid, table))?;
+            return Some(AudioSource::App { pid: root.pid, exe: root.exe.clone(), start_time: root.start_time });
+        }
+        cur = parent;
+    }
+}
+
+/// 把聽譯從 pipe 送來的事件(一行一則 JSON)轉成 native message 給擴充;pipe 結束後補一則 `{"type":"ended"}`。
+pub fn forward_events(reader: impl io::BufRead, out: &mut impl io::Write) -> io::Result<()> {
+    let write = |out: &mut dyn io::Write, v: &Value| -> io::Result<()> {
+        let bytes = encode(v).map_err(|e| io::Error::other(e.to_string()))?;
+        out.write_all(&bytes)?;
+        out.flush()
+    };
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // 壞掉的行略過,不讓一則錯誤中斷整段字幕
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            write(out, &v)?;
+        }
+    }
+    write(out, &json!({ "type": "ended" }))
+}

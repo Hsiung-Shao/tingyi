@@ -2,6 +2,7 @@
 //! 也兼任瀏覽器擴充的 native messaging host(見 `web.rs`)。
 
 mod commands;
+pub mod listen;
 pub mod native_host;
 pub mod register;
 pub mod runtime;
@@ -9,6 +10,7 @@ pub mod settings;
 mod state;
 mod web;
 
+pub use commands::StartOptions;
 pub use web::run_native_host;
 
 use tauri::menu::{Menu, MenuItem};
