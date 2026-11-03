@@ -103,8 +103,10 @@ function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
   let id = 0;
   const pending = new Map();
+  const listeners = [];
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
+    if (m.method) listeners.forEach((f) => f(m));
     if (m.id && pending.has(m.id)) {
       pending.get(m.id)(m);
       pending.delete(m.id);
@@ -119,12 +121,13 @@ function connect(wsUrl) {
       ws.send(JSON.stringify({ id: i, method, params }));
     });
   };
+  const onEvent = (f) => listeners.push(f);
   const evalJs = async (expr) => {
     const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
     if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400));
     return r.result?.result?.value;
   };
-  return { send, evalJs, close: () => ws.close() };
+  return { send, evalJs, onEvent, close: () => ws.close() };
 }
 
 async function screenshot(page, name) {
@@ -225,6 +228,11 @@ async function main() {
   if (!check('主視窗頁面出現在 CDP', appT.ok, `${Math.round(appT.ms / 1000)}s`)) return;
   const ui = connect(appT.t.webSocketDebuggerUrl);
   await ui.send('Page.enable');
+  // 診斷:主視窗的 console 警告寫進 run.log(找出誰按了停止)
+  await ui.send('Runtime.enable');
+  ui.onEvent?.((m) => {
+    if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warning') log(`  [主視窗 console] ${m.params.args.map((a) => a.value).join(' ')}`);
+  });
   const js = async (expr) => (await ui.evalJs(APP_JS), ui.evalJs(expr));
   const ready = await waitFor(async () => ({ ok: await js(`(() => { const b = __w.btn('開始'); return !!b && !b.disabled; })()`) }), 180_000);
   if (!check('主視窗就緒(開始可按)', ready.ok)) return;

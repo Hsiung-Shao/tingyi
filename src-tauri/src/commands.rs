@@ -371,6 +371,7 @@ pub async fn start_session(
 
 #[tauri::command]
 pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    tracing::info!("停止回合(stop_session)");
     // 按下停止就先收起字幕(關子程序要幾秒),並退出拖曳模式恢復滑鼠穿透
     keep_main_focus(&app, || {
         if let Some(w) = app.get_webview_window("overlay") {
