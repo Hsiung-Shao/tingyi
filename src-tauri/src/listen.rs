@@ -168,12 +168,15 @@ async fn serve_client(app: &AppHandle, pipe: NamedPipeServer) {
     // 交給另一個 task,下一個 pipe 實例才能馬上建立,換分頁的 host 不會連不上
     let owner = *st.owner.lock().unwrap();
     if should_stop_on_disconnect(owner) {
+        // 停止期間新連線進來要等它停完,不能接上這個即將結束的回合
+        st.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let st = app.state::<AppState>();
             if let Err(e) = crate::commands::stop_inner(app.clone(), &st).await {
                 tracing::warn!("停止擴充開的回合失敗:{e}");
             }
+            st.stopping.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }
 }
@@ -183,6 +186,13 @@ const ENDED: &str = r#"{"type":"ended"}"#;
 /// 處理開始要求;回 (listen_status 的 state, message)。
 async fn on_start(app: &AppHandle, v: &Value) -> (&'static str, Option<String>) {
     let st = app.state::<AppState>();
+    // 上一個擴充回合還在停止(換分頁、停了馬上再開):等它停完再開新的
+    for _ in 0..150 {
+        if !st.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     // 另一個回合正在啟動(還沒有歸屬):當成使用中,不去改音訊來源
     if st.starting.load(std::sync::atomic::Ordering::SeqCst) {
         return ("busy", Some("聽譯正在啟動另一個回合".into()));

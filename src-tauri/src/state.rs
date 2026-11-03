@@ -42,6 +42,8 @@ pub struct AppState {
     pub live: LiveBus,
     /// 有回合正在啟動(載模型要數秒):主視窗與擴充同時開始時只讓一個進去。
     pub starting: std::sync::atomic::AtomicBool,
+    /// 擴充斷線後正在停止它開的回合。
+    pub stopping: std::sync::atomic::AtomicBool,
 }
 
 pub struct LiveBus(pub tokio::sync::broadcast::Sender<String>);

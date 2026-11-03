@@ -282,13 +282,27 @@ async function main() {
   const after = await sentences();
   check('擴充重新開始沒有清掉主視窗的字幕紀錄', after >= before && before > 0, `之前 ${before} 句、之後 ${after} 句`);
 
-  // ── 5. 離開觀看頁 → 回合停止、來源還原 ──
-  await page.evalJs(`document.getElementById('leave').click(), true`);
+  // ── 5. 另一個分頁開始播放沒字幕的影片 → 改由新分頁聽(舊回合停完再開新的)──
+  await page.evalJs(`document.querySelector('#movie_player video').pause(), true`);
+  const t2 = await cdpJson(CHROME_PORT, `/json/new?${encodeURI(origin + '/watch?v=fixture02')}`);
+  const page2 = connect(t2.webSocketDebuggerUrl);
+  await page2.send('Page.enable');
+  await page2.send('Page.bringToFront');
+  const sub3 = await waitFor(async () => {
+    const tx = await page2.evalJs(`document.querySelector('#movie_player #atx-live .atx-live-text')?.textContent ?? ''`);
+    return { ok: /[一-鿿]/.test(tx ?? ''), tx };
+  }, 120_000);
+  const oldBox = await page.evalJs(`!!document.getElementById('atx-live')`);
+  check('換分頁:新分頁出現字幕、舊分頁字幕框收起', sub3.ok && !oldBox, `${sub3.tx ?? ''} ${Math.round(sub3.ms / 1000)}s 舊分頁框=${oldBox}`);
+  await screenshot(page2, '03-second-tab-subtitles.png');
+
+  // ── 6. 離開觀看頁 → 回合停止、來源還原 ──
+  await page2.evalJs(`document.getElementById('leave').click(), true`);
   const stopped = await waitFor(async () => ({ ok: await btn('開始') }), 60_000);
   check('離開觀看頁後聽譯回合停止', stopped.ok, `${Math.round(stopped.ms / 1000)}s`);
   const src2 = await invoke('get_audio_source');
   check('音訊來源還原成系統聲音', src2?.source?.kind === 'system', JSON.stringify(src2?.source));
-  await screenshot(ui, '03-app-stopped.png');
+  await screenshot(ui, '04-app-stopped.png');
 }
 
 try {
