@@ -146,7 +146,7 @@ function renderSites(sites: Settings['sites']): void {
       del.textContent = '刪除';
       del.style.flex = '0';
       del.addEventListener('click', () => void editSite(key, { auto: false, captions: false, listen: false }));
-      row.append(name, check('自動翻譯', 'auto'), ...(isYouTube(key) ? [check('翻譯字幕', 'captions')] : []), del);
+      row.append(name, check('自動翻譯', 'auto'), ...(isYouTube(key) ? [check('翻譯字幕', 'captions'), check('沒字幕用聽譯', 'listen')] : []), del);
       return row;
     }),
   );

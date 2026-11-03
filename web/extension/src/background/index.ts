@@ -10,7 +10,8 @@ import {
 } from '@atx/core';
 import type { ContentRequest, LimitsResponse, PopupRequest, ProvidersResponse, TranslateResponse } from '../shared/messages.ts';
 import { effectiveLimits, loadSettings, type Settings } from '../shared/settings.ts';
-import { autoConnect } from './appLink.ts';
+import { autoConnect, HOST_NAME } from './appLink.ts';
+import { createListenHub } from './listen.ts';
 import { callBridgeTool } from './mcp.ts';
 import { needsRelink } from './relink.ts';
 import { createSlotPicker, withSlot } from './slots.ts';
@@ -132,7 +133,14 @@ async function handleListProviders(): Promise<ProvidersResponse> {
   return { ok: true, providers: res.providers };
 }
 
-chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sender, sendResponse) => {
+// YouTube 沒字幕改用聽譯:一個分頁一條長連線,字幕事件轉回該分頁
+const listenHub = createListenHub({
+  connect: () => chrome.runtime.connectNative(HOST_NAME),
+  sendToTab: (tabId, msg) => void chrome.tabs.sendMessage(tabId, msg).catch(() => {}),
+});
+chrome.tabs.onRemoved.addListener((tabId) => listenHub.tabClosed(tabId));
+
+chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, sender, sendResponse) => {
   const fail = (e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
   if (msg.type === 'translate') {
     translateWithRelink(msg.segments, msg.context).then(sendResponse, fail);
@@ -149,6 +157,11 @@ chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, _sende
   if (msg.type === 'listProviders') {
     handleListProviders().then(sendResponse, fail);
     return true;
+  }
+  if (msg.type === 'listen-start' || msg.type === 'listen-stop') {
+    const tabId = sender.tab?.id;
+    if (tabId !== undefined) (msg.type === 'listen-start' ? listenHub.start : listenHub.stop)(tabId);
+    return false;
   }
   if (msg.type === 'openOptions') {
     // content script 不能直接開設定頁,由浮動球面板轉請背景開

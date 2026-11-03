@@ -5,9 +5,15 @@
 //! - 擴充開的回合:用主視窗存下的開始選項,不顯示懸浮字幕;擴充斷線就停止,並還原原本的音訊來源。
 
 use crate::settings::Prefs;
+use crate::state::AppState;
 use crate::StartOptions;
+use serde_json::{json, Value};
+use tauri::{AppHandle, Manager};
+use tingyi_core::audio::source::AudioSource;
 use tingyi_core::cleanup::Replacement;
 use tingyi_core::postprocess::GlossaryEntry;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
 /// 目前回合是誰開的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,4 +87,127 @@ pub fn listen_options(prefs: Option<&Prefs>, default_model: &str) -> StartOption
     o.show_overlay = Some(false);
     o.clear_history = Some(true);
     o
+}
+
+// ───────────────────────── 程式內:named pipe 與回合 ─────────────────────────
+
+/// 程式啟動時開 named pipe(名稱帶亂數,寫進 runtime.json 給 native host 找)。
+pub fn start_server(app: &AppHandle) {
+    let name = format!(r"\\.\pipe\tingyi-listen-{}", &tingyi_core::translate_server::new_api_key()[..16]);
+    crate::web::set_listen_pipe(app, name.clone());
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut first = true;
+        loop {
+            // 只接本機連線;同一時間一個用戶端(擴充只讓一個分頁在聽)
+            let server = match ServerOptions::new().first_pipe_instance(first).reject_remote_clients(true).create(&name) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("建立聽譯 pipe 失敗:{e}");
+                    return;
+                }
+            };
+            first = false;
+            if server.connect().await.is_ok() {
+                serve_client(&app, server).await;
+            }
+        }
+    });
+}
+
+async fn write_line(w: &mut (impl AsyncWriteExt + Unpin), v: &str) -> std::io::Result<()> {
+    w.write_all(v.as_bytes()).await?;
+    w.write_all(b"\n").await?;
+    w.flush().await
+}
+
+fn status(state: &str, message: Option<String>) -> String {
+    json!({ "type": "listen_status", "state": state, "message": message }).to_string()
+}
+
+async fn serve_client(app: &AppHandle, pipe: NamedPipeServer) {
+    let (r, mut w) = tokio::io::split(pipe);
+    let mut lines = BufReader::new(r).lines();
+    let st = app.state::<AppState>();
+    // 開始前就訂閱,開始後的第一批事件才不會漏掉
+    let mut rx = st.live.0.subscribe();
+    let mut attached = false;
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Ok(Some(line)) = line else { break };
+                let v: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                match v["type"].as_str() {
+                    Some("start") => {
+                        let _ = write_line(&mut w, &status("starting", None)).await;
+                        let (state, msg) = on_start(app, &v).await;
+                        attached = state == "running";
+                        if write_line(&mut w, &status(state, msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some("stop") => break,
+                    _ => {}
+                }
+            }
+            ev = rx.recv(), if attached => match ev {
+                Ok(line) => {
+                    if write_line(&mut w, &line).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+    }
+    // 擴充斷線或要求停止:只停它自己開的回合
+    let owner = *st.owner.lock().unwrap();
+    if should_stop_on_disconnect(owner) {
+        if let Err(e) = crate::commands::stop_inner(app.clone(), &st).await {
+            tracing::warn!("停止擴充開的回合失敗:{e}");
+        }
+    }
+}
+
+/// 處理開始要求;回 (listen_status 的 state, message)。
+async fn on_start(app: &AppHandle, v: &Value) -> (&'static str, Option<String>) {
+    let st = app.state::<AppState>();
+    let owner = *st.owner.lock().unwrap();
+    match decide_start(owner) {
+        StartDecision::Busy => ("busy", Some("聽譯正在使用中(主視窗已開始字幕)".into())),
+        StartDecision::Attach => ("running", None),
+        StartDecision::Start => {
+            let Ok(browser) = serde_json::from_value::<AudioSource>(v["browser"].clone()) else {
+                return ("error", Some("沒有收到瀏覽器程序".into()));
+            };
+            let prev = st.audio_source.get().0;
+            st.audio_source.set_waiting(false);
+            st.audio_source.set(browser);
+            let prefs = crate::settings::load(&crate::web::settings_file()).prefs;
+            let opts = listen_options(prefs.as_ref(), &crate::commands::default_mt_model());
+            match crate::commands::start_inner(app.clone(), &st, opts).await {
+                Ok(()) => {
+                    *st.listen_prev_source.lock().unwrap() = Some(prev);
+                    *st.owner.lock().unwrap() = Some(Owner::Extension);
+                    ("running", None)
+                }
+                Err(e) => {
+                    st.audio_source.set(prev);
+                    ("error", Some(e))
+                }
+            }
+        }
+    }
+}
+
+/// 回合停止後:清掉歸屬;擴充開的回合通知擴充結束並還原原本的音訊來源。
+pub(crate) fn after_stop(state: &AppState) {
+    let owner = state.owner.lock().unwrap().take();
+    if owner == Some(Owner::Extension) {
+        let _ = state.live.0.send(r#"{"type":"ended"}"#.to_string());
+        if let Some(prev) = state.listen_prev_source.lock().unwrap().take() {
+            state.audio_source.set(prev);
+        }
+    }
 }

@@ -3,7 +3,10 @@ import type { BatchLimits, PageContext, Segment } from '@atx/core';
 export type ContentRequest =
   | { type: 'translate'; segments: Segment[]; context: PageContext }
   | { type: 'getLimits' }
-  | { type: 'openOptions' };
+  | { type: 'openOptions' }
+  /** YouTube 沒字幕:請聽譯聽這個分頁所在的瀏覽器 */
+  | { type: 'listen-start' }
+  | { type: 'listen-stop' };
 
 export type TranslateResponse =
   /** error:有部分段落失敗(其餘段落仍有譯文) */
@@ -20,7 +23,11 @@ export type ProvidersResponse =
   | { ok: false; error: string };
 
 /** background / popup → content */
-export type TabRequest = { type: 'toggle' } | { type: 'getState' };
+export type TabRequest =
+  | { type: 'toggle' }
+  | { type: 'getState' }
+  /** 聽譯送來的字幕事件或狀態(listen_status、ended 等) */
+  | { type: 'listen-event'; event: { type: string; [k: string]: unknown } };
 
 export interface TabState {
   enabled: boolean;

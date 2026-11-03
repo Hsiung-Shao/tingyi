@@ -34,6 +34,20 @@ pub struct AppState {
     pub forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 瀏覽器擴充(網頁翻譯)的連線狀態。
     pub web: crate::web::WebLink,
+    /// 目前回合是主視窗還是擴充開的;沒有回合為 None。
+    pub owner: Mutex<Option<crate::listen::Owner>>,
+    /// 擴充開回合前的音訊來源,停止後還原。
+    pub listen_prev_source: Mutex<Option<tingyi_core::audio::source::AudioSource>>,
+    /// 字幕事件(一行一則 JSON),給擴充的 named pipe 訂閱。
+    pub live: LiveBus,
+}
+
+pub struct LiveBus(pub tokio::sync::broadcast::Sender<String>);
+
+impl Default for LiveBus {
+    fn default() -> Self {
+        Self(tokio::sync::broadcast::channel(256).0)
+    }
 }
 
 /// 鎖住共用翻譯伺服器;第一次用到時決定 port 與 api key,整個程式執行期間不變。

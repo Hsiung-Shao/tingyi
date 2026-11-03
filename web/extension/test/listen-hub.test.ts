@@ -44,7 +44,7 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports } = setup();
     hub.start(1);
     expect(ports).toHaveLength(1);
-    expect(ports[0].sent).toEqual([{ type: 'listen-start' }]);
+    expect(ports[0]!.sent).toEqual([{ type: 'listen-start' }]);
     expect(hub.active()).toBe(1);
   });
 
@@ -61,8 +61,8 @@ describe('擴充聽譯連線中樞', () => {
     hub.start(1);
     hub.start(2);
     expect(toTab).toContainEqual(ended(1)); // 沒通知舊分頁,它的字幕會永遠停在聽中
-    expect(ports[0].disconnected).toBe(1);
-    expect(ports[1].sent).toEqual([{ type: 'listen-start' }]);
+    expect(ports[0]!.disconnected).toBe(1);
+    expect(ports[1]!.sent).toEqual([{ type: 'listen-start' }]);
     expect(hub.active()).toBe(2);
   });
 
@@ -70,7 +70,7 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports, toTab } = setup();
     hub.start(1);
     hub.start(2);
-    ports[1].emit({ type: 'transcript', id: 7 });
+    ports[1]!.emit({ type: 'transcript', id: 7 });
     expect(toTab).toContainEqual({ tabId: 2, msg: { type: 'listen-event', event: { type: 'transcript', id: 7 } } });
     expect(toTab.some((t) => t.tabId === 1 && (t.msg as { event: { type: string } }).event.type === 'transcript')).toBe(false);
   });
@@ -78,7 +78,7 @@ describe('擴充聽譯連線中樞', () => {
   it('port 斷線時分頁收到 ended 並清除目前分頁', () => {
     const { hub, ports, toTab, ended } = setup();
     hub.start(2);
-    ports[0].drop();
+    ports[0]!.drop();
     expect(toTab).toContainEqual(ended(2));
     expect(hub.active()).toBeUndefined();
   });
@@ -87,8 +87,8 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports, toTab } = setup();
     hub.start(1);
     hub.stop(1);
-    expect(ports[0].sent).toEqual([{ type: 'listen-start' }, { type: 'listen-stop' }]);
-    expect(ports[0].disconnected).toBe(1);
+    expect(ports[0]!.sent).toEqual([{ type: 'listen-start' }, { type: 'listen-stop' }]);
+    expect(ports[0]!.disconnected).toBe(1);
     expect(toTab).toEqual([]);
     expect(hub.active()).toBeUndefined();
   });
@@ -97,8 +97,8 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports } = setup();
     hub.start(1);
     hub.stop(9); // 別的分頁關掉不能害目前分頁停止
-    expect(ports[0].sent).toEqual([{ type: 'listen-start' }]);
-    expect(ports[0].disconnected).toBe(0);
+    expect(ports[0]!.sent).toEqual([{ type: 'listen-start' }]);
+    expect(ports[0]!.disconnected).toBe(0);
     expect(hub.active()).toBe(1);
   });
 
@@ -106,7 +106,7 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports, toTab } = setup();
     hub.start(1);
     hub.tabClosed(1);
-    expect(ports[0].disconnected).toBe(1);
+    expect(ports[0]!.disconnected).toBe(1);
     expect(toTab).toEqual([]);
     expect(hub.active()).toBeUndefined();
   });
@@ -115,7 +115,7 @@ describe('擴充聽譯連線中樞', () => {
     const { hub, ports } = setup();
     hub.start(1);
     hub.tabClosed(5);
-    expect(ports[0].disconnected).toBe(0);
+    expect(ports[0]!.disconnected).toBe(0);
     expect(hub.active()).toBe(1);
   });
 });

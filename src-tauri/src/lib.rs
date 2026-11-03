@@ -91,6 +91,7 @@ pub fn run() {
             }
             web::init(app.handle());
             web::start_watch(app.handle());
+            listen::start_server(app.handle());
             // 開發版預設不寫註冊,避免把安裝版的 native host 搶到開發用 exe
             let flag = std::env::var("TINGYI_REGISTER_HOST").ok();
             if register::should_register(cfg!(debug_assertions), flag.as_deref()) {

@@ -27,6 +27,7 @@ async function initSite(url: string | undefined): Promise<void> {
   $<HTMLInputElement>('siteAuto').checked = rule?.auto === true;
   $('ytBox').hidden = !isYouTube(host);
   $<HTMLInputElement>('siteCaptions').checked = rule?.captions === true;
+  $<HTMLInputElement>('siteListen').checked = rule?.listen === true;
   const save = async (patch: Partial<SiteRule>) => {
     const cur = await loadSettings();
     cur.sites = updateSiteRule(cur.sites, key, patch);
@@ -34,6 +35,7 @@ async function initSite(url: string | undefined): Promise<void> {
   };
   $('siteAuto').addEventListener('change', (e) => void save({ auto: (e.target as HTMLInputElement).checked }));
   $('siteCaptions').addEventListener('change', (e) => void save({ captions: (e.target as HTMLInputElement).checked }));
+  $('siteListen').addEventListener('change', (e) => void save({ listen: (e.target as HTMLInputElement).checked }));
 }
 
 function renderState(s: TabState | undefined): void {

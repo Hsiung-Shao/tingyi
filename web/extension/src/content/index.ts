@@ -13,6 +13,7 @@ import {
   type CollectOptions,
 } from './dom.ts';
 import { isYouTube, matchSite, startPlan } from '../shared/sites.ts';
+import { createYouTubeListen } from './youtubeListen.ts';
 
 const BALL_TOP_KEY = 'atx:ballTop';
 
@@ -190,12 +191,15 @@ async function toggle(): Promise<TabState> {
 
 /** 規則上一次是否要自動翻頁面:只在從關變開時自動開,使用者手動關掉後其他設定變動不會又打開 */
 let autoPage = false;
+/** YouTube 沒字幕改用聽譯(只在最上層頁面) */
+const ytListen = youtube && window.top === window ? createYouTubeListen() : null;
 
 /** 依網站規則自動開啟;規則改了就即時套用(取消自動不會關掉已開的頁面翻譯) */
 function applySiteRule(sites: Settings['sites'] | undefined): void {
   const plan = startPlan(location.hostname, matchSite(location.hostname, sites ?? {})?.rule);
   if (plan.page && !autoPage && !page.enabled) void page.toggle();
   autoPage = plan.page;
+  ytListen?.setRule(matchSite(location.hostname, sites ?? {})?.rule);
   if (captionSession && plan.captions !== captionSession.enabled) void captionSession.toggle();
 }
 
@@ -253,6 +257,8 @@ chrome.runtime.onMessage.addListener((msg: TabRequest, _sender, sendResponse) =>
   if (msg.type === 'toggle') {
     void toggle().then(sendResponse);
     return true;
+  } else if (msg.type === 'listen-event') {
+    ytListen?.onEvent(msg.event);
   } else if (msg.type === 'getState') {
     sendResponse(state);
   }

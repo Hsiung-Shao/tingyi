@@ -77,6 +77,11 @@ fn packages_ready(model: &str) -> bool {
     paths::llama_server_exe().is_file() && paths::gguf_model(model).is_file()
 }
 
+/// 記下「YouTube 沒字幕改用聽譯」的 pipe 名稱(native host 從 runtime.json 讀)。
+pub fn set_listen_pipe(app: &AppHandle, name: String) {
+    update(app, |rt| rt.listen_pipe = Some(name));
+}
+
 /// 程式啟動時寫出初始狀態(網頁翻譯尚未啟動)。
 pub fn init(app: &AppHandle) {
     let _ = std::fs::create_dir_all(paths::data_dir());
@@ -348,10 +353,83 @@ pub fn run_native_host() -> i32 {
             Ok(None) => return 0,
             Err(_) => return 1,
         };
+        // 長連線(connectNative):YouTube 沒字幕改用聽譯,之後這個 host 只做轉送
+        if req.get("type").and_then(serde_json::Value::as_str) == Some("listen-start") {
+            return run_listen(stdin, &ctx);
+        }
         let reply = native_host::handle(&req, &ctx);
         let Ok(bytes) = native_host::encode(&reply) else { return 1 };
         if stdout.write_all(&bytes).and_then(|_| stdout.flush()).is_err() {
             return 1;
+        }
+    }
+}
+
+/// 送一則訊息給擴充(長連線模式的狀態通知)。
+fn send_to_extension(v: &serde_json::Value) {
+    use std::io::Write;
+    if let Ok(bytes) = native_host::encode(v) {
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(&bytes).and_then(|_| out.flush());
+    }
+}
+
+/// 長連線模式:找出啟動自己的瀏覽器 → 確認聽譯在跑(沒跑就背景喚起)→ 連 pipe 要求開始;
+/// 之後 pipe 的字幕事件轉給擴充,擴充的停止轉給 pipe。擴充斷線(stdin 關閉)就結束,聽譯那邊會停止回合。
+fn run_listen(mut stdin: std::io::StdinLock<'_>, ctx: &HostCtx) -> i32 {
+    use std::io::Write;
+    let fail = |msg: &str| {
+        send_to_extension(&serde_json::json!({ "type": "listen_status", "state": "error", "message": msg }));
+        1
+    };
+    let table = tingyi_core::audio::source::snapshot_processes();
+    let Some(browser) = native_host::find_browser(std::process::id(), &table) else {
+        return fail("找不到啟動擴充的瀏覽器程序");
+    };
+    send_to_extension(&serde_json::json!({ "type": "listen_status", "state": "starting" }));
+    let running = || runtime::read(&ctx.runtime_file).filter(|rt| ctx.probe.alive(rt.pid));
+    let mut pipe_name = running().and_then(|rt| rt.listen_pipe);
+    if pipe_name.is_none() {
+        if let Err(e) = ctx.launcher.launch(&["--background"]) {
+            return fail(&format!("無法啟動聽譯:{e}"));
+        }
+        let t0 = std::time::Instant::now();
+        while pipe_name.is_none() && t0.elapsed() < ctx.launch_wait {
+            std::thread::sleep(ctx.poll);
+            pipe_name = running().and_then(|rt| rt.listen_pipe);
+        }
+    }
+    let Some(name) = pipe_name else { return fail("聽譯沒有回應") };
+    // 伺服器正在換下一個 pipe 實例時會短暫忙碌,重試幾次
+    let mut pipe = None;
+    for _ in 0..25 {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&name) {
+            Ok(f) => {
+                pipe = Some(f);
+                break;
+            }
+            Err(_) => std::thread::sleep(ctx.poll),
+        }
+    }
+    let Some(mut pipe) = pipe else { return fail("連不上聽譯") };
+    let start = serde_json::json!({ "type": "start", "browser": browser });
+    if writeln!(pipe, "{start}").is_err() {
+        return fail("連不上聽譯");
+    }
+    let Ok(reader) = pipe.try_clone() else { return fail("連不上聽譯") };
+    // pipe 那邊結束(聽譯停止回合或結束)→ 補一則 ended 後整個 host 結束
+    std::thread::spawn(move || {
+        let _ = native_host::forward_events(std::io::BufReader::new(reader), &mut std::io::stdout());
+        std::process::exit(0);
+    });
+    loop {
+        match native_host::decode(&mut stdin) {
+            Ok(Some(m)) if m.get("type").and_then(serde_json::Value::as_str) == Some("listen-stop") => {
+                let _ = writeln!(pipe, "{}", serde_json::json!({ "type": "stop" }));
+            }
+            Ok(Some(_)) => {}
+            // 擴充斷線:關掉 pipe,聽譯會停止這個回合
+            _ => return 0,
         }
     }
 }

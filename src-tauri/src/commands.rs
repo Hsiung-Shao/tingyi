@@ -185,12 +185,16 @@ fn parse_lang(s: &str) -> Option<Lang> {
     }
 }
 
+/// 主視窗按「開始」。
 #[tauri::command]
-pub async fn start_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    opts: StartOptions,
-) -> Result<(), String> {
+pub async fn start_session(app: AppHandle, state: State<'_, AppState>, opts: StartOptions) -> Result<(), String> {
+    start_inner(app, &state, opts).await?;
+    *state.owner.lock().unwrap() = Some(crate::listen::Owner::Manual);
+    Ok(())
+}
+
+/// 開始一個回合(主視窗或擴充觸發共用)。
+pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOptions) -> Result<(), String> {
     if state.is_running() {
         return Err("已在執行中".into());
     }
@@ -338,6 +342,8 @@ pub async fn start_session(
     let stats = handle.stats();
     let idle_control = state.idle_control.clone();
     let translate_on = translator.is_some();
+    // 擴充開的回合由 listen.rs 訂閱,轉給播放器裡的字幕
+    let live = state.live.0.clone();
     let fwd = tokio::spawn(async move {
         use std::sync::atomic::Ordering;
         use std::time::Instant;
@@ -349,6 +355,11 @@ pub async fn start_session(
                     let Some(ev) = ev else { break };
                     idle.on_event(&ev, Instant::now());
                     let _ = app2.emit("pipeline", &ev);
+                    if live.receiver_count() > 0 {
+                        if let Ok(line) = serde_json::to_string(&ev) {
+                            let _ = live.send(line);
+                        }
+                    }
                 }
                 _ = tick.tick() => {
                     let hide = Duration::from_millis(idle_control.hide_ms.load(Ordering::Relaxed) as u64);
@@ -357,6 +368,7 @@ pub async fn start_session(
                     let packets = stats.capture.packets.load(Ordering::Relaxed);
                     if idle.poll(Instant::now(), hide, speaking, silence, packets) {
                         let _ = app2.emit("subtitle-idle", ());
+                        let _ = live.send(r#"{"type":"idle"}"#.to_string());
                     }
                 }
             }
@@ -374,8 +386,14 @@ pub async fn start_session(
     Ok(())
 }
 
+/// 主視窗按「停止」(擴充開的回合也能從主視窗停)。
 #[tauri::command]
 pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    stop_inner(app, &state).await
+}
+
+/// 停止回合並清掉歸屬;擴充開的回合會通知擴充結束、還原原本的音訊來源。
+pub(crate) async fn stop_inner(app: AppHandle, state: &AppState) -> Result<(), String> {
     tracing::info!("停止回合(stop_session)");
     // 按下停止就先收起字幕(關子程序要幾秒),並退出拖曳模式恢復滑鼠穿透
     keep_main_focus(&app, || {
@@ -401,6 +419,7 @@ pub async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<
     let slot = state.translate.clone();
     let still_serving = tokio::task::spawn_blocking(move || release_subtitles(&slot)).await.unwrap_or(false);
     let _ = app.emit("session-running", false);
+    crate::listen::after_stop(state);
     let _ = app.emit(
         "status",
         if still_serving { "已停止(翻譯伺服器仍供網頁翻譯使用)" } else { "已停止" }.to_string(),
