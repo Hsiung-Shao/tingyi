@@ -27,7 +27,7 @@ fn U20_擴充觸發的開始選項() {
     assert_eq!(o.speaker_id, Some(false));
     assert_eq!(o.refine, Some(false));
     assert_eq!(o.show_overlay, Some(false), "擴充觸發時不該彈出浮動字幕");
-    assert_eq!(o.clear_history, Some(true));
+    assert_eq!(o.clear_history, Some(false), "擴充自動開始不可清掉主視窗字幕紀錄");
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn U20_沒有偏好時用預設值() {
     assert!(o.glossary.as_ref().map_or(true, |g| g.is_empty()));
     assert!(o.replacements.as_ref().map_or(true, |r| r.is_empty()));
     assert_eq!(o.show_overlay, Some(false));
-    assert_eq!(o.clear_history, Some(true));
+    assert_eq!(o.clear_history, Some(false), "擴充自動開始不可清掉主視窗字幕紀錄");
 }
 
 // U21:使用者手動開始的回合不被擴充搶走

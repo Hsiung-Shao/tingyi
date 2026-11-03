@@ -13,6 +13,8 @@ export function createYouTubeListen() {
   let live: LiveState = initialLive();
   /** 字幕框上方的小字:啟動中、使用中、錯誤 */
   let note = '';
+  /** 聽譯回「使用中」的那支影片:這支不再自動重試,換影片才再試 */
+  let busyFor: string | null = null;
 
   const playing = () => {
     const v = document.querySelector<HTMLVideoElement>('#movie_player video');
@@ -23,7 +25,9 @@ export function createYouTubeListen() {
     const player = document.getElementById('movie_player');
     let box = document.getElementById(BOX_ID);
     const view = liveView(live);
-    if (!listening || !player || (!view && !note)) {
+    // 沒在聽時只留「使用中」的提示
+    const showBusy = !listening && busyFor !== null && busyFor === info.videoId;
+    if ((!listening && !showBusy) || !player || (!view && !note)) {
       box?.remove();
       return;
     }
@@ -50,7 +54,9 @@ export function createYouTubeListen() {
 
   function reconsider(): void {
     const act = listenAction({ rule, hasCaptions: info.hasCaptions, playing: playing(), onWatchPage: location.pathname === '/watch', listening });
-    if (act === 'start') {
+    if (act === 'start' && busyFor !== null && busyFor === info.videoId) {
+      // 主視窗正在用聽譯:這支影片不重試
+    } else if (act === 'start') {
       listening = true;
       live = initialLive();
       note = '聽譯啟動中…';
@@ -66,8 +72,11 @@ export function createYouTubeListen() {
 
   window.addEventListener('atx-yt', (e) => {
     const next = JSON.parse((e as CustomEvent<string>).detail) as typeof info;
-    // 換影片:清掉上一支的字幕
-    if (next.videoId !== info.videoId) live = initialLive();
+    // 換影片:清掉上一支的字幕與提示
+    if (next.videoId !== info.videoId) {
+      live = initialLive();
+      if (!listening) note = '';
+    }
     info = next;
     reconsider();
   });
@@ -85,9 +94,11 @@ export function createYouTubeListen() {
       if (ev.type === 'ended') {
         listening = false;
         live = initialLive();
-        note = '';
+        // 使用中的提示留著(連線隨即關閉也會送 ended),其他狀態清掉
+        if (busyFor !== info.videoId) note = '';
       } else if (ev.type === 'listen_status') {
         const msg = typeof ev.message === 'string' ? ev.message : '';
+        busyFor = ev.state === 'busy' ? info.videoId : null;
         note = ev.state === 'starting' ? '聽譯啟動中…' : ev.state === 'busy' ? `${msg},這支影片不會自動聽譯` : ev.state === 'error' ? `聽譯無法開始:${msg}` : '';
       } else {
         live = reduceLive(live, ev);

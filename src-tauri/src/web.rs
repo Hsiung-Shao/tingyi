@@ -402,9 +402,10 @@ fn run_listen(mut stdin: std::io::StdinLock<'_>, ctx: &HostCtx) -> i32 {
         }
     }
     let Some(name) = pipe_name else { return fail("聽譯沒有回應") };
-    // 伺服器正在換下一個 pipe 實例時會短暫忙碌,重試幾次
+    // 伺服器正在換下一個 pipe 實例時會短暫忙碌,最多等到與喚起相同的時間
     let mut pipe = None;
-    for _ in 0..25 {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < ctx.launch_wait {
         match std::fs::OpenOptions::new().read(true).write(true).open(&name) {
             Ok(f) => {
                 pipe = Some(f);

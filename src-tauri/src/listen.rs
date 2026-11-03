@@ -63,7 +63,8 @@ pub fn parse_replacements(text: &str) -> Vec<Replacement> {
     pairs(text).filter(|(f, _)| !f.is_empty()).map(|(from, to)| Replacement { from, to }).collect()
 }
 
-/// 擴充觸發時的開始選項:照主視窗存下的選項;沒存過用預設。不顯示懸浮字幕。
+/// 擴充觸發時的開始選項:照主視窗存下的選項;沒存過用預設。不顯示懸浮字幕,
+/// 也不清主視窗的字幕紀錄(手動開始時會先問,這裡沒人可問,所以接續)。
 pub fn listen_options(prefs: Option<&Prefs>, default_model: &str) -> StartOptions {
     let mut o = match prefs {
         Some(p) => StartOptions {
@@ -85,7 +86,7 @@ pub fn listen_options(prefs: Option<&Prefs>, default_model: &str) -> StartOption
         },
     };
     o.show_overlay = Some(false);
-    o.clear_history = Some(true);
+    o.clear_history = Some(false);
     o
 }
 
@@ -142,7 +143,8 @@ async fn serve_client(app: &AppHandle, pipe: NamedPipeServer) {
                         let _ = write_line(&mut w, &status("starting", None)).await;
                         let (state, msg) = on_start(app, &v).await;
                         attached = state == "running";
-                        if write_line(&mut w, &status(state, msg)).await.is_err() {
+                        // 沒開成(使用中、錯誤)就關掉連線,不留著佔用
+                        if write_line(&mut w, &status(state, msg)).await.is_err() || !attached {
                             break;
                         }
                     }
@@ -152,7 +154,8 @@ async fn serve_client(app: &AppHandle, pipe: NamedPipeServer) {
             }
             ev = rx.recv(), if attached => match ev {
                 Ok(line) => {
-                    if write_line(&mut w, &line).await.is_err() {
+                    // 回合結束(例如主視窗按停止)也關掉連線:host 隨之結束,擴充才能重新開始
+                    if write_line(&mut w, &line).await.is_err() || line == ENDED {
                         break;
                     }
                 }
@@ -161,18 +164,29 @@ async fn serve_client(app: &AppHandle, pipe: NamedPipeServer) {
             }
         }
     }
-    // 擴充斷線或要求停止:只停它自己開的回合
+    // 擴充斷線或要求停止:只停它自己開的回合。停止要數秒(關管線、切回網頁模型),
+    // 交給另一個 task,下一個 pipe 實例才能馬上建立,換分頁的 host 不會連不上
     let owner = *st.owner.lock().unwrap();
     if should_stop_on_disconnect(owner) {
-        if let Err(e) = crate::commands::stop_inner(app.clone(), &st).await {
-            tracing::warn!("停止擴充開的回合失敗:{e}");
-        }
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let st = app.state::<AppState>();
+            if let Err(e) = crate::commands::stop_inner(app.clone(), &st).await {
+                tracing::warn!("停止擴充開的回合失敗:{e}");
+            }
+        });
     }
 }
+
+const ENDED: &str = r#"{"type":"ended"}"#;
 
 /// 處理開始要求;回 (listen_status 的 state, message)。
 async fn on_start(app: &AppHandle, v: &Value) -> (&'static str, Option<String>) {
     let st = app.state::<AppState>();
+    // 另一個回合正在啟動(還沒有歸屬):當成使用中,不去改音訊來源
+    if st.starting.load(std::sync::atomic::Ordering::SeqCst) {
+        return ("busy", Some("聽譯正在啟動另一個回合".into()));
+    }
     let owner = *st.owner.lock().unwrap();
     match decide_start(owner) {
         StartDecision::Busy => ("busy", Some("聽譯正在使用中(主視窗已開始字幕)".into())),
@@ -205,7 +219,7 @@ async fn on_start(app: &AppHandle, v: &Value) -> (&'static str, Option<String>) 
 pub(crate) fn after_stop(state: &AppState) {
     let owner = state.owner.lock().unwrap().take();
     if owner == Some(Owner::Extension) {
-        let _ = state.live.0.send(r#"{"type":"ended"}"#.to_string());
+        let _ = state.live.0.send(ENDED.to_string());
         if let Some(prev) = state.listen_prev_source.lock().unwrap().take() {
             state.audio_source.set(prev);
         }

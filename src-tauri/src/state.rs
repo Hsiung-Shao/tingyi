@@ -40,6 +40,8 @@ pub struct AppState {
     pub listen_prev_source: Mutex<Option<tingyi_core::audio::source::AudioSource>>,
     /// 字幕事件(一行一則 JSON),給擴充的 named pipe 訂閱。
     pub live: LiveBus,
+    /// 有回合正在啟動(載模型要數秒):主視窗與擴充同時開始時只讓一個進去。
+    pub starting: std::sync::atomic::AtomicBool,
 }
 
 pub struct LiveBus(pub tokio::sync::broadcast::Sender<String>);

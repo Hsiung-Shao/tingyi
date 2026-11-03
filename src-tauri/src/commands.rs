@@ -195,9 +195,18 @@ pub async fn start_session(app: AppHandle, state: State<'_, AppState>, opts: Sta
 
 /// 開始一個回合(主視窗或擴充觸發共用)。
 pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOptions) -> Result<(), String> {
-    if state.is_running() {
+    use std::sync::atomic::Ordering;
+    // 檢查並佔住:啟動要數秒,這段期間另一個入口進來也要被擋下
+    if state.is_running() || state.starting.swap(true, Ordering::SeqCst) {
         return Err("已在執行中".into());
     }
+    struct Starting<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Starting<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _starting = Starting(&state.starting);
     let port = opts.port.unwrap_or(8178);
     let show_overlay = opts.show_overlay.unwrap_or(true);
     let emit_status = |msg: &str| {

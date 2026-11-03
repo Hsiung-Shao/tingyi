@@ -265,7 +265,24 @@ async function main() {
   const llama = (await ui.evalJs(`window.__TAURI_INTERNALS__.invoke('web_status')`)) ?? {};
   check('翻譯用主視窗存下的模型(1.8B)', llama.server_model === MODEL && llama.subtitles === true, JSON.stringify(llama));
 
-  // ── 4. 離開觀看頁 → 回合停止、來源還原 ──
+  // ── 4. 從主視窗停止 → 字幕框收起;再播放 → 同一分頁重新開始 ──
+  const sentences = () => ui.evalJs(`document.querySelectorAll('[data-sentence-id]').length`);
+  const before = await sentences();
+  await ui.evalJs(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '停止').click(), true`);
+  const manualStop = await waitFor(async () => ({ ok: (await btn('開始')) && !(await page.evalJs(`!!document.getElementById('atx-live')`)) }), 60_000);
+  check('主視窗按停止:回合結束、播放器字幕框收起', manualStop.ok, `${Math.round(manualStop.ms / 1000)}s`);
+  await page.evalJs(`(async () => { const v = document.querySelector('#movie_player video'); v.pause(); await new Promise((r) => setTimeout(r, 300)); await v.play(); return true; })()`);
+  const again = await waitFor(async () => ({ ok: await btn('停止') }), 120_000);
+  check('同一分頁再播放:聽譯重新開始', again.ok, `${Math.round(again.ms / 1000)}s`);
+  const sub2 = await waitFor(async () => {
+    const tx = await page.evalJs(`document.querySelector('#movie_player #atx-live .atx-live-text')?.textContent ?? ''`);
+    return { ok: /[一-鿿]/.test(tx ?? ''), tx };
+  }, 120_000);
+  check('重新開始後播放器再出現字幕', sub2.ok, sub2.tx ?? '');
+  const after = await sentences();
+  check('擴充重新開始沒有清掉主視窗的字幕紀錄', after >= before && before > 0, `之前 ${before} 句、之後 ${after} 句`);
+
+  // ── 5. 離開觀看頁 → 回合停止、來源還原 ──
   await page.evalJs(`document.getElementById('leave').click(), true`);
   const stopped = await waitFor(async () => ({ ok: await btn('開始') }), 60_000);
   check('離開觀看頁後聽譯回合停止', stopped.ok, `${Math.round(stopped.ms / 1000)}s`);
