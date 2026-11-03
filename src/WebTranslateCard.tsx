@@ -70,7 +70,8 @@ export default function WebTranslateCard({ models }: { models: ModelInfo[] }) {
           disabled={st.status === "not-downloaded" || st.status === "downloading"}
           data-role="web-toggle"
         >
-          {active ? "停止" : "啟動"}
+          {/* 與主視窗字幕的「開始/停止」分開命名,一眼看出按的是哪一個 */}
+          {active ? "停止網頁翻譯" : "啟動網頁翻譯"}
         </button>
       </div>
       {borrowed && (
