@@ -23,6 +23,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -405,6 +406,8 @@ def main() -> int:
     procs = {}
     ours: set = set()
     ok = False
+    # 聽譯用暫存資料目錄:models、bin 以 junction 指到真的資料目錄,settings.json 等不碰安裝版那份
+    iso = Path(tempfile.mkdtemp(prefix="tingyi-m3-data-"))
     try:
         # Doctor:拒絕雙開
         busy = [p for p in (DEV_PORT, CDP_PORT) if port_in_use(p)]
@@ -419,7 +422,10 @@ def main() -> int:
         if not run.check("模型就緒", not missing, ", ".join(missing)):
             return 1
 
-        env = dict(os.environ, TINGYI_DATA_DIR=str(data),
+        for d in ("models", "bin"):
+            if (data / d).exists():
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(iso / d), str(data / d)], capture_output=True)
+        env = dict(os.environ, TINGYI_DATA_DIR=str(iso),
                    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={CDP_PORT}")
         app_log = open(evidence / "app.log", "w", encoding="utf-8", errors="replace")
         run.log("啟動 pnpm tauri dev …")
@@ -461,6 +467,9 @@ def main() -> int:
                 kill_tree(run, procs[label].pid, label)
         for pid in ours:  # taskkill /T 通常已帶走;仍存活才依 PID 補關,不按名稱殺
             kill_tree(run, pid, "tingyi.exe")
+        for d in ("models", "bin"):  # rmdir 不加 /s 只移除 junction 本身
+            if (iso / d).exists():
+                subprocess.run(["cmd", "/c", "rmdir", str(iso / d)], capture_output=True)
         (evidence / "result.json").write_text(json.dumps(run.result, ensure_ascii=False, indent=2), encoding="utf-8")
         code = 0 if ok else 1
         (evidence / "exit_code.txt").write_text(str(code), encoding="utf-8")
