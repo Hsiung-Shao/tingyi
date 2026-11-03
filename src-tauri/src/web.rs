@@ -223,13 +223,17 @@ pub fn set_web_model(app: &AppHandle, model: String) -> anyhow::Result<()> {
                 if let (Some(l), Some(m)) = (rt.llama.as_mut(), m) {
                     l.model = m;
                 }
+                rt.message = None;
             }),
             // 伺服器已以原模型恢復;設定也改回去,下次喚起不會再試失敗的模型
             Err(e) => {
+                // 等待期間使用者又選了別的模型就不改回,免得蓋掉最新的選擇
                 let mut s = crate::settings::load(&settings_file());
-                s.web_model = previous;
-                if let Err(e2) = crate::settings::save(&settings_file(), &s) {
-                    tracing::warn!("還原網頁翻譯模型設定失敗:{e2}");
+                if s.web_model == model {
+                    s.web_model = previous;
+                    if let Err(e2) = crate::settings::save(&settings_file(), &s) {
+                        tracing::warn!("還原網頁翻譯模型設定失敗:{e2}");
+                    }
                 }
                 update(&app, |rt| rt.message = Some(format!("切換網頁翻譯模型失敗,維持原模型:{e:#}")));
             }
@@ -276,6 +280,7 @@ pub fn start_watch(app: &AppHandle) {
                     if let Some(l) = rt.llama.as_mut() {
                         l.model = m;
                     }
+                    rt.message = None;
                 });
             }
         }
