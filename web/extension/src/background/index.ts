@@ -139,6 +139,11 @@ const listenHub = createListenHub({
   sendToTab: (tabId, msg) => void chrome.tabs.sendMessage(tabId, msg).catch(() => {}),
 });
 chrome.tabs.onRemoved.addListener((tabId) => listenHub.tabClosed(tabId));
+// 離開觀看頁(整頁換掉時內容腳本來不及送停止):在背景頁看網址
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.url === undefined || listenHub.active() !== tabId) return;
+  if (new URL(info.url).pathname !== '/watch') listenHub.stop(tabId);
+});
 
 chrome.runtime.onMessage.addListener((msg: ContentRequest | PopupRequest, sender, sendResponse) => {
   const fail = (e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });

@@ -355,6 +355,8 @@ pub fn run_native_host() -> i32 {
         };
         // 長連線(connectNative):YouTube 沒字幕改用聽譯,之後這個 host 只做轉送
         if req.get("type").and_then(serde_json::Value::as_str) == Some("listen-start") {
+            // 轉送執行緒要寫 stdout:先放掉這裡握著的鎖,否則它會永遠卡住
+            drop(stdout);
             return run_listen(stdin, &ctx);
         }
         let reply = native_host::handle(&req, &ctx);
@@ -375,7 +377,7 @@ fn send_to_extension(v: &serde_json::Value) {
 }
 
 /// 長連線模式:找出啟動自己的瀏覽器 → 確認聽譯在跑(沒跑就背景喚起)→ 連 pipe 要求開始;
-/// 之後 pipe 的字幕事件轉給擴充,擴充的停止轉給 pipe。擴充斷線(stdin 關閉)就結束,聽譯那邊會停止回合。
+/// 之後 pipe 的字幕事件轉給擴充。擴充要求停止或斷線(stdin 關閉)就結束,聽譯那邊會停止回合。
 fn run_listen(mut stdin: std::io::StdinLock<'_>, ctx: &HostCtx) -> i32 {
     use std::io::Write;
     let fail = |msg: &str| {
@@ -422,13 +424,11 @@ fn run_listen(mut stdin: std::io::StdinLock<'_>, ctx: &HostCtx) -> i32 {
         let _ = native_host::forward_events(std::io::BufReader::new(reader), &mut std::io::stdout());
         std::process::exit(0);
     });
+    // 擴充要求停止或斷線:直接結束,pipe 一關聽譯就停止這個回合
+    // (同步 pipe 的讀寫會互相等,轉送執行緒卡在讀取時寫不進停止指令)
     loop {
         match native_host::decode(&mut stdin) {
-            Ok(Some(m)) if m.get("type").and_then(serde_json::Value::as_str) == Some("listen-stop") => {
-                let _ = writeln!(pipe, "{}", serde_json::json!({ "type": "stop" }));
-            }
-            Ok(Some(_)) => {}
-            // 擴充斷線:關掉 pipe,聽譯會停止這個回合
+            Ok(Some(m)) if m.get("type").and_then(serde_json::Value::as_str) != Some("listen-stop") => {}
             _ => return 0,
         }
     }
