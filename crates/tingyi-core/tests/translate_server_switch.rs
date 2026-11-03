@@ -149,3 +149,30 @@ fn U7_字幕持有中換網頁模型等字幕停止() {
     assert_eq!(s.model(), Some(Q4));
     assert!(s.holds(Holder::Web));
 }
+
+/// 指定第幾次 launch(從 0 算)失敗的假啟動器
+struct FailNth(Arc<Mutex<Log>>, usize);
+impl Launch for FailNth {
+    fn launch(&mut self, spec: &LlamaServerSpec) -> anyhow::Result<Box<dyn Running>> {
+        let mut g = self.0.lock().unwrap();
+        let n = g.launches.len();
+        g.launches.push(spec.args());
+        if n == self.1 {
+            anyhow::bail!("fake launch {n} failed");
+        }
+        Ok(Box::new(FakeRunning(self.0.clone())))
+    }
+}
+
+// R1:只有網頁持有時換模型失敗,以原模型恢復、想要的模型也還原
+#[test]
+fn R1_網頁換模型失敗時以原模型恢復() {
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mut s = SharedServer::new(PathBuf::from("llama-server.exe"), 51234, "key-abc".into(), Box::new(FailNth(log.clone(), 1)));
+    s.acquire(Holder::Web, SMALL, path(SMALL)).expect("acquire");
+    assert!(s.set_wanted(Holder::Web, BIG, path(BIG)).is_err(), "7B 啟動失敗應回 Err");
+    assert_eq!(launched_model(&log, 2), SMALL, "第 3 次 launch 應是恢復原模型");
+    assert_eq!(s.model(), Some(SMALL));
+    assert_eq!(s.wanted(Holder::Web), Some(SMALL), "想要的模型應還原");
+    assert!(s.holds(Holder::Web));
+}

@@ -78,7 +78,7 @@ export default function WebTranslateCard({ models }: { models: ModelInfo[] }) {
           暫用字幕的 {st.server_model},字幕停止後切回 {st.web_model}
         </div>
       )}
-      {st.message && st.status !== "ready" && <div className="text-xs text-rose-400">{st.message}</div>}
+      {st.message && <div className={`text-xs ${st.status === "ready" ? "text-amber-400" : "text-rose-400"}`}>{st.message}</div>}
       <select
         className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1"
         aria-label="網頁翻譯模型"

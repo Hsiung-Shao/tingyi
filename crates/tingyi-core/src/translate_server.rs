@@ -113,7 +113,7 @@ impl SharedServer {
         // 意外結束的程序當作沒在跑,同模型也要重啟
         self.check_alive();
         let before = self.holders.insert(holder, (model_name.to_string(), model_path));
-        if let Err(e) = self.apply(Some(holder)) {
+        if let Err(e) = self.apply(Some(holder), false) {
             // 失敗的要求者不算取得;原本就持有的保留原本想要的模型
             match before {
                 Some(b) => {
@@ -131,9 +131,12 @@ impl SharedServer {
     /// 改 `holder` 想要的模型(沒持有就忽略);字幕持有中改網頁的模型,要等字幕放手才生效。
     pub fn set_wanted(&mut self, holder: Holder, model_name: &str, model_path: PathBuf) -> Result<()> {
         let Some(w) = self.holders.get_mut(&holder) else { return Ok(()) };
-        *w = (model_name.to_string(), model_path);
+        let before = std::mem::replace(w, (model_name.to_string(), model_path));
         self.check_alive();
-        self.apply(Some(holder))
+        // 換失敗:還原想要的模型,並以原模型恢復(要求者自己還在用)
+        self.apply(Some(holder), true).inspect_err(|_| {
+            self.holders.insert(holder, before);
+        })
     }
 
     /// `holder` 想要的模型(沒持有回 None)。
@@ -146,8 +149,9 @@ impl SharedServer {
         self.holders.get(&Holder::Subtitles).or_else(|| self.holders.get(&Holder::Web)).cloned()
     }
 
-    /// 讓執行中的模型符合 `target`;換模型失敗時以原模型恢復給其他持有者。
-    fn apply(&mut self, requester: Option<Holder>) -> Result<()> {
+    /// 讓執行中的模型符合 `target`;換模型失敗時以原模型恢復給其他持有者
+    /// (`requester_stays`:要求者失敗後仍是持有者,也要恢復給它)。
+    fn apply(&mut self, requester: Option<Holder>, requester_stays: bool) -> Result<()> {
         let Some((name, path)) = self.target() else {
             self.stop();
             return Ok(());
@@ -159,7 +163,7 @@ impl SharedServer {
         self.stop();
         if let Err(e) = self.launch(&name, path) {
             // 其他持有者(例如網頁翻譯)還在用:以原模型恢復,不讓它跟著斷線
-            let others = self.holders.keys().any(|h| Some(*h) != requester);
+            let others = requester_stays || self.holders.keys().any(|h| Some(*h) != requester);
             if let (true, Some((pname, ppath))) = (others, previous) {
                 if let Err(e2) = self.launch(&pname, ppath) {
                     tracing::warn!("換模型失敗後以 {pname} 恢復也失敗:{e2:#}");
@@ -183,7 +187,7 @@ impl SharedServer {
             return;
         }
         self.check_alive();
-        if let Err(e) = self.apply(None) {
+        if let Err(e) = self.apply(None, false) {
             tracing::warn!("切回其他持有者的模型失敗:{e:#}");
         }
     }

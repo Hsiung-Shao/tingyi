@@ -202,7 +202,7 @@ pub fn status(app: &AppHandle) -> WebStatus {
 /// 改網頁翻譯的模型並存檔;網頁正在用時依「字幕優先」切換(字幕在用就等它放手)。
 pub fn set_web_model(app: &AppHandle, model: String) -> anyhow::Result<()> {
     let mut s = crate::settings::load(&settings_file());
-    s.web_model = model.clone();
+    let previous = std::mem::replace(&mut s.web_model, model.clone());
     crate::settings::save(&settings_file(), &s)?;
     let st = app.state::<AppState>();
     if !st.web.serving() {
@@ -224,7 +224,15 @@ pub fn set_web_model(app: &AppHandle, model: String) -> anyhow::Result<()> {
                     l.model = m;
                 }
             }),
-            Err(e) => update(&app, |rt| rt.message = Some(format!("切換網頁翻譯模型失敗:{e:#}"))),
+            // 伺服器已以原模型恢復;設定也改回去,下次喚起不會再試失敗的模型
+            Err(e) => {
+                let mut s = crate::settings::load(&settings_file());
+                s.web_model = previous;
+                if let Err(e2) = crate::settings::save(&settings_file(), &s) {
+                    tracing::warn!("還原網頁翻譯模型設定失敗:{e2}");
+                }
+                update(&app, |rt| rt.message = Some(format!("切換網頁翻譯模型失敗,維持原模型:{e:#}")));
+            }
         }
     });
     Ok(())

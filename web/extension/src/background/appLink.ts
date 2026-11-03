@@ -75,6 +75,7 @@ export async function autoConnect(
     return { state: 'app-error', message };
   }
   if (!reply?.ok) return { state: 'app-error', message: reply?.message ?? reply?.error ?? '本機程式回應格式不對' };
-  await saveSettings(applyHostReply(s, reply));
+  // hello 可能等了數十秒(喚起聽譯):重讀一次再合併,不蓋掉這段時間使用者改的設定(網站規則等)
+  await saveSettings(applyHostReply(await loadSettings(), reply));
   return { state: 'connected', status: reply.status, ...(reply.message ? { message: reply.message } : {}) };
 }

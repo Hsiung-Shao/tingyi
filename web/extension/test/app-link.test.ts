@@ -104,4 +104,17 @@ describe('擴充自動連線本機程式', () => {
     expect(result).toEqual({ state: 'not-installed' });
     expect(saved(store)).toEqual(before);
   });
+
+  // R2
+  it('等 hello 期間使用者改的網站規則不會被舊設定蓋掉', async () => {
+    const store = fakeChrome({ ...DEFAULT_SETTINGS });
+    const send = vi.fn(async () => {
+      // hello 回來前使用者在 popup 勾了網站規則
+      (store[SETTINGS_KEY] as Settings).sites = { 'reddit.com': { auto: true } };
+      return READY;
+    });
+    await autoConnect(send);
+    expect(saved(store).sites).toEqual({ 'reddit.com': { auto: true } });
+    expect(saved(store).direct.baseUrl).toBe('http://127.0.0.1:51234/v1');
+  });
 });

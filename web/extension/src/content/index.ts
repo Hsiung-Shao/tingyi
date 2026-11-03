@@ -188,10 +188,14 @@ async function toggle(): Promise<TabState> {
   return page.toggle();
 }
 
+/** 規則上一次是否要自動翻頁面:只在從關變開時自動開,使用者手動關掉後其他設定變動不會又打開 */
+let autoPage = false;
+
 /** 依網站規則自動開啟;規則改了就即時套用(取消自動不會關掉已開的頁面翻譯) */
 function applySiteRule(sites: Settings['sites'] | undefined): void {
   const plan = startPlan(location.hostname, matchSite(location.hostname, sites ?? {})?.rule);
-  if (plan.page && !page.enabled) void page.toggle();
+  if (plan.page && !autoPage && !page.enabled) void page.toggle();
+  autoPage = plan.page;
   if (captionSession && plan.captions !== captionSession.enabled) void captionSession.toggle();
 }
 
