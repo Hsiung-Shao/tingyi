@@ -1,7 +1,7 @@
 //! 譯文後處理:OpenCC s2twp 簡轉繁(含台灣用語)、內建詞表補充、使用者術語表(最高優先)。
 //!
-//! OpenCC 用純 Rust 的 `opencc-fmmseg`(MIT,字典內嵌);Hy-MT2 本就輸出繁體,轉換是保險,
-//! Sakura 只會輸出簡體,必須轉。
+//! OpenCC 用純 Rust 的 `opencc-fmmseg`(MIT,字典內嵌)。只轉簡體譯文(Sakura 只會輸出簡體、Hy-MT2 偶爾):
+//! s2twp 套在已是台灣繁體的句子上會改錯字與換掉台灣原本就用的詞(干擾→幹擾、項目→專案)。
 
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -63,21 +63,23 @@ const TW_TERMS: &[(&str, &str)] = &[
     ("默認", "預設"),
     ("激光", "雷射"),
     ("數據", "資料"),
-    ("程序", "程式"),
-    ("質量", "品質"),
     ("計算機", "電腦"),
     ("操作系統", "作業系統"),
-    ("移動", "行動"),
     ("互聯網", "網際網路"),
     ("智能", "智慧"),
     ("搜索", "搜尋"),
     ("創建", "建立"),
-    ("支持", "支援"),
 ];
 
-/// 簡轉繁(OpenCC s2twp,不動標點)後再套內建詞表補 OpenCC 沒收的用詞。
+/// 這段是不是簡體:轉成簡體不變、轉成繁體會變。已是繁體(或繁簡同形)的句子不算。
+fn is_simplified(text: &str) -> bool {
+    let cc = opencc();
+    cc.convert(text, "t2s", false) == text && cc.convert(text, "s2t", false) != text
+}
+
+/// 簡體譯文轉台灣繁體與用語(OpenCC s2twp,不動標點);再套內建詞表補繁體字形的大陸用詞(視頻→影片)。
 pub fn to_taiwan_terms(text: &str) -> String {
-    let mut out = opencc().convert(text, "s2twp", false);
+    let mut out = if is_simplified(text) { opencc().convert(text, "s2twp", false) } else { text.to_string() };
     for (from, to) in TW_TERMS {
         if out.contains(from) {
             out = out.replace(from, to);

@@ -18,4 +18,12 @@ describe('譯文簡轉繁', () => {
     expect(toTraditional('这是简体', 'zh-CN')).toBe('这是简体');
     expect(toTraditional('これはテストです', 'ja')).toBe('これはテストです');
   });
+
+  // Z4
+  it('已是台灣繁體的譯文不被改字或換詞', () => {
+    const sentences = ['干擾訊號很強', '鄰里之間', '以下項目請參考文件', '我支持你的決定', '台灣的平台', '這次優化了速度'];
+    // 逐字轉換會把「干擾」「鄰里」「支持」「優化」等繁體詞改壞;一次列出全部被改的句子
+    const changed = sentences.map((t) => [t, toTraditional(t, 'zh-TW')]).filter(([a, b]) => a !== b);
+    expect(changed).toEqual([]);
+  });
 });
