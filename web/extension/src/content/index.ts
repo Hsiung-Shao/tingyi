@@ -228,6 +228,11 @@ function applySiteRule(settings: Partial<Settings> | undefined): void {
   // 開關或目標語言改了才重建(判斷「不用翻」要用目前的目標語言)
   const lang = settings?.targetLang ?? 'zh-TW';
   if (youtube && (plan.captions !== document.documentElement.hasAttribute('data-atx-captions-only') || (plan.captions && lang !== captionsLang))) {
+    // 字幕翻譯也用新的目標語言重開,兩邊判斷「要不要翻」才一致
+    if (captionSession?.enabled && captionsLang !== '' && lang !== captionsLang) {
+      captionSession.disable();
+      void captionSession.toggle();
+    }
     captionsLang = lang;
     setCaptionsOnly(plan.captions, lang);
   }
