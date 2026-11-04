@@ -15,6 +15,7 @@ import { createListenHub } from './listen.ts';
 import { callBridgeTool } from './mcp.ts';
 import { needsRelink } from './relink.ts';
 import { createSlotPicker, withSlot } from './slots.ts';
+import { toTraditional } from './traditional.ts';
 
 const store: KeyValueStore = {
   async get(keys) {
@@ -84,23 +85,28 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
     s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context),
   );
   try {
-    return { ok: true, translations: toList(await translate(segments)) };
+    return { ok: true, translations: toList(await translate(segments), s.targetLang) };
   } catch (e) {
     // 連線錯誤要交給 translateWithRelink 重新取得端點,不能當成部分失敗吞掉
-    if (e instanceof PartialTranslationError && !needsRelink(e, s.route)) return partialResponse(e);
+    if (e instanceof PartialTranslationError && !needsRelink(e, s.route)) return partialResponse(e, s.targetLang);
     throw e;
   }
 }
 
-const toList = (m: Map<number, string>) => [...m].map(([id, text]) => ({ id, text }));
-const partialResponse = (e: PartialTranslationError): TranslateResponse => ({ ok: true, translations: toList(e.partial), error: e.message });
+/** 譯文送回頁面前統一轉成目標文字(台灣繁體);快取裡以前存的簡體結果也一起轉 */
+const toList = (m: Map<number, string>, targetLang: string) => [...m].map(([id, text]) => ({ id, text: toTraditional(text, targetLang) }));
+const partialResponse = (e: PartialTranslationError, targetLang: string): TranslateResponse => ({
+  ok: true,
+  translations: toList(e.partial, targetLang),
+  error: e.message,
+});
 
 /** 連不上端點(本機程式重啟換了 port、金鑰換了)時,自動向本機程式重新取得端點再試一次 */
 async function translateWithRelink(segments: Segment[], context: PageContext): Promise<TranslateResponse> {
   const s = await loadSettings();
   const retry = async (e: unknown): Promise<TranslateResponse> => {
     if (s.connection !== 'auto' || !needsRelink(e, s.route)) {
-      if (e instanceof PartialTranslationError) return partialResponse(e);
+      if (e instanceof PartialTranslationError) return partialResponse(e, s.targetLang);
       throw e;
     }
     let link = await autoConnect();
