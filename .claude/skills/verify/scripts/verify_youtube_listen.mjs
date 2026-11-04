@@ -183,7 +183,30 @@ const WATCH_CC = `<!doctype html><html lang="en"><head><meta charset="utf-8"><ti
 document.getElementById('movie_player').getPlayerResponse = () => ({ videoDetails: { videoId: 'fixture-cc' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ kind: 'asr', languageCode: 'en' }] } } });
 const lines = ['Good evening and welcome to the show.', 'Tonight we talk about the weather in the mountains.', 'Please remember to bring a warm jacket.'];
 let i = 0;
-setInterval(() => { i = (i + 1) % lines.length; document.getElementById('seg').textContent = lines[i]; }, 4000);
+// 照 YouTube 實際的換句方式:移除舊字幕框、先放一個空框,下一刻才填字
+window.__flash = 0;
+const watchFlash = () => requestAnimationFrame(() => {
+  const t = document.querySelector('.captions-text');
+  const seg = document.getElementById('seg');
+  // 畫面更新前原文可見且是英文 → 閃出原文一次
+  if (t && seg && /[A-Za-z]{3}/.test(seg.textContent) && getComputedStyle(t).display !== 'none') window.__flash++;
+});
+setInterval(() => {
+  i = (i + 1) % lines.length;
+  const box = document.querySelector('.ytp-caption-window-container');
+  const old = box.querySelector('.caption-window');
+  const win = old.cloneNode(false);
+  win.removeAttribute('data-atx-state');
+  win.removeAttribute('data-atx-plain');
+  old.remove();
+  box.appendChild(win);
+  watchFlash();
+  setTimeout(() => {
+    win.innerHTML = '<span class="captions-text" style="display:block"><span class="caption-visual-line" style="display:block"><span id="seg" class="ytp-caption-segment" style="display:inline-block;background:rgba(8,8,8,0.75);font-size:28px;color:#fff;font-family:Roboto,Arial,sans-serif"></span></span></span>';
+    document.getElementById('seg').textContent = lines[i];
+    watchFlash();
+  }, 0);
+}, 4000);
 </script>
 </body></html>`;
 const FEED = `<!doctype html><html><head><meta charset="utf-8"><title>Fixture: feed</title></head><body><p>feed</p></body></html>`;
@@ -352,6 +375,9 @@ async function main() {
     return { ok: r.tr !== cc.r?.tr && /[\u4e00-\u9fff]/.test(r.tr) && r.origDisplay === 'none', r };
   }, 30_000, 500);
   check('換句後顯示新句的譯文,原文仍不顯示', changed.ok, JSON.stringify(changed.r));
+  await sleep(8500);
+  const flash = await page2.evalJs(`window.__flash`);
+  check('YouTube 式換句(先空框再填字)不閃出原文', flash === 0, `閃現 ${flash} 次`);
   await screenshot(page2, '05-captioned-translation-only.png');
   // 不送翻的字幕(已是中文)照常顯示原文,不會整個消失
   await page2.evalJs(`(() => { const s = document.getElementById('seg'); s.textContent = '這一句本來就是中文字幕'; return true; })()`);

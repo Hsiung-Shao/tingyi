@@ -400,9 +400,10 @@ export function watchNewBlocks(
       // 已翻好的區塊文字被頁面改掉(例如「載入中…」換成正文):清掉舊譯文重新排入
       const at = r.target.nodeType === Node.ELEMENT_NODE ? (r.target as Element) : r.target.parentElement;
       // stale:之前重翻太頻繁被擋下的區塊,時間窗過後文字再變就恢復重翻
-      const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"],[data-atx-state="stale"]') : null;
+      const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"],[data-atx-state="stale"],[data-atx-state="error"]') : null;
       // 頁面翻譯與字幕翻譯各有一組監看,只處理自己那邊的區塊
-      if (done && captionOk(done, opts) && sourceText.has(done) && getBlockText(done) !== sourceText.get(done)) {
+      // error:翻譯失敗的區塊文字一變也重送(YouTube 整支影片重複使用同一個字幕框,失敗後不重送就一直卡住)
+      if (done && captionOk(done, opts) && (done.dataset.atxState === 'error' || (sourceText.has(done) && getBlockText(done) !== sourceText.get(done)))) {
         if (resetForRetranslate(done) && isCandidate(done, opts)) found.add(done);
       }
       for (const node of Array.from(r.addedNodes)) {
@@ -420,4 +421,15 @@ export function watchNewBlocks(
   });
   observer.observe(root, { childList: true, subtree: true, characterData: true });
   return () => observer.disconnect();
+}
+
+/**
+ * 只顯示譯文時,哪些字幕框照常顯示原文:還沒排入翻譯、文字非空、而且不需要翻(已是目標語言、太短)的框標上 data-atx-plain。
+ * 其餘字幕框的原文一律藏起來(style.css),換句時 YouTube 先放空框再填字也不會閃出原文。
+ */
+export function markCaptionPlain(root: Element, opts: CollectOptions): void {
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('.caption-window'))) {
+    const plain = el.dataset.atxState === undefined && getBlockText(el) !== '' && !isCandidate(el, opts);
+    el.toggleAttribute('data-atx-plain', plain);
+  }
 }

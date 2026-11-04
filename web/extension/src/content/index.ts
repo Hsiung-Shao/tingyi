@@ -9,6 +9,8 @@ import {
   removeAllTranslations,
   resetForRetranslate,
   setDisplayMode,
+  CAPTION_CONTAINER_SELECTOR,
+  markCaptionPlain,
   watchNewBlocks,
   type CollectOptions,
 } from './dom.ts';
@@ -195,14 +197,35 @@ let autoPage = false;
 const ytListen = youtube && window.top === window ? createYouTubeListen() : null;
 
 /** 依網站規則自動開啟;規則改了就即時套用(取消自動不會關掉已開的頁面翻譯) */
-function applySiteRule(sites: Settings['sites'] | undefined): void {
+/** 只顯示譯文時,字幕框一變就重算哪些框照常顯示原文(MutationObserver 在畫面更新前執行,不會閃原文) */
+let plainWatch: MutationObserver | null = null;
+function setCaptionsOnly(on: boolean, targetLang: string): void {
+  document.documentElement.toggleAttribute('data-atx-captions-only', on);
+  plainWatch?.disconnect();
+  plainWatch = null;
+  if (!on) return;
+  const opts: CollectOptions = { targetLang, minChars: 2, captions: 'only' };
+  const inCaptions = (n: Node) => (n.nodeType === Node.ELEMENT_NODE ? (n as Element) : n.parentElement)?.closest(CAPTION_CONTAINER_SELECTOR) != null;
+  plainWatch = new MutationObserver((records) => {
+    if (records.some((r) => inCaptions(r.target) || Array.from(r.addedNodes).some((n) => n.nodeType === Node.ELEMENT_NODE && ((n as Element).matches(CAPTION_CONTAINER_SELECTOR) || (n as Element).querySelector(CAPTION_CONTAINER_SELECTOR))))) {
+      markCaptionPlain(document.body, opts);
+    }
+  });
+  plainWatch.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['data-atx-state'] });
+  markCaptionPlain(document.body, opts);
+}
+
+function applySiteRule(settings: Partial<Settings> | undefined): void {
+  const sites = settings?.sites;
   const plan = startPlan(location.hostname, matchSite(location.hostname, sites ?? {})?.rule);
   if (plan.page && !autoPage && !page.enabled) void page.toggle();
   autoPage = plan.page;
   ytListen?.setRule(matchSite(location.hostname, sites ?? {})?.rule);
   if (captionSession && plan.captions !== captionSession.enabled) void captionSession.toggle();
   // 翻譯影片字幕時不顯示原文字幕,等譯文到了只顯示譯文(style.css)
-  if (youtube) document.documentElement.toggleAttribute('data-atx-captions-only', plan.captions);
+  if (youtube && plan.captions !== document.documentElement.hasAttribute('data-atx-captions-only')) {
+    setCaptionsOnly(plan.captions, settings?.targetLang ?? 'zh-TW');
+  }
 }
 
 function refreshBall(): void {
@@ -236,13 +259,13 @@ async function initBall(): Promise<void> {
   if (store) {
     const got = await store.get([SETTINGS_KEY, BALL_TOP_KEY]);
     applyPrefs(got[SETTINGS_KEY] as Partial<Settings> | undefined);
-    applySiteRule((got[SETTINGS_KEY] as Partial<Settings> | undefined)?.sites);
+    applySiteRule(got[SETTINGS_KEY] as Partial<Settings> | undefined);
     top = typeof got[BALL_TOP_KEY] === 'number' ? (got[BALL_TOP_KEY] as number) : undefined;
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes[SETTINGS_KEY]) return;
       const next = changes[SETTINGS_KEY].newValue as Partial<Settings> | undefined;
       applyPrefs(next);
-      applySiteRule(next?.sites);
+      applySiteRule(next);
     });
   }
   ball = createBall(document, {

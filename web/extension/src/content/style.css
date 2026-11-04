@@ -31,9 +31,9 @@ font.atx-target.atx-caption {
   transform: translateX(-50%);
 }
 
-/* 開了「翻譯影片字幕」:正在翻或已翻好的字幕框不顯示原文,譯文到了才出現(換句時先空白,不閃原文);
-   不送翻(已是中文、太短)或翻譯失敗的框沒有這些標記,照常顯示原文 */
-html[data-atx-captions-only] .caption-window:is([data-atx-state='seen'], [data-atx-state='pending'], [data-atx-state='done']) .captions-text {
+/* 開了「翻譯影片字幕」:字幕原文一律不顯示,譯文到了才出現(YouTube 換句時先放空框再填字,也不會閃出原文)。
+   例外照常顯示原文:不需要翻的框(data-atx-plain:已是目標語言、太短)、翻譯失敗(error)、重翻太頻繁被擋(stale) */
+html[data-atx-captions-only] .caption-window:not([data-atx-plain]):not([data-atx-state='error']):not([data-atx-state='stale']) .captions-text {
   display: none !important;
 }
 
