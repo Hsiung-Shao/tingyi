@@ -353,6 +353,13 @@ async function main() {
   }, 30_000, 500);
   check('換句後顯示新句的譯文,原文仍不顯示', changed.ok, JSON.stringify(changed.r));
   await screenshot(page2, '05-captioned-translation-only.png');
+  // 不送翻的字幕(已是中文)照常顯示原文,不會整個消失
+  await page2.evalJs(`(() => { const s = document.getElementById('seg'); s.textContent = '這一句本來就是中文字幕'; return true; })()`);
+  const zh = await waitFor(async () => {
+    const r = await page2.evalJs(`(() => ({ display: getComputedStyle(document.querySelector('.captions-text')).display, state: document.querySelector('.caption-window').dataset.atxState ?? null }))()`);
+    return { ok: r.display !== 'none', r };
+  }, 5_000, 200);
+  check('不送翻的中文字幕照常顯示原文', zh.ok, JSON.stringify(zh.r));
   check('有字幕的影片不啟動聽譯', await btn('開始'));
   await screenshot(ui, '04-app-stopped.png');
 }

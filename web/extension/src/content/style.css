@@ -31,8 +31,9 @@ font.atx-target.atx-caption {
   transform: translateX(-50%);
 }
 
-/* 開了「翻譯影片字幕」:原文字幕不顯示,譯文到了才出現(換句時先空白,不閃原文) */
-html[data-atx-captions-only] .ytp-caption-window-container .captions-text {
+/* 開了「翻譯影片字幕」:正在翻或已翻好的字幕框不顯示原文,譯文到了才出現(換句時先空白,不閃原文);
+   不送翻(已是中文、太短)或翻譯失敗的框沒有這些標記,照常顯示原文 */
+html[data-atx-captions-only] .caption-window:is([data-atx-state='seen'], [data-atx-state='pending'], [data-atx-state='done']) .captions-text {
   display: none !important;
 }
 
