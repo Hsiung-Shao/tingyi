@@ -468,9 +468,17 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 
 **安裝版(使用者 2026-11-04 從檔案總管驗)**:網頁翻譯變快、網頁翻譯卡片、網站自動翻譯、YouTube 字幕翻譯開關、真實 YouTube 沒字幕影片在播放器內出現聽譯字幕,使用者回報都正常。
 
+**隱私修正(2026-11-04 加做)**:
+- 播放器字幕改放 closed shadow root。M7 量到頁面讀 `#movie_player.innerText` 是空的。
+- pipe 改用 `D:P(A;;GA;;;OW)(A;;GA;;;SY)`。測試 P3 量到預設 DACL 含 Everyone 與 Anonymous 唯讀,改後只剩本人與 SYSTEM。
+- popup 註明會聽整個瀏覽器。
+- 使用者新需求:開了「翻譯影片字幕」時,正在翻或已翻好的字幕框不顯示原文,換句時不閃原文;不送翻或失敗的字幕照常顯示。
+- M7 27 項 PASS。
+
 **交使用者決定**:
-- 字幕寫在 YouTube DOM 的隱私問題,與頁面可偽造事件。
-- pipe 預設 DACL。
+- 頁面可偽造「沒字幕」事件(只會讓聽譯開始,讀不到字幕內容)。
+- 聽譯以系統管理員身分執行時 pipe 連不上(OW 會變成 Administrators)。
+- whisper-server 在 127.0.0.1:8179 沒有認證(既有)。
 - 在 /watch 重新整理時舊回合殘留。
 - 擷取整個瀏覽器的聲音(其他分頁也會進來)。
 
