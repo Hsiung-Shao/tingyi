@@ -61,6 +61,14 @@
       <option value="ja">日本語</option>
       <option value="ko">한국어</option>
     </select>
+    <div id="zhConvertBox">
+      <label for="zhConvert">譯文轉換</label>
+      <select id="zhConvert">
+        <option value="terms">台灣繁體(轉字形並換台灣用語)</option>
+        <option value="script">繁體(只轉字形,不換詞)</option>
+        <option value="none">不轉換(照模型輸出)</option>
+      </select>
+    </div>
     <div id="providerState" class="status muted"></div>
     <p><a href="#" id="openOptions">進階設定</a></p>
     <script src="popup.js"></script>

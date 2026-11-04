@@ -28,6 +28,8 @@ export default function App() {
   const [translate, setTranslate] = useState(true);
   const [asrEngine, setAsrEngine] = useState("sensevoice");
   const [lang, setLang] = useState<LangOpt>("auto");
+  const [targetLang, setTargetLang] = useState("zh-TW");
+  const [zhConvert, setZhConvert] = useState("terms");
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [unlocked, setUnlocked] = useState(false);
   const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
@@ -98,6 +100,8 @@ export default function App() {
         setRefine(p.refine);
         setGlossaryText(p.glossary);
         setReplaceText(p.replacements);
+        if (p.target_lang) setTargetLang(p.target_lang);
+        if (p.zh_convert) setZhConvert(p.zh_convert);
       })
       .catch(() => {})
       .finally(() => setPrefsLoaded(true));
@@ -114,10 +118,12 @@ export default function App() {
       refine,
       glossary: glossaryText,
       replacements: replaceText,
+      target_lang: targetLang,
+      zh_convert: zhConvert,
     };
     const t = setTimeout(() => invoke("save_prefs", { prefs }).catch(() => {}), 500);
     return () => clearTimeout(t);
-  }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText]);
+  }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText, targetLang, zhConvert]);
 
   useEffect(() => {
     // 開發用自動開始(TINGYI_AUTOSTART=1):只在 autostart 旗標首次為 true 時觸發一次;
@@ -209,6 +215,8 @@ export default function App() {
           lang: lang === "auto" ? null : lang,
           glossary: parseGlossary(),
           replacements: parseReplacements(),
+          target_lang: targetLang,
+          zh_convert: zhConvert,
         },
       });
       setRunning(true);
@@ -333,6 +341,46 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <div className="flex items-center gap-2">
+              <label className="text-neutral-400 shrink-0" htmlFor="target-lang">
+                翻譯成
+              </label>
+              <select
+                id="target-lang"
+                className="flex-1 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 disabled:opacity-50"
+                value={targetLang}
+                onChange={(e) => setTargetLang(e.target.value)}
+                disabled={running || !translate}
+              >
+                <option value="zh-TW">繁體中文</option>
+                <option value="zh-CN">簡體中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+            </div>
+            {targetLang === "zh-TW" && (
+              <div className="flex items-center gap-2">
+                <label className="text-neutral-400 shrink-0" htmlFor="zh-convert">
+                  譯文轉換
+                </label>
+                <select
+                  id="zh-convert"
+                  className="flex-1 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 disabled:opacity-50"
+                  value={zhConvert}
+                  onChange={(e) => setZhConvert(e.target.value)}
+                  disabled={running || !translate}
+                >
+                  <option value="terms">台灣繁體(轉字形並換台灣用語)</option>
+                  <option value="script">繁體(只轉字形,不換詞)</option>
+                  <option value="none">不轉換(照模型輸出)</option>
+                </select>
+              </div>
+            )}
+            {/* 只有 Hy-MT2 能譯成中文以外的語言,其他模型後端會改用繁體中文 */}
+            {targetLang !== "zh-TW" && !model.startsWith("Hy-MT2") && (
+              <p className="text-amber-400 text-xs">這個模型只能譯成繁體中文,開始時會改用繁體中文。</p>
+            )}
             <RoutedModels group="translate" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
           </section>
 

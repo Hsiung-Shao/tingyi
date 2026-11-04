@@ -128,6 +128,10 @@ export interface Prefs {
   refine: boolean;
   glossary: string;
   replacements: string;
+  /** 字幕譯成哪種語言:zh-TW / zh-CN / en / ja / ko */
+  target_lang: string;
+  /** 簡體譯文怎麼轉(目標繁中時):terms / script / none */
+  zh_convert: string;
 }
 
 export type Sensitivity = "fast" | "normal" | "slow";

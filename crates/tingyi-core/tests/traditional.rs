@@ -1,7 +1,7 @@
 //! 譯文後處理的簡轉繁:繁體字幕不可被改字或換詞。
 #![allow(non_snake_case)]
 
-use tingyi_core::postprocess::{postprocess, to_taiwan_terms};
+use tingyi_core::postprocess::{convert, postprocess, to_taiwan_terms, ZhConvert};
 
 const TRADITIONAL: [&str; 6] = [
     "干擾訊號很強",
@@ -48,6 +48,44 @@ fn Z6_簡繁混雜時只轉簡體的小句() {
 fn Z6_內建詞表不改台灣常用詞() {
     // 詞表把「計算機」「大數據」換成別的詞會改壞台灣用語;一次列出全部被改的句子
     let changed: Vec<String> = ["用計算機算一下", "大數據分析"]
+        .iter()
+        .filter(|t| to_taiwan_terms(t) != **t)
+        .map(|t| format!("{t} -> {}", to_taiwan_terms(t)))
+        .collect();
+    assert!(changed.is_empty(), "台灣用語被改:{changed:?}");
+}
+
+// T1:三種轉換方式結果不同
+#[test]
+fn T1_三種轉換方式結果不同() {
+    assert_eq!(convert("这是软件", ZhConvert::Terms), "這是軟體");
+    assert_eq!(convert("这是软件", ZhConvert::Script), "這是軟件", "Script 只換字形、不換詞");
+    assert_eq!(convert("这是软件", ZhConvert::None), "这是软件");
+    assert_eq!(ZhConvert::default(), ZhConvert::Terms);
+}
+
+// T2:繁簡同形字的小句不被誤轉
+#[test]
+fn T2_同形字小句不被誤轉() {
+    let changed: Vec<String> = ["我在台北\u{ff0c}這裡很熱。", "他住在村里\u{ff0c}離這裡很遠。", "一台\u{ff0c}兩台"]
+        .iter()
+        .filter(|t| convert(t, ZhConvert::Terms) != **t)
+        .map(|t| format!("{t} -> {}", convert(t, ZhConvert::Terms)))
+        .collect();
+    assert!(changed.is_empty(), "同形字被誤轉:{changed:?}"); // 「台」「里」不是簡體專用字
+}
+
+// T3:混雜句只轉簡體小句
+#[test]
+fn T3_混雜句仍只轉簡體小句() {
+    assert_eq!(convert("今天天气很好。明天會下雨。", ZhConvert::Terms), "今天天氣很好。明天會下雨。");
+    assert_eq!(convert("今天天气很好。明天會下雨。", ZhConvert::None), "今天天气很好。明天會下雨。");
+}
+
+// T5:詞表不改台灣常用詞
+#[test]
+fn T5_詞表不改台灣常用詞() {
+    let changed: Vec<String> = ["智能障礙", "創建於1950年"]
         .iter()
         .filter(|t| to_taiwan_terms(t) != **t)
         .map(|t| format!("{t} -> {}", to_taiwan_terms(t)))

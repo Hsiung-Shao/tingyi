@@ -29,7 +29,7 @@ use crate::audio::{normalize_rms, rms_dbfs, TARGET_SAMPLE_RATE};
 use crate::refine::{RefineConfig, RefineJob, RefineMsg};
 use crate::metrics::{PipelineStats, SentenceTiming, TimingSnapshot};
 use crate::mt::{TranslateRequest, Translator};
-use crate::postprocess::{postprocess, Glossary};
+use crate::postprocess::{postprocess_with, Glossary, ZhConvert};
 use crate::sentence::{completeness, Completeness};
 use crate::speaker::{SpeakerConfig, SpeakerIdentifier};
 use crate::tuner::{SegControl, SegStat, SegmentationTuner};
@@ -191,8 +191,22 @@ pub struct PipelineConfig {
     pub speaker: SpeakerConfig,
     /// 回修(慢路徑)。
     pub refine: RefineConfig,
+    /// 譯成哪種語言;簡體譯文怎麼轉(只在目標是台灣繁體時用)。
+    pub target: crate::mt::Target,
+    pub zh_convert: ZhConvert,
     /// 有設就把整條連續 16 kHz 音訊寫成一個 wav(bench 離線對照用)。
     pub record_all: Option<PathBuf>,
+}
+
+impl PipelineConfig {
+    /// 譯文要用的轉換方式:只有目標是台灣繁體時才轉,其他目標照模型輸出。
+    pub fn output_convert(&self) -> ZhConvert {
+        if self.target == crate::mt::Target::ZhTw {
+            self.zh_convert
+        } else {
+            ZhConvert::None
+        }
+    }
 }
 
 impl Default for PipelineConfig {
@@ -231,6 +245,8 @@ impl Default for PipelineConfig {
             speaker_id: true,
             speaker: SpeakerConfig::default(),
             refine: RefineConfig::default(),
+            target: crate::mt::Target::default(),
+            zh_convert: ZhConvert::default(),
             record_all: None,
         }
     }
@@ -794,8 +810,7 @@ fn asr_loop(
             stat: SegStat { audio_ms: core_ms, chars, hit_max, incomplete },
         });
 
-        let will_translate = t.lang != Lang::Zh
-            && (cfg.allowed_langs.is_empty() || cfg.allowed_langs.contains(&t.lang));
+        let will_translate = crate::mt::should_translate(t.lang, cfg.target, &cfg.allowed_langs);
         let _ = events.send(PipelineEvent::Transcript {
             id,
             text: t.text.clone(),
@@ -1001,6 +1016,7 @@ async fn translate_one(
         lookahead: Vec::new(),
         // 有回修時固定用 slot 0,回修用 slot 1,前綴快取互不干擾
         slot: fast_slot(refine_tx.is_some()),
+        target: cfg.target,
     };
     let id = u.id;
     let ev = events.clone();
@@ -1021,7 +1037,7 @@ async fn translate_one(
                 .map(|ms| now - Duration::from_millis(res.total_ms.saturating_sub(ms) as u64))
                 .or(Some(now));
             let hit_refs: Vec<_> = hits.iter().collect();
-            let text = postprocess(&res.text, &hit_refs);
+            let text = postprocess_with(&res.text, &hit_refs, cfg.output_convert());
             let snap = u.timing.snapshot();
             stats.record_mt(res.first_token_ms.unwrap_or(res.total_ms), res.total_ms, snap.e2e_first_ms);
             context.push_back((u.text.clone(), text.clone()));

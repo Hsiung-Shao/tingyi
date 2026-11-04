@@ -22,7 +22,7 @@ use crate::audio::ring::{ms_to_samples, samples_to_ms, AudioRing};
 use crate::metrics::PipelineStats;
 use crate::mt::{TranslateRequest, Translator};
 use crate::pipeline::{PipelineConfig, PipelineEvent, SharedSpeakers, NEXT_SENTENCE_ID};
-use crate::postprocess::{postprocess, GlossaryEntry};
+use crate::postprocess::{postprocess_with, GlossaryEntry};
 
 #[derive(Debug, Clone)]
 pub struct RefineConfig {
@@ -496,7 +496,7 @@ pub(crate) fn refine_loop(
             let speaker = ring
                 .slice(r.start, r.end)
                 .and_then(|p| speakers.lock().unwrap().as_ref().and_then(|s| s.peek(&normalize_rms(&p, -20.0, 8.0))));
-            let will_translate = lang != Lang::Zh && (cfg.allowed_langs.is_empty() || cfg.allowed_langs.contains(&lang));
+            let will_translate = crate::mt::should_translate(lang, cfg.target, &cfg.allowed_langs);
             PipelineStats::add(&stats.recovered, 1);
             let _ = events.send(PipelineEvent::Recovered {
                 id,
@@ -609,12 +609,13 @@ pub(crate) async fn refine_mt_loop(
             glossary: job.glossary.clone(),
             lookahead: job.lookahead.clone(),
             slot: Some(crate::translate_server::REFINE_SLOT),
+            target: cfg.target,
         };
         let mut noop = |_: &str| {};
         match tokio::time::timeout(cfg.mt_timeout * 2, translator.translate(req, &mut noop)).await {
             Ok(Ok(res)) => {
                 let hits: Vec<&GlossaryEntry> = job.glossary.iter().collect();
-                let text = postprocess(&res.text, &hits);
+                let text = postprocess_with(&res.text, &hits, cfg.output_convert());
                 if text.is_empty() {
                     continue;
                 }

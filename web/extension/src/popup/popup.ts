@@ -1,6 +1,6 @@
 import type { LinkStatus } from '../background/appLink.ts';
 import type { ProvidersResponse, TabState } from '../shared/messages.ts';
-import { loadSettings, saveSettings, type DisplayMode, type Route, type Scope } from '../shared/settings.ts';
+import { loadSettings, saveSettings, type DisplayMode, type Route, type Scope, type ZhConvert } from '../shared/settings.ts';
 import { isYouTube, siteKey, updateSiteRule, type SiteRule } from '../shared/sites.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -163,9 +163,19 @@ async function init(): Promise<void> {
     s.scope = (e.target as HTMLSelectElement).value as Scope;
     await saveSettings(s);
   });
+  // 譯文轉換只在目標是繁體中文(台灣)時有作用
+  const showZh = (lang: string) => ($('zhConvertBox').hidden = lang !== 'zh-TW');
+  $<HTMLSelectElement>('zhConvert').value = settings.zhConvert;
+  showZh(settings.targetLang);
   $('targetLang').addEventListener('change', async (e) => {
     const s = await loadSettings();
     s.targetLang = (e.target as HTMLSelectElement).value;
+    await saveSettings(s);
+    showZh(s.targetLang);
+  });
+  $('zhConvert').addEventListener('change', async (e) => {
+    const s = await loadSettings();
+    s.zhConvert = (e.target as HTMLSelectElement).value as ZhConvert;
     await saveSettings(s);
   });
   $('openOptions').addEventListener('click', (e) => {

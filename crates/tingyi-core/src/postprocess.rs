@@ -64,29 +64,58 @@ const TW_TERMS: &[(&str, &str)] = &[
     ("激光", "雷射"),
     ("操作系統", "作業系統"),
     ("互聯網", "網際網路"),
-    ("智能", "智慧"),
     ("搜索", "搜尋"),
-    ("創建", "建立"),
 ];
 
-/// 這段是不是簡體:轉成簡體不變、轉成繁體會變。已是繁體(或繁簡同形)的句子不算。
+/// 簡體譯文怎麼轉(只在目標是台灣繁體時用)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZhConvert {
+    /// 轉成台灣繁體並換成台灣用語(s2twp + 內建詞表)
+    #[default]
+    Terms,
+    /// 只轉字形,不換詞(s2tw)
+    Script,
+    /// 照模型輸出
+    None,
+}
+
+/// 繁簡同形、兩邊都常用的字:判斷「這段是不是簡體」時不算(否則「我在台北」會被當成簡體轉成臺北)。
+const SHARED_HAN: &[char] = &['台', '里', '干', '后', '面', '只', '系', '范', '松', '斗', '板', '准', '云', '余', '制'];
+
+/// 這段是不是簡體:去掉繁簡同形字後,轉成簡體不變、轉成繁體會變。已是繁體(或只有同形字)的不算。
 fn is_simplified(text: &str) -> bool {
     let cc = opencc();
-    cc.convert(text, "t2s", false) == text && cc.convert(text, "s2t", false) != text
+    let core: String = text.chars().filter(|c| !SHARED_HAN.contains(c)).collect();
+    cc.convert(&core, "t2s", false) == core && cc.convert(&core, "s2t", false) != core
 }
 
 /// 小句的結尾標點:簡繁混雜時依小句各自判斷,簡體的小句才轉。
 const CLAUSE_END: &[char] = &['。', '！', '？', '；', '，', '!', '?', ';', ',', '\n'];
 
-/// 簡體譯文轉台灣繁體與用語(OpenCC s2twp,不動標點);再套內建詞表補繁體字形的大陸用詞(視頻→影片)。
-pub fn to_taiwan_terms(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for clause in text.split_inclusive(CLAUSE_END) {
-        if is_simplified(clause) {
-            out.push_str(&opencc().convert(clause, "s2twp", false));
-        } else {
-            out.push_str(clause);
+/// 依轉換方式處理譯文:整句是簡體就整句轉;否則依標點切小句,只轉簡體的小句(簡繁混雜時)。
+/// Terms 另套內建詞表補繁體字形的大陸用詞(視頻→影片)。
+pub fn convert(text: &str, mode: ZhConvert) -> String {
+    let config = match mode {
+        ZhConvert::None => return text.to_string(),
+        ZhConvert::Terms => "s2twp",
+        ZhConvert::Script => "s2tw",
+    };
+    let mut out = if is_simplified(text) {
+        opencc().convert(text, config, false)
+    } else {
+        let mut o = String::with_capacity(text.len());
+        for clause in text.split_inclusive(CLAUSE_END) {
+            if is_simplified(clause) {
+                o.push_str(&opencc().convert(clause, config, false));
+            } else {
+                o.push_str(clause);
+            }
         }
+        o
+    };
+    if mode != ZhConvert::Terms {
+        return out;
     }
     for (from, to) in TW_TERMS {
         if out.contains(from) {
@@ -96,9 +125,19 @@ pub fn to_taiwan_terms(text: &str) -> String {
     out
 }
 
+/// 簡體譯文轉台灣繁體與用語(預設的轉換方式)。
+pub fn to_taiwan_terms(text: &str) -> String {
+    convert(text, ZhConvert::Terms)
+}
+
 /// 完整後處理:先做台灣用語,再套術語表(術語表優先,最後執行以免被覆蓋)。
 pub fn postprocess(translation: &str, glossary_hits: &[&GlossaryEntry]) -> String {
-    let mut out = to_taiwan_terms(translation);
+    postprocess_with(translation, glossary_hits, ZhConvert::Terms)
+}
+
+/// 同 `postprocess`,指定轉換方式(目標不是台灣繁體時呼叫端傳 None)。
+pub fn postprocess_with(translation: &str, glossary_hits: &[&GlossaryEntry], mode: ZhConvert) -> String {
+    let mut out = convert(translation, mode);
     for hit in glossary_hits {
         // 譯文中若模型沒照術語翻,無法可靠定位;只做「原文直接殘留」的替換。
         if !hit.source.is_empty() && out.contains(hit.source.as_str()) {

@@ -14,6 +14,7 @@ fn prefs() -> Prefs {
         refine: false,
         glossary: "# 專有名詞\nNVIDIA=輝達\n\nGPU\t顯卡\nCPU→處理器\n只有原文=\n=只有譯名\n".into(),
         replacements: "麥克拉=麥可拉\n刪我=\n沒有分隔符\na=b=c\n".into(),
+        ..Default::default()
     }
 }
 
@@ -86,4 +87,23 @@ fn U22_擴充斷線只停它開的回合() {
     assert!(should_stop_on_disconnect(Some(Owner::Extension)));
     assert!(!should_stop_on_disconnect(Some(Owner::Manual)), "停掉使用者手動開的回合是 bug");
     assert!(!should_stop_on_disconnect(None));
+}
+
+// T9:開始選項帶目標語言與簡繁轉換方式
+#[test]
+fn T9_開始選項帶目標與轉換() {
+    let p = Prefs { target_lang: "ja".into(), zh_convert: "script".into(), ..prefs() };
+    let o = listen_options(Some(&p), "m");
+    assert_eq!(o.target_lang.as_deref(), Some("ja"));
+    assert_eq!(o.zh_convert.as_deref(), Some("script"));
+}
+
+#[test]
+fn T9_空字串或沒有偏好時不帶() {
+    let o = listen_options(Some(&prefs()), "m");
+    assert_eq!(o.target_lang, None, "空字串應為 None");
+    assert_eq!(o.zh_convert, None);
+    let o = listen_options(None, "m");
+    assert_eq!(o.target_lang, None);
+    assert_eq!(o.zh_convert, None);
 }

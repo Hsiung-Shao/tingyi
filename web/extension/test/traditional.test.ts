@@ -34,3 +34,33 @@ describe('譯文簡轉繁', () => {
     expect(toTraditional('这是软件，裡面有東西', 'zh-TW')).toBe('這是軟體，裡面有東西');
   });
 });
+
+describe('簡繁轉換方式', () => {
+  // T1
+  it('三種轉換方式結果不同', () => {
+    expect(toTraditional('这是软件', 'zh-TW', 'terms')).toBe('這是軟體');
+    expect(toTraditional('这是软件', 'zh-TW', 'script')).toBe('這是軟件'); // script 只換字形、不換詞
+    expect(toTraditional('这是软件', 'zh-TW', 'none')).toBe('这是软件');
+    expect(toTraditional('这是软件', 'zh-TW')).toBe('這是軟體'); // 預設是 terms
+  });
+
+  // T2
+  it('同形字小句不被誤轉', () => {
+    const sentences = ['我在台北\uff0c這裡很熱。', '他住在村里\uff0c離這裡很遠。', '一台\uff0c兩台'];
+    const changed = sentences.map((t) => [t, toTraditional(t, 'zh-TW', 'terms')]).filter(([a, b]) => a !== b);
+    expect(changed).toEqual([]); // 「台」「里」不是簡體專用字
+  });
+
+  // T3
+  it('混雜句仍只轉簡體小句', () => {
+    expect(toTraditional('今天天气很好。明天會下雨。', 'zh-TW', 'terms')).toBe('今天天氣很好。明天會下雨。');
+    expect(toTraditional('今天天气很好。明天會下雨。', 'zh-TW', 'none')).toBe('今天天气很好。明天會下雨。');
+  });
+
+  // T4
+  it('非繁中目標不轉', () => {
+    expect(toTraditional('这是软件', 'zh-CN', 'terms')).toBe('这是软件');
+    expect(toTraditional('这是软件', 'en', 'terms')).toBe('这是软件');
+    expect(toTraditional('这是软件', 'zh-CN')).toBe('这是软件');
+  });
+});

@@ -21,6 +21,16 @@ describe('網站規則', () => {
     expect(DEFAULT_SETTINGS.sites).toEqual({});
   });
 
+  // T10
+  it('舊擴充設定沒有簡繁轉換欄位時預設 terms', async () => {
+    const old: Record<string, unknown> = { ...DEFAULT_SETTINGS };
+    delete old.zhConvert;
+    stubStorage({ [SETTINGS_KEY]: old });
+    const s = await loadSettings();
+    expect(s.zhConvert).toBe('terms'); // 沒補預設會是 undefined,轉換函式拿到未知模式
+    expect(DEFAULT_SETTINGS.zhConvert).toBe('terms');
+  });
+
   // U9
   it('網站規則比對含子網域且不誤中相似網域', () => {
     const rule: SiteRule = { auto: true };

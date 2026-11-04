@@ -10,6 +10,8 @@ export type Scope = 'main' | 'page';
 /** auto:端點由本機程式自動提供;manual:使用者自己填 */
 export type Connection = 'auto' | 'manual';
 
+export type ZhConvert = 'terms' | 'script' | 'none';
+
 export interface Settings {
   route: Route;
   connection: Connection;
@@ -32,6 +34,8 @@ export interface Settings {
   };
   limits: { bridge: BatchLimits; direct: BatchLimits };
   concurrency: number;
+  /** 目標是台灣繁體時簡體譯文怎麼轉:terms 轉字形並換台灣用語、script 只轉字形、none 照模型輸出 */
+  zhConvert: ZhConvert;
   /** 網站規則,鍵是網域(含子網域) */
   sites: Record<string, SiteRule>;
 }
@@ -55,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   limits: { bridge: { maxSegments: 20, maxChars: 6000 }, direct: { maxSegments: 8, maxChars: 2500 } },
   concurrency: 2,
+  zhConvert: 'terms',
   sites: {},
 };
 

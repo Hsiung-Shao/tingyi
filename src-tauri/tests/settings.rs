@@ -38,6 +38,7 @@ fn U3_設定寫入後讀回相同() {
             refine: true,
             glossary: "foo=富".into(),
             replacements: "a=>b".into(),
+            ..Default::default()
         }),
     };
     save(&p, &s).unwrap();

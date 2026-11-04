@@ -174,6 +174,10 @@ pub struct StartOptions {
     pub refine: Option<bool>,
     /// 開始時顯示懸浮字幕(預設顯示;擴充觸發時字幕放在播放器裡,不顯示)。
     pub show_overlay: Option<bool>,
+    /// 字幕譯成哪種語言(zh-TW / zh-CN / en / ja / ko;None = zh-TW)。
+    pub target_lang: Option<String>,
+    /// 簡體譯文怎麼轉(terms / script / none;None = terms)。
+    pub zh_convert: Option<String>,
 }
 
 fn parse_lang(s: &str) -> Option<Lang> {
@@ -309,6 +313,14 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     cfg.speaker_id = opts.speaker_id.unwrap_or(true);
     cfg.refine.enabled = refine_on;
     cfg.lock_lang = opts.lang.as_deref().and_then(parse_lang);
+    // 目標語言:只有 Hy-MT2 能譯成中文以外的語言,其他模型一律台灣繁體
+    let target = opts.target_lang.as_deref().and_then(tingyi_core::mt::Target::from_code).unwrap_or_default();
+    cfg.target = tingyi_core::mt::effective_target(opts.model.as_deref().unwrap_or(""), target);
+    cfg.zh_convert = match opts.zh_convert.as_deref() {
+        Some("script") => tingyi_core::postprocess::ZhConvert::Script,
+        Some("none") => tingyi_core::postprocess::ZhConvert::None,
+        _ => tingyi_core::postprocess::ZhConvert::Terms,
+    };
     if cfg.lock_lang.is_some() {
         cfg.allowed_langs = HashSet::new();
     }

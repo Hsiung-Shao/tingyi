@@ -22,6 +22,10 @@ pub struct Prefs {
     pub glossary: String,
     /// 辨識取代表原文(每行 錯字=正字)
     pub replacements: String,
+    /// 字幕譯成哪種語言(zh-TW / zh-CN / en / ja / ko;空 = zh-TW)
+    pub target_lang: String,
+    /// 簡體譯文怎麼轉(terms / script / none;空 = terms)
+    pub zh_convert: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

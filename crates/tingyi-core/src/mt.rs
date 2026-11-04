@@ -32,6 +32,66 @@ pub struct TranslateRequest {
     pub lookahead: Vec<String>,
     /// llama-server slot(`id_slot`);None 由伺服器挑。回修用 1、快路徑用 0,互不洗掉快取。
     pub slot: Option<u32>,
+    /// 譯成哪種語言(預設台灣繁體)。
+    pub target: Target,
+}
+
+/// 字幕的目標語言。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Target {
+    #[default]
+    ZhTw,
+    ZhCn,
+    En,
+    Ja,
+    Ko,
+}
+
+impl Target {
+    pub fn from_code(s: &str) -> Option<Target> {
+        match s {
+            "zh-TW" => Some(Self::ZhTw),
+            "zh-CN" => Some(Self::ZhCn),
+            "en" => Some(Self::En),
+            "ja" => Some(Self::Ja),
+            "ko" => Some(Self::Ko),
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ZhTw => "zh-TW",
+            Self::ZhCn => "zh-CN",
+            Self::En => "en",
+            Self::Ja => "ja",
+            Self::Ko => "ko",
+        }
+    }
+
+    /// 目標的主語言(來源是這個語言就不必翻)。
+    pub fn lang(self) -> Lang {
+        match self {
+            Self::ZhTw | Self::ZhCn => Lang::Zh,
+            Self::En => Lang::En,
+            Self::Ja => Lang::Ja,
+            Self::Ko => Lang::Ko,
+        }
+    }
+}
+
+/// 這句要不要翻:來源已是目標語言就不翻;有限定允許的來源語言時,不在其中也不翻。
+pub fn should_translate(lang: Lang, target: Target, allowed: &std::collections::HashSet<Lang>) -> bool {
+    lang != target.lang() && (allowed.is_empty() || allowed.contains(&lang))
+}
+
+/// 實際的目標語言:只有 Hy-MT2 能譯成中文以外的語言,其他模型一律台灣繁體。
+pub fn effective_target(model_name: &str, target: Target) -> Target {
+    if PromptStyle::for_model(model_name) == PromptStyle::HyMt2 {
+        target
+    } else {
+        Target::ZhTw
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -181,7 +241,13 @@ pub trait Translator: Send + Sync {
 /// - 有上下文 → 以【背景信息】附最近幾句原文與譯文。
 /// - 風格要求併入最後一行指令(口語、簡潔、台灣用語)。
 pub fn build_prompt(req: &TranslateRequest) -> String {
-    const TARGET: &str = "繁体中文(台湾用语)";
+    let target = match req.target {
+        Target::ZhTw => "繁体中文(台湾用语)",
+        Target::ZhCn => "简体中文",
+        // 中文以外的目標用模型卡的英文範本
+        Target::En | Target::Ja | Target::Ko => return build_foreign_prompt(req),
+    };
+    let style = if req.target == Target::ZhTw { "请用台湾口语、简洁自然" } else { "请用口语、简洁自然" };
     let mut p = String::new();
     let has_bg = !req.context.is_empty() || !req.lookahead.is_empty();
     if has_bg {
@@ -214,15 +280,52 @@ pub fn build_prompt(req: &TranslateRequest) -> String {
     }
     if !has_bg {
         p.push_str(&format!(
-            "将以下文本翻译为{TARGET},这是影片字幕,请用台湾口语、简洁自然,注意只需要输出翻译后的结果,不要额外解释:\n\n{}",
+            "将以下文本翻译为{target},这是影片字幕,{style},注意只需要输出翻译后的结果,不要额外解释:\n\n{}",
             req.text
         ));
     } else {
         p.push_str(&format!(
-            "请结合背景信息将以下文本翻译为{TARGET},这是影片字幕,请用台湾口语、简洁自然,注意只需要输出翻译后的结果,不要额外解释。\n\n【待翻译文本】\n{}",
+            "请结合背景信息将以下文本翻译为{target},这是影片字幕,{style},注意只需要输出翻译后的结果,不要额外解释。\n\n【待翻译文本】\n{}",
             req.text
         ));
     }
+    p
+}
+
+/// Hy-MT2 譯成中文以外語言的提示(模型卡英文範本,加上術語與前文)。
+fn build_foreign_prompt(req: &TranslateRequest) -> String {
+    let lang = match req.target {
+        Target::Ja => "Japanese",
+        Target::Ko => "Korean",
+        _ => "English",
+    };
+    let mut p = String::new();
+    if !req.context.is_empty() {
+        p.push_str("Previous lines of the same video (source => translation), keep names and tone consistent:\n");
+        for (s, t) in &req.context {
+            p.push_str(&format!("{s} => {t}\n"));
+        }
+        p.push('\n');
+    }
+    if !req.lookahead.is_empty() {
+        p.push_str("Following lines (context only, do not translate them):\n");
+        for s in &req.lookahead {
+            p.push_str(s);
+            p.push('\n');
+        }
+        p.push('\n');
+    }
+    if !req.glossary.is_empty() {
+        p.push_str("Refer to the following translations:\n");
+        for g in &req.glossary {
+            p.push_str(&format!("{} translated as {}\n", g.source, g.target));
+        }
+        p.push('\n');
+    }
+    p.push_str(&format!(
+        "Translate the following segment into {lang}, without additional explanation. These are video subtitles; keep them short and natural.\n\n{}",
+        req.text
+    ));
     p
 }
 

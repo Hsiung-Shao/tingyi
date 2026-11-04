@@ -85,19 +85,19 @@ async function handleTranslate(segments: Segment[], context: PageContext): Promi
     s.route === 'bridge' ? translateViaBridge(s, segs, context) : translateDirect(s, segs, context),
   );
   try {
-    return { ok: true, translations: toList(await translate(segments), s.targetLang) };
+    return { ok: true, translations: toList(await translate(segments), s) };
   } catch (e) {
     // 連線錯誤要交給 translateWithRelink 重新取得端點,不能當成部分失敗吞掉
-    if (e instanceof PartialTranslationError && !needsRelink(e, s.route)) return partialResponse(e, s.targetLang);
+    if (e instanceof PartialTranslationError && !needsRelink(e, s.route)) return partialResponse(e, s);
     throw e;
   }
 }
 
 /** 譯文送回頁面前統一轉成目標文字(台灣繁體);快取裡以前存的簡體結果也一起轉 */
-const toList = (m: Map<number, string>, targetLang: string) => [...m].map(([id, text]) => ({ id, text: toTraditional(text, targetLang) }));
-const partialResponse = (e: PartialTranslationError, targetLang: string): TranslateResponse => ({
+const toList = (m: Map<number, string>, s: Settings) => [...m].map(([id, text]) => ({ id, text: toTraditional(text, s.targetLang, s.zhConvert) }));
+const partialResponse = (e: PartialTranslationError, s: Settings): TranslateResponse => ({
   ok: true,
-  translations: toList(e.partial, targetLang),
+  translations: toList(e.partial, s),
   error: e.message,
 });
 
@@ -106,7 +106,7 @@ async function translateWithRelink(segments: Segment[], context: PageContext): P
   const s = await loadSettings();
   const retry = async (e: unknown): Promise<TranslateResponse> => {
     if (s.connection !== 'auto' || !needsRelink(e, s.route)) {
-      if (e instanceof PartialTranslationError) return partialResponse(e, s.targetLang);
+      if (e instanceof PartialTranslationError) return partialResponse(e, s);
       throw e;
     }
     let link = await autoConnect();

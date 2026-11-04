@@ -75,6 +75,8 @@ pub fn listen_options(prefs: Option<&Prefs>, default_model: &str) -> StartOption
             refine: Some(p.refine),
             glossary: Some(parse_glossary(&p.glossary)),
             replacements: Some(parse_replacements(&p.replacements)),
+            target_lang: (!p.target_lang.is_empty()).then(|| p.target_lang.clone()),
+            zh_convert: (!p.zh_convert.is_empty()).then(|| p.zh_convert.clone()),
             ..Default::default()
         },
         None => StartOptions {
