@@ -62,8 +62,6 @@ const TW_TERMS: &[(&str, &str)] = &[
     ("內存", "記憶體"),
     ("默認", "預設"),
     ("激光", "雷射"),
-    ("數據", "資料"),
-    ("計算機", "電腦"),
     ("操作系統", "作業系統"),
     ("互聯網", "網際網路"),
     ("智能", "智慧"),
@@ -77,9 +75,19 @@ fn is_simplified(text: &str) -> bool {
     cc.convert(text, "t2s", false) == text && cc.convert(text, "s2t", false) != text
 }
 
+/// 小句的結尾標點:簡繁混雜時依小句各自判斷,簡體的小句才轉。
+const CLAUSE_END: &[char] = &['。', '！', '？', '；', '，', '!', '?', ';', ',', '\n'];
+
 /// 簡體譯文轉台灣繁體與用語(OpenCC s2twp,不動標點);再套內建詞表補繁體字形的大陸用詞(視頻→影片)。
 pub fn to_taiwan_terms(text: &str) -> String {
-    let mut out = if is_simplified(text) { opencc().convert(text, "s2twp", false) } else { text.to_string() };
+    let mut out = String::with_capacity(text.len());
+    for clause in text.split_inclusive(CLAUSE_END) {
+        if is_simplified(clause) {
+            out.push_str(&opencc().convert(clause, "s2twp", false));
+        } else {
+            out.push_str(clause);
+        }
+    }
     for (from, to) in TW_TERMS {
         if out.contains(from) {
             out = out.replace(from, to);

@@ -12,7 +12,10 @@ function isSimplified(text: string): boolean {
   return toCn(text) === text && toTw(text) !== text;
 }
 
+/** 依標點切成小句(標點留在小句尾):簡繁混雜時只轉簡體的小句 */
+const CLAUSE = /[^。！？；，!?;,\n]+[。！？；，!?;,\n]*|[。！？；，!?;,\n]+/g;
+
 export function toTraditional(text: string, targetLang: string): string {
-  if (targetLang !== 'zh-TW' || !isSimplified(text)) return text;
-  return toTw!(text);
+  if (targetLang !== 'zh-TW') return text;
+  return (text.match(CLAUSE) ?? [text]).map((c) => (isSimplified(c) ? toTw!(c) : c)).join('');
 }

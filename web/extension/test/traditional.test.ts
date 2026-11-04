@@ -26,4 +26,11 @@ describe('譯文簡轉繁', () => {
     const changed = sentences.map((t) => [t, toTraditional(t, 'zh-TW')]).filter(([a, b]) => a !== b);
     expect(changed).toEqual([]);
   });
+
+  // Z6
+  it('簡繁混雜時只轉簡體的小句', () => {
+    // 整段一起判斷會讓繁體小句被改字,或簡體小句因整段含繁體而漏轉
+    expect(toTraditional('今天天气很好。明天會下雨。', 'zh-TW')).toBe('今天天氣很好。明天會下雨。');
+    expect(toTraditional('这是软件，裡面有東西', 'zh-TW')).toBe('這是軟體，裡面有東西');
+  });
 });

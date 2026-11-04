@@ -37,3 +37,20 @@ fn Z5_含簡體字的字幕轉成繁體() {
     assert!(!out.contains('这') && !out.contains('软'), "實得 {out}");
     assert!(postprocess("这是软件", &[]).contains("軟體"));
 }
+
+// Z6:依小句各自判斷簡繁;內建詞表不改台灣常用詞
+#[test]
+fn Z6_簡繁混雜時只轉簡體的小句() {
+    assert_eq!(to_taiwan_terms("今天天气很好。明天會下雨。"), "今天天氣很好。明天會下雨。");
+}
+
+#[test]
+fn Z6_內建詞表不改台灣常用詞() {
+    // 詞表把「計算機」「大數據」換成別的詞會改壞台灣用語;一次列出全部被改的句子
+    let changed: Vec<String> = ["用計算機算一下", "大數據分析"]
+        .iter()
+        .filter(|t| to_taiwan_terms(t) != **t)
+        .map(|t| format!("{t} -> {}", to_taiwan_terms(t)))
+        .collect();
+    assert!(changed.is_empty(), "台灣用語被改:{changed:?}");
+}
