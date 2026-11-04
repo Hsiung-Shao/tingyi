@@ -201,6 +201,8 @@ function applySiteRule(sites: Settings['sites'] | undefined): void {
   autoPage = plan.page;
   ytListen?.setRule(matchSite(location.hostname, sites ?? {})?.rule);
   if (captionSession && plan.captions !== captionSession.enabled) void captionSession.toggle();
+  // 翻譯影片字幕時不顯示原文字幕,等譯文到了只顯示譯文(style.css)
+  if (youtube) document.documentElement.toggleAttribute('data-atx-captions-only', plan.captions);
 }
 
 function refreshBall(): void {

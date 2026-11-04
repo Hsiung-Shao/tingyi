@@ -101,7 +101,7 @@ pub fn start_server(app: &AppHandle) {
         let mut first = true;
         loop {
             // 只接本機連線;同一時間一個用戶端(擴充只讓一個分頁在聽)
-            let server = match ServerOptions::new().first_pipe_instance(first).reject_remote_clients(true).create(&name) {
+            let server = match create_private_pipe(&name, first) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("建立聽譯 pipe 失敗:{e}");
@@ -114,6 +114,71 @@ pub fn start_server(app: &AppHandle) {
             }
         }
     });
+}
+
+/// 只允許目前使用者(擁有者)與 SYSTEM 連的 DACL;P = 不繼承上層權限。
+/// 預設 DACL 會讓 Everyone 唯讀,本機其他使用者就能讀字幕或佔住唯一的連線。
+const PIPE_SDDL: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)";
+
+/// 建立只有目前使用者能連的 named pipe 實例(只接本機連線)。
+pub fn create_private_pipe(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    let sddl: Vec<u16> = PIPE_SDDL.encode_utf16().chain([0]).collect();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY:sddl 以 0 結尾;成功時 sd 由系統配置,下面以 LocalFree 釋放
+    unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut sd, None) }
+        .map_err(std::io::Error::other)?;
+    let mut sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.0,
+        bInheritHandle: false.into(),
+    };
+    // SAFETY:sa 與它指到的 sd 在呼叫期間有效;CreateNamedPipe 會複製安全性描述元
+    let r = unsafe {
+        ServerOptions::new()
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .create_with_security_attributes_raw(name, &mut sa as *mut SECURITY_ATTRIBUTES as *mut std::ffi::c_void)
+    };
+    // SAFETY:sd 由 ConvertStringSecurityDescriptorToSecurityDescriptorW 配置
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+    }
+    r
+}
+
+/// pipe 目前的 DACL(SDDL 字串),診斷與測試用。
+pub fn pipe_dacl_sddl(pipe: &NamedPipeServer) -> std::io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+    };
+    use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY:handle 在 pipe 存活期間有效;成功時 sd 由系統配置,下面釋放
+    let err = unsafe {
+        GetSecurityInfo(HANDLE(pipe.as_raw_handle()), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, None, None, None, None, Some(&mut sd))
+    };
+    if err.is_err() {
+        return Err(std::io::Error::from_raw_os_error(err.0 as i32));
+    }
+    let mut out = PWSTR::null();
+    // SAFETY:sd 由 GetSecurityInfo 配置;out 成功時由系統配置
+    let r = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut out, None) };
+    let text = r.map_err(std::io::Error::other).and_then(|_| unsafe { out.to_string() }.map_err(std::io::Error::other));
+    // SAFETY:兩者都由系統以 LocalAlloc 配置
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        if !out.is_null() {
+            let _ = LocalFree(Some(HLOCAL(out.0 as *mut std::ffi::c_void)));
+        }
+    }
+    text
 }
 
 async fn write_line(w: &mut (impl AsyncWriteExt + Unpin), v: &str) -> std::io::Result<()> {

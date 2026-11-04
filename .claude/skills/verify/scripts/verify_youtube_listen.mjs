@@ -134,6 +134,24 @@ async function waitFor(fn, timeoutMs, interval = 1000) {
   return { ...last, ok: false, ms: Date.now() - t0 };
 }
 
+/** 播放器字幕在 closed shadow root 裡,頁面讀不到:用 CDP 穿透 shadow root 讀譯文 */
+async function liveText(page) {
+  const doc = await page.send('DOM.getDocument', { depth: -1, pierce: true });
+  let found = null;
+  const walk = (n) => {
+    if (found || !n) return;
+    const a = n.attributes ?? [];
+    const i = a.indexOf('class');
+    if (i >= 0 && /\batx-live-text\b/.test(a[i + 1])) {
+      found = n;
+      return;
+    }
+    for (const c of [...(n.children ?? []), ...(n.shadowRoots ?? [])]) walk(c);
+  };
+  walk(doc.result?.root);
+  return (found?.children ?? []).map((c) => c.nodeValue ?? '').join('');
+}
+
 function findChromium() {
   const base = path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), 'AppData/Local'), 'ms-playwright');
   for (const d of readdirSync(base).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
@@ -153,6 +171,20 @@ const WATCH = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title
 </div>
 <a id="leave" href="/feed">home</a>
 <script>document.getElementById('movie_player').getPlayerResponse = () => ({ videoDetails: { videoId: 'fixture01' } });</script>
+</body></html>`;
+// 有字幕軌的影片:字幕框照 YouTube 的結構,每 4 秒換一句英文
+const WATCH_CC = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture: captioned video</title></head>
+<body style="margin:0;background:#0f0f0f;color:#fff;font:14px Roboto,Arial">
+<div id="movie_player" style="position:relative;width:960px;height:540px;margin:24px;background:#000;font-size:11px">
+<div class="ytp-caption-window-container"><div class="caption-window ytp-caption-window-bottom" style="position:absolute;bottom:2%;left:50%;width:640px;margin-left:-320px;text-align:center">
+<span class="captions-text" style="display:block"><span class="caption-visual-line" style="display:block"><span id="seg" class="ytp-caption-segment" style="display:inline-block;background:rgba(8,8,8,0.75);font-size:28px;color:#fff;font-family:Roboto,Arial,sans-serif">Good evening and welcome to the show.</span></span></span>
+</div></div></div>
+<script>
+document.getElementById('movie_player').getPlayerResponse = () => ({ videoDetails: { videoId: 'fixture-cc' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ kind: 'asr', languageCode: 'en' }] } } });
+const lines = ['Good evening and welcome to the show.', 'Tonight we talk about the weather in the mountains.', 'Please remember to bring a warm jacket.'];
+let i = 0;
+setInterval(() => { i = (i + 1) % lines.length; document.getElementById('seg').textContent = lines[i]; }, 4000);
+</script>
 </body></html>`;
 const FEED = `<!doctype html><html><head><meta charset="utf-8"><title>Fixture: feed</title></head><body><p>feed</p></body></html>`;
 
@@ -186,7 +218,7 @@ async function main() {
       return s.end(wavBytes);
     }
     s.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    s.end(q.url.startsWith('/watch') ? WATCH : FEED);
+    s.end(q.url.startsWith('/watch?v=cc') ? WATCH_CC : q.url.startsWith('/watch') ? WATCH : FEED);
   }).listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const origin = `https://www.youtube.com:${server.address().port}`;
@@ -256,10 +288,12 @@ async function main() {
   const src = await invoke('get_audio_source');
   check('音訊來源是這個 Chromium(瀏覽器主程序)', src?.source?.kind === 'app' && src.source.pid === chromeRoot && /chrome\.exe/i.test(src.source.exe), JSON.stringify(src?.source));
   const sub = await waitFor(async () => {
-    const tx = await page.evalJs(`document.querySelector('#movie_player #atx-live .atx-live-text')?.textContent ?? ''`);
+    const tx = await liveText(page);
     return { ok: /[\u4e00-\u9fff]/.test(tx ?? ''), tx };
   }, 120_000);
   check('播放器內出現聽譯的中文字幕', sub.ok, `${sub.tx ?? ''} ${Math.round(sub.ms / 1000)}s`);
+  const leak = await page.evalJs(`(() => { const h = document.getElementById('atx-live'); return { shadow: !!h?.shadowRoot, text: document.getElementById('movie_player').innerText }; })()`);
+  check('頁面腳本讀不到播放器字幕(closed shadow root)', !leak.shadow && !/[\u4e00-\u9fff]/.test(leak.text) && !leak.text.includes(sub.tx ?? '\u0000'), JSON.stringify(leak).slice(0, 120));
   await screenshot(page, '01-player-live-subtitles.png');
   await screenshot(ui, '02-app-running-from-extension.png');
   const llama = (await ui.evalJs(`window.__TAURI_INTERNALS__.invoke('web_status')`)) ?? {};
@@ -275,7 +309,7 @@ async function main() {
   const again = await waitFor(async () => ({ ok: await btn('停止') }), 120_000);
   check('同一分頁再播放:聽譯重新開始', again.ok, `${Math.round(again.ms / 1000)}s`);
   const sub2 = await waitFor(async () => {
-    const tx = await page.evalJs(`document.querySelector('#movie_player #atx-live .atx-live-text')?.textContent ?? ''`);
+    const tx = await liveText(page);
     return { ok: /[一-鿿]/.test(tx ?? ''), tx };
   }, 120_000);
   check('重新開始後播放器再出現字幕', sub2.ok, sub2.tx ?? '');
@@ -289,7 +323,7 @@ async function main() {
   await page2.send('Page.enable');
   await page2.send('Page.bringToFront');
   const sub3 = await waitFor(async () => {
-    const tx = await page2.evalJs(`document.querySelector('#movie_player #atx-live .atx-live-text')?.textContent ?? ''`);
+    const tx = await liveText(page2);
     return { ok: /[一-鿿]/.test(tx ?? ''), tx };
   }, 120_000);
   const oldBox = await page.evalJs(`!!document.getElementById('atx-live')`);
@@ -302,6 +336,24 @@ async function main() {
   check('離開觀看頁後聽譯回合停止', stopped.ok, `${Math.round(stopped.ms / 1000)}s`);
   const src2 = await invoke('get_audio_source');
   check('音訊來源還原成系統聲音', src2?.source?.kind === 'system', JSON.stringify(src2?.source));
+
+  // ── 7. 有字幕的影片 + 翻譯影片字幕:只顯示譯文,原文字幕不顯示;有字幕不會啟動聽譯 ──
+  await bg.evalJs(`(async()=>{const k='atx:settings';const s=(await chrome.storage.local.get(k))[k]??{};s.sites={'youtube.com':{auto:false,listen:true,captions:true}};await chrome.storage.local.set({[k]:s});return true})()`);
+  await page2.send('Page.navigate', { url: origin + '/watch?v=cc' });
+  await sleep(1500);
+  await page2.send('Page.bringToFront');
+  const cc = await waitFor(async () => {
+    const r = await page2.evalJs(`(() => { const t = document.querySelector('.caption-window font.atx-caption'); const o = document.querySelector('.captions-text'); return { tr: t?.textContent ?? '', origDisplay: o ? getComputedStyle(o).display : null }; })()`);
+    return { ok: /[\u4e00-\u9fff]/.test(r.tr) && r.origDisplay === 'none', r };
+  }, 90_000);
+  check('翻譯影片字幕:只顯示譯文、原文字幕不顯示', cc.ok, JSON.stringify(cc.r));
+  const changed = await waitFor(async () => {
+    const r = await page2.evalJs(`(() => ({ src: document.getElementById('seg').textContent, tr: document.querySelector('.caption-window font.atx-caption')?.textContent ?? '', origDisplay: getComputedStyle(document.querySelector('.captions-text')).display }))()`);
+    return { ok: r.tr !== cc.r?.tr && /[\u4e00-\u9fff]/.test(r.tr) && r.origDisplay === 'none', r };
+  }, 30_000, 500);
+  check('換句後顯示新句的譯文,原文仍不顯示', changed.ok, JSON.stringify(changed.r));
+  await screenshot(page2, '05-captioned-translation-only.png');
+  check('有字幕的影片不啟動聽譯', await btn('開始'));
   await screenshot(ui, '04-app-stopped.png');
 }
 

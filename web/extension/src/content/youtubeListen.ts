@@ -2,9 +2,8 @@
 // 聽譯送回的字幕畫在播放器裡(#movie_player 內,全螢幕也看得到)。
 import type { SiteRule } from '../shared/sites.ts';
 import { listenAction } from '../shared/youtube.ts';
+import { mountLiveBox } from './liveBox.ts';
 import { initialLive, liveView, reduceLive, type LiveState } from './liveSubs.ts';
-
-const BOX_ID = 'atx-live';
 
 export function createYouTubeListen() {
   let rule: SiteRule | undefined;
@@ -21,35 +20,25 @@ export function createYouTubeListen() {
     return !!v && !v.paused && !v.ended;
   };
 
+  let box: ReturnType<typeof mountLiveBox> | null = null;
+
   function render(): void {
     const player = document.getElementById('movie_player');
-    let box = document.getElementById(BOX_ID);
     const view = liveView(live);
     // 沒在聽時只留「使用中/無法開始」的提示
     const showNote = !listening && blockedFor !== null && blockedFor === info.videoId;
     if ((!listening && !showNote) || !player || (!view && !note)) {
       box?.remove();
+      box = null;
       return;
     }
-    if (!box || box.parentElement !== player) {
-      box?.remove();
-      box = document.createElement('div');
-      box.id = BOX_ID;
-      box.className = 'atx-live';
-      player.appendChild(box);
-    }
-    const rows: HTMLElement[] = [];
-    const row = (cls: string, text: string) => {
-      const el = document.createElement('div');
-      el.className = cls;
-      // 只用 textContent:字幕內容來自語音辨識,不當成 HTML
-      el.textContent = text;
-      rows.push(el);
-    };
-    if (note) row('atx-live-note', note);
-    if (view?.text) row(`atx-live-text${view.pending ? ' pending' : ''}`, view.text);
-    if (view?.partial) row('atx-live-partial', view.partial);
-    box.replaceChildren(...rows);
+    // YouTube 換影片時可能重建播放器內容:字幕框不在播放器裡就重新掛
+    if (!box || box.host.parentElement !== player) box = mountLiveBox(player);
+    const rows: { cls: string; text: string }[] = [];
+    if (note) rows.push({ cls: 'atx-live-note', text: note });
+    if (view?.text) rows.push({ cls: `atx-live-text${view.pending ? ' pending' : ''}`, text: view.text });
+    if (view?.partial) rows.push({ cls: 'atx-live-partial', text: view.partial });
+    box.render(rows);
   }
 
   function reconsider(): void {
