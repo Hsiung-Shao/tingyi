@@ -466,8 +466,9 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 兩個入口同時開始。
 - 停止中被接上將結束的回合。
 
-**未驗 / 交使用者決定**:
-- 安裝版與真實 YouTube(Claude 環境內登錄檔與 LOCALAPPDATA 被重導)。
+**安裝版(使用者 2026-11-04 從檔案總管驗)**:網頁翻譯變快、網頁翻譯卡片、網站自動翻譯、YouTube 字幕翻譯開關、真實 YouTube 沒字幕影片在播放器內出現聽譯字幕,使用者回報都正常。
+
+**交使用者決定**:
 - 字幕寫在 YouTube DOM 的隱私問題,與頁面可偽造事件。
 - pipe 預設 DACL。
 - 在 /watch 重新整理時舊回合殘留。
