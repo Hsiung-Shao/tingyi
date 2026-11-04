@@ -402,9 +402,15 @@ export function watchNewBlocks(
       // stale:之前重翻太頻繁被擋下的區塊,時間窗過後文字再變就恢復重翻
       const done = at && !at.closest(`.${TARGET_CLASS}`) ? at.closest<HTMLElement>('[data-atx-state="done"],[data-atx-state="stale"],[data-atx-state="error"]') : null;
       // 頁面翻譯與字幕翻譯各有一組監看,只處理自己那邊的區塊
-      // error:翻譯失敗的區塊文字一變也重送(YouTube 整支影片重複使用同一個字幕框,失敗後不重送就一直卡住)
-      if (done && captionOk(done, opts) && (done.dataset.atxState === 'error' || (sourceText.has(done) && getBlockText(done) !== sourceText.get(done)))) {
+      // error:翻譯失敗的區塊文字一變也重送(YouTube 整支影片重複使用同一個字幕框,失敗後不重送就一直卡住);
+      // 有記下送翻原文的只在文字真的變了才送,沒記下的(舊資料)任何變動都送
+      const changed = done && (sourceText.has(done) ? getBlockText(done) !== sourceText.get(done) : done.dataset.atxState === 'error');
+      if (done && changed && captionOk(done, opts)) {
         if (resetForRetranslate(done) && isCandidate(done, opts)) found.add(done);
+      } else if (!done && at) {
+        // 字幕框先被清空(狀態跟著清掉)、之後再填字:新增的只是 span,不會從 addedNodes 收回這個框
+        const win = at.closest<HTMLElement>('.caption-window');
+        if (win && !at.closest(`.${TARGET_CLASS}`) && isCandidate(win, opts) && captionOk(win, opts)) found.add(win);
       }
       for (const node of Array.from(r.addedNodes)) {
         if (node.nodeType !== Node.ELEMENT_NODE || !node.isConnected) continue;
@@ -432,4 +438,10 @@ export function markCaptionPlain(root: Element, opts: CollectOptions): void {
     const plain = el.dataset.atxState === undefined && getBlockText(el) !== '' && !isCandidate(el, opts);
     el.toggleAttribute('data-atx-plain', plain);
   }
+}
+
+/** 翻譯失敗:標成 error 並記下送翻時的原文,文字變了才重送 */
+export function markTranslateError(el: HTMLElement, source: string): void {
+  el.dataset.atxState = 'error';
+  sourceText.set(el, source);
 }

@@ -11,6 +11,7 @@ import {
   setDisplayMode,
   CAPTION_CONTAINER_SELECTOR,
   markCaptionPlain,
+  markTranslateError,
   watchNewBlocks,
   type CollectOptions,
 } from './dom.ts';
@@ -96,7 +97,7 @@ function createSession(captions: CollectOptions['captions'], onChange: () => voi
         if (stale && resetForRetranslate(el)) observe([el]);
       } else {
         // 錯誤細節可能含本機路徑與 CLI 狀態,只留在擴充狀態(popup 顯示),不寫進不可信的頁面 DOM
-        el.dataset.atxState = 'error';
+        markTranslateError(el, seg.text);
         state.errors++;
         state.lastError = res.error ?? '部分段落沒有拿到譯文';
       }
@@ -199,6 +200,7 @@ const ytListen = youtube && window.top === window ? createYouTubeListen() : null
 /** 依網站規則自動開啟;規則改了就即時套用(取消自動不會關掉已開的頁面翻譯) */
 /** 只顯示譯文時,字幕框一變就重算哪些框照常顯示原文(MutationObserver 在畫面更新前執行,不會閃原文) */
 let plainWatch: MutationObserver | null = null;
+let captionsLang = '';
 function setCaptionsOnly(on: boolean, targetLang: string): void {
   document.documentElement.toggleAttribute('data-atx-captions-only', on);
   plainWatch?.disconnect();
@@ -223,8 +225,11 @@ function applySiteRule(settings: Partial<Settings> | undefined): void {
   ytListen?.setRule(matchSite(location.hostname, sites ?? {})?.rule);
   if (captionSession && plan.captions !== captionSession.enabled) void captionSession.toggle();
   // 翻譯影片字幕時不顯示原文字幕,等譯文到了只顯示譯文(style.css)
-  if (youtube && plan.captions !== document.documentElement.hasAttribute('data-atx-captions-only')) {
-    setCaptionsOnly(plan.captions, settings?.targetLang ?? 'zh-TW');
+  // 開關或目標語言改了才重建(判斷「不用翻」要用目前的目標語言)
+  const lang = settings?.targetLang ?? 'zh-TW';
+  if (youtube && (plan.captions !== document.documentElement.hasAttribute('data-atx-captions-only') || (plan.captions && lang !== captionsLang))) {
+    captionsLang = lang;
+    setCaptionsOnly(plan.captions, lang);
   }
 }
 

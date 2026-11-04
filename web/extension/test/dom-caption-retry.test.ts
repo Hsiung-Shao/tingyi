@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { markCaptionPlain, setDisplayMode, watchNewBlocks } from '../src/content/dom.ts';
+import { markCaptionPlain, markTranslateError, setDisplayMode, watchNewBlocks } from '../src/content/dom.ts';
 
 /** YouTube 字幕框結構,沿用 dom-caption.test.ts */
 const CAPTION = `<div id="movie_player" style="font-size: 11px">
@@ -102,5 +102,44 @@ describe('翻譯失敗的字幕框', () => {
     stop();
     expect(received.flat()).not.toContain(win); // 只改屬性就重送會讓失敗的句子無限重試
     expect(win.dataset.atxState).toBe('error');
+  });
+
+  // C4
+  it('字幕框先清空再填字仍會送翻', async () => {
+    const { win, seg } = mount();
+    const received: HTMLElement[][] = [];
+    const stop = watchNewBlocks(document.body, { ...opts, captions: 'only' }, (b) => received.push(b));
+
+    seg.textContent = '';
+    await tick();
+    expect(received.flat()).not.toContain(win); // 空字幕沒東西可翻
+
+    seg.textContent = 'A brand new English caption sentence';
+    await tick();
+    stop();
+    expect(received.flat()).toContain(win); // 清空後填字沒送翻,這段字幕會永遠沒譯文
+  });
+
+  // C5
+  it('翻譯失敗的字幕框文字沒變就不重送,換句才重送', async () => {
+    const { win, seg } = mount();
+    const received: HTMLElement[][] = [];
+    const stop = watchNewBlocks(document.body, { ...opts, captions: 'only' }, (b) => received.push(b));
+    markTranslateError(win, seg.textContent ?? '');
+    await tick();
+    received.length = 0;
+
+    // 頁面把同樣內容的行換成新元素:文字沒變
+    const line = win.querySelector('.caption-visual-line')!;
+    line.replaceWith(line.cloneNode(true));
+    await tick();
+    expect(received.flat()).not.toContain(win); // 文字沒變就重送會讓失敗的句子無限重試
+    expect(win.dataset.atxState).toBe('error');
+
+    win.querySelector('.ytp-caption-segment')!.textContent = 'A different English caption sentence';
+    await tick();
+    stop();
+    expect(received.flat()).toContain(win);
+    expect(win.dataset.atxState).not.toBe('error');
   });
 });
