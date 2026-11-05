@@ -330,6 +330,29 @@ pub fn group_alignment(refs: &[(usize, usize)], hyps: &[(usize, usize)], min_ove
         .collect()
 }
 
+/// `asr-compare` 的一列:一個 VAD 段落,每個引擎一格(文字, 耗時 ms)。
+pub struct CompareRow {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub cells: Vec<(String, u32)>,
+}
+
+/// 各引擎辨識結果並排的 markdown 表。
+pub fn render_compare_table(engines: &[&str], rows: &[CompareRow]) -> String {
+    let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+    let mut out = format!("| 時間 (s) | {} |\n|---|{}\n", engines.join(" | "), "---|".repeat(engines.len()));
+    for r in rows {
+        let cells: Vec<String> = r.cells.iter().map(|(t, ms)| format!("{} ({ms} ms)", esc(t))).collect();
+        out.push_str(&format!(
+            "| {:.1}–{:.1} | {} |\n",
+            r.start_ms as f64 / 1000.0,
+            r.end_ms as f64 / 1000.0,
+            cells.join(" | ")
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

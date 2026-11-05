@@ -280,6 +280,163 @@ impl Transcriber for SherpaTransducer {
 }
 
 // ---------------------------------------------------------------------------
+// Qwen3-ASR、Cohere Transcribe(sherpa-onnx,CPU;A/B 量測用,app 尚未使用)
+// ---------------------------------------------------------------------------
+
+/// 剝掉 Qwen3-ASR 的 `language X<asr_text>` 前綴(sherpa-onnx 通常已剝,這裡是備援);
+/// 有前綴就用它標的語言,沒有就以字集判斷。
+pub fn parse_qwen3_output(raw: &str) -> (String, Lang) {
+    // 實測 sherpa-onnx 1.13.8 不一定停在 <|endoftext|>,後面會接著亂生一段:截斷
+    let end = ["<|endoftext|>", "<|im_end|>"].iter().filter_map(|t| raw.find(t)).min().unwrap_or(raw.len());
+    let s = raw[..end].trim();
+    if let Some(rest) = s.strip_prefix("language ") {
+        if let Some((name, text)) = rest.split_once("<asr_text>") {
+            let text = text.trim().to_string();
+            let lang = match name.trim() {
+                "English" => Lang::En,
+                "Japanese" => Lang::Ja,
+                "Korean" => Lang::Ko,
+                "Chinese" | "Cantonese" => Lang::Zh,
+                _ => detect_lang(&text),
+            };
+            return (text, lang);
+        }
+    }
+    (s.to_string(), detect_lang(s))
+}
+
+fn require(dir: &Path, name: &str) -> Result<String> {
+    let p = dir.join(name);
+    if p.exists() {
+        Ok(p.to_string_lossy().to_string())
+    } else {
+        Err(anyhow!("找不到 {}", p.display()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Qwen3Config {
+    /// 內含 conv_frontend.onnx、encoder*.onnx、decoder*.onnx 與 tokenizer/。
+    pub dir: PathBuf,
+    pub num_threads: i32,
+    pub name: &'static str,
+}
+
+pub struct SherpaQwen3 {
+    recognizer: OfflineRecognizer,
+    name: &'static str,
+}
+
+impl SherpaQwen3 {
+    pub fn new(cfg: &Qwen3Config) -> Result<Self> {
+        let path = |p: PathBuf| Some(p.to_string_lossy().to_string());
+        let encoder = path(find_onnx(&cfg.dir, "encoder")?);
+        let decoder = path(find_onnx(&cfg.dir, "decoder")?);
+        let mut config = OfflineRecognizerConfig::default();
+        config.model_config.qwen3_asr = sherpa_onnx::OfflineQwen3ASRModelConfig {
+            conv_frontend: Some(require(&cfg.dir, "conv_frontend.onnx")?),
+            encoder,
+            decoder,
+            tokenizer: Some(require(&cfg.dir, "tokenizer")?),
+            max_new_tokens: 256,
+            ..Default::default()
+        };
+        config.model_config.num_threads = cfg.num_threads;
+        config.model_config.provider = Some("cpu".into());
+        let recognizer = OfflineRecognizer::create(&config)
+            .ok_or_else(|| anyhow!("OfflineRecognizer::create({}) 失敗", cfg.name))?;
+        Ok(Self { recognizer, name: cfg.name })
+    }
+}
+
+impl Transcriber for SherpaQwen3 {
+    fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
+        let t0 = Instant::now();
+        let stream = self.recognizer.create_stream();
+        // Qwen3-ASR 讀 stream 的 language 選項(提示詞裡放 `language X<asr_text>`)
+        let name = match lang_hint {
+            Some(Lang::En) => Some("English"),
+            Some(Lang::Ja) => Some("Japanese"),
+            Some(Lang::Ko) => Some("Korean"),
+            Some(Lang::Zh) => Some("Chinese"),
+            _ => None,
+        };
+        if let Some(n) = name {
+            stream.set_option("language", n);
+        }
+        stream.accept_waveform(TARGET_SAMPLE_RATE, pcm);
+        self.recognizer.decode(&stream);
+        let raw = stream.get_result().ok_or_else(|| anyhow!("{} 無結果", self.name))?.text;
+        let (text, lang) = parse_qwen3_output(&raw);
+        Ok(Transcript {
+            text: collapse_cjk_spaces(&text),
+            lang: lang_hint.unwrap_or(lang),
+            raw,
+            asr_ms: t0.elapsed().as_millis() as u32,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CohereConfig {
+    pub dir: PathBuf,
+    pub num_threads: i32,
+    /// Cohere Transcribe 要在建立時指定語言。
+    pub lang: Lang,
+    pub name: &'static str,
+}
+
+pub struct SherpaCohere {
+    recognizer: OfflineRecognizer,
+    lang: Lang,
+    name: &'static str,
+}
+
+impl SherpaCohere {
+    pub fn new(cfg: &CohereConfig) -> Result<Self> {
+        let path = |p: PathBuf| Some(p.to_string_lossy().to_string());
+        let mut config = OfflineRecognizerConfig::default();
+        config.model_config.cohere_transcribe = sherpa_onnx::OfflineCohereTranscribeModelConfig {
+            encoder: path(find_onnx(&cfg.dir, "encoder")?),
+            decoder: path(find_onnx(&cfg.dir, "decoder")?),
+            language: Some(cfg.lang.code().to_string()),
+            use_punct: true,
+            use_itn: true,
+        };
+        config.model_config.tokens = Some(require(&cfg.dir, "tokens.txt")?);
+        config.model_config.num_threads = cfg.num_threads;
+        config.model_config.provider = Some("cpu".into());
+        let recognizer = OfflineRecognizer::create(&config)
+            .ok_or_else(|| anyhow!("OfflineRecognizer::create({}) 失敗", cfg.name))?;
+        Ok(Self { recognizer, lang: cfg.lang, name: cfg.name })
+    }
+}
+
+impl Transcriber for SherpaCohere {
+    fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
+        let t0 = Instant::now();
+        let stream = self.recognizer.create_stream();
+        stream.accept_waveform(TARGET_SAMPLE_RATE, pcm);
+        self.recognizer.decode(&stream);
+        let raw = stream.get_result().ok_or_else(|| anyhow!("{} 無結果", self.name))?.text;
+        Ok(Transcript {
+            text: collapse_cjk_spaces(raw.trim()),
+            lang: lang_hint.unwrap_or(self.lang),
+            raw,
+            asr_ms: t0.elapsed().as_millis() as u32,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Whisper(whisper.cpp whisper-server,GPU)
 // ---------------------------------------------------------------------------
 

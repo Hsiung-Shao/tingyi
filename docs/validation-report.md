@@ -487,6 +487,38 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 在 /watch 重新整理時舊回合殘留。
 - 擷取整個瀏覽器的聲音(其他分頁也會進來)。
 
+## 6p. 新辨識模型 A/B:Qwen3-ASR 0.6B / 1.7B、Cohere Transcribe(2026-11-06 加入)
+
+工具:`tingyi-bench asr-eval` 新增引擎 `qwen3-0.6b`、`qwen3-1.7b`、`cohere`(sherpa-onnx 1.13.8 內建的 `OfflineQwen3ASRModelConfig`、`OfflineCohereTranscribeModelConfig`,CPU、4 執行緒、int8);新子命令 `asr-compare`(VAD 切段後各引擎並排,給沒有逐字稿的真實影片用)。模型不進 app。
+
+模型:Qwen3-ASR 0.6B int8(sherpa-onnx `asr-models` release,879 MB 壓縮檔)、1.7B int8(ModelScope `zengshuishui/Qwen3-ASR-onnx` 的 `model_1.7B`,約 2.4 GB)、Cohere Transcribe 14 語 int8(sherpa-onnx release,1.7 GB)。皆校驗 SHA256。
+
+逐句、各集前 100 句、鎖定該集語言(與 6h 同設定,但只取 100 句,所以舊引擎也重量;Whisper 為 GPU,其餘 CPU):
+
+| 集 | SenseVoice | 專用模型 | Whisper turbo | Qwen3 0.6B | Qwen3 1.7B | Cohere |
+|---|---|---|---|---|---|---|
+| ja-rs | 28.65% | **6.97%** | 18.03% | 43.26% | 30.67% | 10.58% |
+| ja-jsut | 7.76% | **7.63%** | 8.39% | 11.49% | 10.46% | 14.68% |
+| ja-fleurs | 7.89% | 8.19% | **4.59%** | 12.07% | 9.14% | 6.29% |
+| en-fleurs | 7.50% | 4.33% | **4.29%** | 6.01% | 5.08% | 5.59% |
+| ko-fleurs | 8.38% | 8.38% | **5.35%** | 6.57% | 6.44% | 12.09% |
+| 辨識 p50(FLEURS 日) | 248 ms | 229 ms | 194 ms | 2131 ms | 4250 ms | 2144 ms |
+| RTF(FLEURS 英) | 0.023 | 0.050 | 0.014 | 0.169 | 0.309 | 0.161 |
+
+觀察(看逐句結果):
+
+- ja-rs 是電視播送片段,參考為整理過的字幕;Qwen3 照實寫出語氣詞與片段裡夾到的旁人說話,插入錯誤多。專用模型(ReazonSpeech)與這集同領域,數字偏好看(6h 已註明)。
+- CER 逐字比對,寫法差異也算錯:Qwen3 常把ひらがな寫成漢字(むかし→昔)或把漢字詞寫成片假名(記録→キロク);Cohere 日文常整句輸出平假名。
+- 幻聽:Qwen3 0.6B 一句陷入重複(「モデルキロ」數十次);Cohere 韓文一句陷入「One One One…」;Qwen3 1.7B 日文句中冒出英文單字(occasion)。
+- Qwen3 在 sherpa-onnx 1.13.8 不一定停在 `<|endoftext|>`,會接著生成無關長文(真實影片 1 段、評測集 1 句);已在 `parse_qwen3_output` 截斷,修正後 ja-rs 43.50% → 43.26%。
+- 長句回空(10-25 否決 Qwen3 的理由):5 集 × 3 個新引擎都沒有空輸出。
+- 真實影片(`evidence/20261105-231816-asrab/compare-real-{ja,en}.md`,各 40 段):英文六個引擎幾乎一致,專有名詞 Grinding Gear Games 只有 Qwen3 1.7B 與 Cohere 寫對;日文 VTuber 實況各有錯字,沒有一個新引擎明顯勝出。
+- 速度:三個新引擎在 CPU 上每句約 1–4 秒(RTF 0.16–0.46),是 SenseVoice 的 7–15 倍;即時字幕要用得等 GPU 版。
+
+結論:沒有一個新引擎在 JSUT 與 FLEURS 同時比 Whisper turbo 低 2 個百分點(10-25 D1 推翻條件),也都比現有 CPU 引擎慢一個數量級,不接進 app。韓文 Qwen3(6.4–6.6%)是唯一比現有 CPU 選項(SenseVoice 8.38%)好的地方,但仍輸 Whisper。
+
+**未驗 / 誤差**:SenseVoice、專用模型與新引擎那幾輪的前段,使用者的聽譯(含 llama-server)同時在跑,CPU 延遲可能偏高;Whisper 第一次因顯示卡被占滿逾時,等使用者關掉聽譯後才重量;sherpa-onnx 的 CUDA 版沒試;只用 int8,fp32 沒量。
+
 ## 7. 驗證週發現的陷阱
 
 - sherpa-onnx 的 SenseVoice「2025-09-09」版是粵語微調(ASLP-lab WSYue-ASR),日韓掉假名與諺文;要用 2024-07-17 原版。

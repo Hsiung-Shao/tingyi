@@ -117,6 +117,21 @@ enum Cmd {
         port: u16,
     },
     /// 對 wav 檔做辨識(離線 smoke test;自動重取樣到 16 kHz)
+    /// 真實音訊並排比較:VAD 切段後每段交給各引擎辨識,輸出 markdown 表(沒有逐字稿時用)
+    AsrCompare {
+        wav: PathBuf,
+        #[arg(long, num_args = 1.., default_values_t = ["sensevoice".to_string()])]
+        engines: Vec<String>,
+        #[arg(long)]
+        lang: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        threads: i32,
+        /// 只取前幾段(0 = 全部)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
     AsrFile {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -253,6 +268,30 @@ fn make_engine(
             Ok((transducer(cfg)?, None))
         }
         "parakeet" => Ok((transducer(TransducerConfig::parakeet(threads))?, None)),
+        "qwen3-0.6b" | "qwen3-1.7b" => {
+            use tingyi_core::asr::{Qwen3Config, SherpaQwen3};
+            let (dir, name) = if engine == "qwen3-0.6b" {
+                ("sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25", "qwen3-asr-0.6b-int8")
+            } else {
+                ("qwen3-asr-1.7B-int8", "qwen3-asr-1.7b-int8")
+            };
+            let t0 = Instant::now();
+            let q = SherpaQwen3::new(&Qwen3Config { dir: paths::models_dir().join(dir), num_threads: threads, name })?;
+            println!("{name} 載入 {} ms", t0.elapsed().as_millis());
+            Ok((Box::new(q), None))
+        }
+        "cohere" => {
+            use tingyi_core::asr::{CohereConfig, SherpaCohere};
+            let t0 = Instant::now();
+            let c = SherpaCohere::new(&CohereConfig {
+                dir: paths::models_dir().join("sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01"),
+                num_threads: threads,
+                lang: lock.unwrap_or(Lang::En),
+                name: "cohere-transcribe-int8",
+            })?;
+            println!("cohere-transcribe 載入 {} ms(語言 {:?})", t0.elapsed().as_millis(), lock.unwrap_or(Lang::En));
+            Ok((Box::new(c), None))
+        }
         "routed" => {
             let t0 = Instant::now();
             let load = [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect();
@@ -771,6 +810,10 @@ async fn main() -> Result<()> {
                 println!("關閉 whisper-server:{}", if w.shutdown() { "已結束" } else { "未確認" });
             }
         }
+        Cmd::AsrCompare { wav, engines, lang, threads, limit, out } => {
+            let lock = lang.as_deref().map(parse_lang).transpose()?;
+            run_asr_compare(&wav, &engines, lock, threads, limit, &out)?;
+        }
         Cmd::AsrFile { files, lang, threads, normalize, engine } => {
             let lock = lang.as_deref().map(parse_lang).transpose()?;
             let (asr, _server) = make_engine(&engine, threads, lock, 8179)?;
@@ -951,6 +994,45 @@ fn run_capture_probe(source: &str, seconds: u64) -> Result<()> {
         s.sessions,
         s.samples_out as f64 / 16_000.0 / elapsed
     );
+    Ok(())
+}
+
+/// VAD 切段(停頓 0.5 s 或滿 8 s 一段),每段前後各補 300 ms 真實音訊、正規化音量,交給各引擎辨識。
+fn run_asr_compare(wav: &std::path::Path, engines: &[String], lock: Option<Lang>, threads: i32, limit: usize, out: &std::path::Path) -> Result<()> {
+    use tingyi_core::eval::{render_compare_table, CompareRow};
+    let audio = read_wav_16k(wav)?;
+    let cfg = VadConfig { min_silence_sec: 0.5, max_speech_sec: 8.0, ..VadConfig::default() };
+    let mut hits = run_segmenter(&audio, &cfg)?;
+    if limit > 0 {
+        hits.truncate(limit);
+    }
+    println!("{}:{} 段,{:.0} s", wav.display(), hits.len(), audio.len() as f64 / 16000.0);
+    let pad = 4800i64;
+    let segs: Vec<(u64, u64, Vec<f32>)> = hits
+        .iter()
+        .map(|h| {
+            let a = (h.core.0 - pad).max(0) as usize;
+            let b = ((h.core.1 + pad) as usize).min(audio.len());
+            (h.core.0.max(0) as u64 / 16, h.core.1 as u64 / 16, tingyi_core::audio::normalize_rms(&audio[a..b], -20.0, 8.0))
+        })
+        .collect();
+    let mut rows: Vec<CompareRow> = segs.iter().map(|(s, e, _)| CompareRow { start_ms: *s, end_ms: *e, cells: Vec::new() }).collect();
+    for engine in engines {
+        let (asr, _server) = make_engine(engine, threads, lock, 8179)?;
+        let mut total = 0u64;
+        for (row, (_, _, pcm)) in rows.iter_mut().zip(&segs) {
+            let t = asr.transcribe(pcm, lock)?;
+            total += t.asr_ms as u64;
+            row.cells.push((t.text, t.asr_ms));
+        }
+        println!("{engine:<12} 合計辨識 {total} ms");
+    }
+    let names: Vec<&str> = engines.iter().map(|s| s.as_str()).collect();
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(out, render_compare_table(&names, &rows))?;
+    println!("並排表:{}", out.display());
     Ok(())
 }
 
