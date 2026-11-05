@@ -13,6 +13,11 @@ const GROUPS = {
     title: "專用模型(CPU,選「專用模型」引擎時使用)",
     scriptFlag: (id: string) => (id === "reazonspeech" ? " -WithReazonSpeech" : " -WithParakeet"),
   },
+  base: {
+    command: "base_packages_status",
+    title: "辨識基本模型(第一次使用前必須下載;說話者辨識選用)",
+    scriptFlag: () => "",
+  },
   translate: {
     command: "translate_packages_status",
     title: "翻譯模型(本機翻譯與瀏覽器網頁翻譯共用)",
@@ -20,7 +25,7 @@ const GROUPS = {
   },
 } as const;
 
-/** 可下載模型的下載卡(專用辨識模型,或翻譯用的 llama.cpp 與 Hy-MT2):狀態、下載、進度、取消、繼續。
+/** 可下載模型的下載卡(辨識基本模型、專用辨識模型,或翻譯用的 llama.cpp 與 Hy-MT2):狀態、下載、進度、取消、繼續。
  *  進度只放在這個元件內,避免每則事件讓整個主視窗重繪。 */
 export default function RoutedModels({
   group = "routed",

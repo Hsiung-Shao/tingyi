@@ -75,6 +75,7 @@ pub fn run() {
             commands::get_audio_source,
             commands::routed_models_status,
             commands::translate_packages_status,
+            commands::base_packages_status,
             commands::download_model,
             commands::cancel_model_download,
             commands::web_status,

@@ -72,7 +72,21 @@ pub const REAZONSPEECH_JA_DIR_NAME: &str = "sherpa-onnx-zipformer-ja-reazonspeec
 pub const PARAKEET_DIR_NAME: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 
 pub fn silero_vad_model() -> PathBuf {
-    models_dir().join("silero_vad.onnx")
+    find_model_file(&models_dir(), "silero-vad", "silero_vad.onnx")
+}
+
+/// 單一檔的模型:下載腳本放在 `models/<name>`,app 內下載放在 `models/<sub>/<name>`;兩處都找,都沒有回根目錄那個路徑。
+pub fn find_model_file(models: &Path, sub: &str, name: &str) -> PathBuf {
+    let root = models.join(name);
+    if root.is_file() {
+        return root;
+    }
+    let nested = models.join(sub).join(name);
+    if nested.is_file() {
+        nested
+    } else {
+        root
+    }
 }
 
 /// 翻譯模型 GGUF;`name` 例如 `Hy-MT2-1.8B-Q8_0`。
@@ -125,7 +139,7 @@ pub fn whisper_server_exe() -> PathBuf {
 
 /// 說話者 embedding 模型(3D-Speaker CAM++ 中英 advanced,16 kHz)。
 pub fn speaker_model() -> PathBuf {
-    models_dir().join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")
+    find_model_file(&models_dir(), "speaker", "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")
 }
 
 /// Whisper large-v3-turbo q8_0 GGML 模型。

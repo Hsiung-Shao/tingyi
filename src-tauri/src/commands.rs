@@ -543,6 +543,12 @@ pub async fn translate_packages_status(state: State<'_, AppState>) -> Result<Vec
     packages_status(state.downloads.clone(), md::TRANSLATE_PACKAGES).await
 }
 
+/// 辨識基本模型(SenseVoice、VAD,說話者選用)的就緒與下載狀態;新電腦裝好後先下載它們才能開始。
+#[tauri::command]
+pub async fn base_packages_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
+    packages_status(state.downloads.clone(), md::BASE_PACKAGES).await
+}
+
 async fn packages_status(
     registry: Arc<md::DownloadRegistry>,
     specs: &'static [md::ModelSpec],

@@ -288,6 +288,14 @@ export default function App() {
   };
 
   const ready = info && info.sensevoice_ready && info.vad_ready && (!translate || info.llama_server_ready);
+  // 「開始」不能按時直接說缺什麼(新電腦第一次使用常見)
+  const missing = info
+    ? [
+        !info.sensevoice_ready && "SenseVoice 辨識模型",
+        !info.vad_ready && "VAD 語音偵測",
+        translate && !info.llama_server_ready && "llama.cpp 翻譯伺服器",
+      ].filter(Boolean)
+    : [];
 
   return (
     <div className="h-screen flex flex-col text-sm">
@@ -400,6 +408,7 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <RoutedModels group="base" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
             <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
           </section>
 
@@ -462,6 +471,11 @@ export default function App() {
               </button>
             )}
           </section>
+          {!running && missing.length > 0 && (
+            <p className="text-amber-400 text-xs -mt-2" data-role="start-missing">
+              還不能開始:缺少{missing.join("、")}。請在上方「辨識引擎」與「翻譯模型」下的下載卡下載。
+            </p>
+          )}
 
           <section className="flex flex-col gap-2">
             <label className="text-neutral-400">

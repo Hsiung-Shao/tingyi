@@ -203,9 +203,79 @@ pub const HY_MT2_1_8B: ModelSpec = ModelSpec {
 /// 翻譯用的套件:llama.cpp 裝在 `bin_dir()`,翻譯模型裝在 `models_dir()`。
 pub const TRANSLATE_PACKAGES: &[ModelSpec] = &[LLAMA_CPP, HY_MT2_1_8B];
 
-/// 依 id 找專用辨識模型或翻譯套件。
+/// SenseVoice-Small int8(2024-07-17 原版);辨識與即時預覽都靠它,必要。與 `scripts/download-models.ps1` 相同。
+pub const SENSEVOICE: ModelSpec = ModelSpec {
+    id: "sensevoice",
+    lang: Lang::Unknown,
+    label: "SenseVoice-Small 辨識模型(必要)",
+    dir_name: crate::paths::SENSEVOICE_DIR_NAME,
+    repo: "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    commit: "2365baeacb507f821a0c8120fcee3d484dba7a07",
+    license: "Apache-2.0(FunAudioLLM/SenseVoice,經 sherpa-onnx 轉出)",
+    license_url: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    files: &[
+        FileSpec {
+            name: "model.int8.onnx",
+            size: 239_233_841,
+            sha256: "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+        },
+        FileSpec {
+            name: "tokens.txt",
+            size: 315_894,
+            sha256: "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+        },
+    ],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// Silero VAD(切段用),必要;安裝到 `models/silero-vad`。與 `scripts/download-models.ps1` 相同。
+pub const SILERO_VAD: ModelSpec = ModelSpec {
+    id: "silero-vad",
+    lang: Lang::Unknown,
+    label: "Silero VAD 語音偵測(必要)",
+    dir_name: "silero-vad",
+    repo: "k2-fsa/sherpa-onnx",
+    commit: "asr-models",
+    license: "MIT(snakers4/silero-vad)",
+    license_url: "https://github.com/snakers4/silero-vad",
+    files: &[FileSpec {
+        name: "silero_vad.onnx",
+        size: 643_854,
+        sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+    }],
+    url_base: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"),
+    unzip: false,
+    ready_marker: None,
+};
+
+/// 3D-Speaker CAM++ 說話者辨識模型,選用(沒有就不分說話者);安裝到 `models/speaker`。與 `scripts/download-models.ps1` 相同。
+pub const SPEAKER: ModelSpec = ModelSpec {
+    id: "speaker",
+    lang: Lang::Unknown,
+    label: "說話者辨識 CAM++(選用)",
+    dir_name: "speaker",
+    repo: "csukuangfj/speaker-embedding-models",
+    commit: "0743f301363dec56491a490f6d6cbc9d67f9a3bf",
+    license: "Apache-2.0(modelscope 3D-Speaker)",
+    license_url: "https://huggingface.co/csukuangfj/speaker-embedding-models",
+    files: &[FileSpec {
+        name: "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+        size: 28_281_164,
+        sha256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+    }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// 辨識基本模型:安裝版第一次使用前必須下載(SenseVoice、VAD),說話者模型選用。
+pub const BASE_PACKAGES: &[ModelSpec] = &[SENSEVOICE, SILERO_VAD, SPEAKER];
+
+/// 依 id 找專用辨識模型、翻譯套件或辨識基本模型。
 pub fn spec(id: &str) -> Option<&'static ModelSpec> {
-    MODELS.iter().chain(TRANSLATE_PACKAGES).find(|m| m.id == id)
+    MODELS.iter().chain(TRANSLATE_PACKAGES).chain(BASE_PACKAGES).find(|m| m.id == id)
 }
 
 pub fn spec_for_dir(dir_name: &str) -> Option<&'static ModelSpec> {
@@ -814,6 +884,13 @@ pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
     } else if spec.id == HY_MT2_1_8B.id {
         let stem = HY_MT2_1_8B.files[0].name.trim_end_matches(".gguf");
         crate::paths::find_gguf(&data_dir.join("models"), stem).is_file()
+    } else if spec.id == SENSEVOICE.id {
+        // 與主視窗「開始」的條件一致:兩個檔都在就能辨識(下載腳本與 app 內下載放在同一個目錄)
+        let dir = data_dir.join("models").join(SENSEVOICE.dir_name);
+        SENSEVOICE.files.iter().all(|f| dir.join(f.name).is_file())
+    } else if spec.id == SILERO_VAD.id || spec.id == SPEAKER.id {
+        // 下載腳本放在 models 根目錄,app 內下載放在子資料夾:兩處都算
+        crate::paths::find_model_file(&data_dir.join("models"), spec.dir_name, spec.files[0].name).is_file()
     } else {
         model_status(spec, &data_dir.join("models")) == ModelStatus::Ready
     }
