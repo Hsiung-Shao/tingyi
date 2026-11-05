@@ -16,7 +16,9 @@ It also ships a Chrome extension for bilingual web page translation that uses th
    - `tingyi_<version>_x64-setup.exe` — the Windows installer
    - `tingyi-extension-<version>.zip` — the unpacked Chrome extension
 2. Run the installer, then open tingyi once (it registers itself for the Chrome extension).
-3. In tingyi's main window, download the translation models if they are missing (llama.cpp and Hy-MT2 1.8B under **Translation model**).
+3. In tingyi's main window, download the models the first time (**Start** stays disabled and lists what is missing until you do):
+   - **Base recognition models** under the recognition engine: SenseVoice and Silero VAD (about 240 MB; the speaker model is optional).
+   - llama.cpp and Hy-MT2 1.8B under **Translation model**.
 4. Extract the extension zip, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the extracted folder.
 5. Open any page and use the extension popup (or `Alt+A`) to translate. The popup also has per-site settings: auto translate this site, translate YouTube captions, and use tingyi when a video has no captions.
 
