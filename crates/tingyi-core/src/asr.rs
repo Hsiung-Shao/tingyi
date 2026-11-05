@@ -417,7 +417,7 @@ impl SherpaCohere {
 }
 
 impl Transcriber for SherpaCohere {
-    fn transcribe(&self, pcm: &[f32], lang_hint: Option<Lang>) -> Result<Transcript> {
+    fn transcribe(&self, pcm: &[f32], _lang_hint: Option<Lang>) -> Result<Transcript> {
         let t0 = Instant::now();
         let stream = self.recognizer.create_stream();
         stream.accept_waveform(TARGET_SAMPLE_RATE, pcm);
