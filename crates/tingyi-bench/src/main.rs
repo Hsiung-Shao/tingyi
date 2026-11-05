@@ -116,7 +116,6 @@ enum Cmd {
         #[arg(long, default_value_t = 8178)]
         port: u16,
     },
-    /// 對 wav 檔做辨識(離線 smoke test;自動重取樣到 16 kHz)
     /// 真實音訊並排比較:VAD 切段後每段交給各引擎辨識,輸出 markdown 表(沒有逐字稿時用)
     AsrCompare {
         wav: PathBuf,
@@ -132,6 +131,7 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// 對 wav 檔做辨識(離線 smoke test;自動重取樣到 16 kHz)
     AsrFile {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -282,14 +282,16 @@ fn make_engine(
         }
         "cohere" => {
             use tingyi_core::asr::{CohereConfig, SherpaCohere};
+            // Cohere 只能在建立時指定語言,沒指定就會悄悄當英文解:直接要求鎖定
+            let lang = lock.ok_or_else(|| anyhow!("cohere 需要指定語言(asr-eval 不可用 --auto;asr-compare 要帶 --lang)"))?;
             let t0 = Instant::now();
             let c = SherpaCohere::new(&CohereConfig {
                 dir: paths::models_dir().join("sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01"),
                 num_threads: threads,
-                lang: lock.unwrap_or(Lang::En),
+                lang,
                 name: "cohere-transcribe-int8",
             })?;
-            println!("cohere-transcribe 載入 {} ms(語言 {:?})", t0.elapsed().as_millis(), lock.unwrap_or(Lang::En));
+            println!("cohere-transcribe 載入 {} ms(語言 {lang:?})", t0.elapsed().as_millis());
             Ok((Box::new(c), None))
         }
         "routed" => {

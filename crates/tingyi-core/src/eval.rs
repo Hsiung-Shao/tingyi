@@ -339,7 +339,7 @@ pub struct CompareRow {
 
 /// 各引擎辨識結果並排的 markdown 表。
 pub fn render_compare_table(engines: &[&str], rows: &[CompareRow]) -> String {
-    let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+    let esc = |s: &str| s.replace('|', "\\|").replace(['\r', '\n'], " ");
     let mut out = format!("| 時間 (s) | {} |\n|---|{}\n", engines.join(" | "), "---|".repeat(engines.len()));
     for r in rows {
         let cells: Vec<String> = r.cells.iter().map(|(t, ms)| format!("{} ({ms} ms)", esc(t))).collect();

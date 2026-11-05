@@ -512,10 +512,10 @@ whisper.cpp b5130 以 CUDA 12.8 本機編譯(`scripts/build-whisper.ps1`,Ninja +
 - 幻聽:Qwen3 0.6B 一句陷入重複(「モデルキロ」數十次);Cohere 韓文一句陷入「One One One…」;Qwen3 1.7B 日文句中冒出英文單字(occasion)。
 - Qwen3 在 sherpa-onnx 1.13.8 不一定停在 `<|endoftext|>`,會接著生成無關長文(真實影片 1 段、評測集 1 句);已在 `parse_qwen3_output` 截斷,修正後 ja-rs 43.50% → 43.26%。
 - 長句回空(10-25 否決 Qwen3 的理由):5 集 × 3 個新引擎都沒有空輸出。
-- 真實影片(`evidence/20261105-231816-asrab/compare-real-{ja,en}.md`,各 40 段):英文六個引擎幾乎一致,專有名詞 Grinding Gear Games 只有 Qwen3 1.7B 與 Cohere 寫對;日文 VTuber 實況各有錯字,沒有一個新引擎明顯勝出。
-- 速度:三個新引擎在 CPU 上每句約 1–4 秒(RTF 0.16–0.46),是 SenseVoice 的 7–15 倍;即時字幕要用得等 GPU 版。
+- 真實影片(本機 `.claude/skills/verify/evidence/20261105-231816-asrab/compare-real-{ja,en}.md`,未進 repo,各 40 段):英文六個引擎幾乎一致,專有名詞 Grinding Gear Games 在 Whisper、Qwen3 1.7B、Cohere 大多寫對(各有一段仍錯);日文 VTuber 實況各有錯字,沒有一個新引擎明顯勝出。
+- 速度:三個新引擎在 CPU 上每句約 1–4 秒(RTF 0.15–0.46),p50 是 SenseVoice 的 7–17 倍;即時字幕要用得等 GPU 版。
 
-結論:沒有一個新引擎在 JSUT 與 FLEURS 同時比 Whisper turbo 低 2 個百分點(10-25 D1 推翻條件),也都比現有 CPU 引擎慢一個數量級,不接進 app。韓文 Qwen3(6.4–6.6%)是唯一比現有 CPU 選項(SenseVoice 8.38%)好的地方,但仍輸 Whisper。
+結論:沒有一個新引擎在 JSUT 與 FLEURS 同時比 Whisper turbo 低 2 個百分點(10-25 D1 推翻條件),也都比現有 CPU 引擎慢一個數量級,不接進 app。比現有 CPU 選項好的只有韓文 Qwen3(6.4–6.6% vs SenseVoice 8.38%)與日文 FLEURS 的 Cohere(6.29% vs 7.89%),但都輸 Whisper,也都太慢。
 
 **未驗 / 誤差**:SenseVoice、專用模型與新引擎那幾輪的前段,使用者的聽譯(含 llama-server)同時在跑,CPU 延遲可能偏高;Whisper 第一次因顯示卡被占滿逾時,等使用者關掉聽譯後才重量;sherpa-onnx 的 CUDA 版沒試;只用 int8,fp32 沒量。
 

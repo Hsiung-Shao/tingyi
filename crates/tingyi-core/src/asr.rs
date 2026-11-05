@@ -425,7 +425,8 @@ impl Transcriber for SherpaCohere {
         let raw = stream.get_result().ok_or_else(|| anyhow!("{} 無結果", self.name))?.text;
         Ok(Transcript {
             text: collapse_cjk_spaces(raw.trim()),
-            lang: lang_hint.unwrap_or(self.lang),
+            // 實際是用建立時的語言解碼,標記也照實
+            lang: self.lang,
             raw,
             asr_ms: t0.elapsed().as_millis() as u32,
         })
