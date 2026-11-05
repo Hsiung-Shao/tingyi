@@ -19,6 +19,7 @@ python .claude/skills/verify/scripts/verify_download_script.py --existing D:\cod
 python .claude/skills/verify/scripts/verify_release_build.py      # 先 pnpm tauri build;在 main 的工作目錄跑
 node .claude/skills/verify/scripts/verify_web_translate.mjs        # 網頁翻譯(擴充 + 共用翻譯伺服器)
 node .claude/skills/verify/scripts/verify_youtube_listen.mjs       # YouTube 沒字幕改用聽譯(播放器內字幕)
+node .claude/skills/verify/scripts/verify_fresh_install.mjs       # 全新安裝:空資料目錄,在 app 內下載辨識基本模型後能開始(要連網,約 240 MB)
 ```
 
 第五支驗網頁翻譯(見 `features/web-translate.md`):`pnpm tauri dev` 啟動聽譯(`TINGYI_REGISTER_HOST=1` 讓開發版寫 native host 註冊),主視窗以 1.8B 開始字幕,再用 ms-playwright 的 Chromium 載入 `web/extension/dist`(腳本會先建置)。檢查:擴充自動取得端點與 slots `[2,3]`、網頁與字幕只有一個 llama-server、沒帶 api key 被拒、fixture 頁翻好、停止字幕後網頁照翻、強制結束聽譯後 llama-server 跟著結束且擴充自動喚起聽譯恢復翻譯。證據在 `evidence/<時間>-web/`。在 Claude 環境內登錄檔與 LOCALAPPDATA 會被重導(Chromium 與聽譯同在重導範圍內,所以旅程本身一致),真實環境要另由使用者從檔案總管驗。
@@ -86,6 +87,7 @@ python C:\Users\jerry\.claude\scripts\evidence_gate.py .claude/skills/verify/evi
 - `scripts/verify_download_script.py`:開發用下載腳本的 SHA256 校驗(見上方說明)。
 - `scripts/verify_release_build.py`:正式版執行檔與安裝檔的實跑(見上方說明)。
 - `scripts/verify_web_translate.mjs`:網頁翻譯旅程(Node 24 內建 WebSocket;見 `features/web-translate.md`)。
+- `scripts/verify_fresh_install.mjs`:模擬新電腦(全空暫存資料目錄,不建 junction),檢查「開始」灰掉與缺件提示、在 app 內下載 SenseVoice 與 VAD、關翻譯後能開始與停止。證據在 `evidence/<時間>-fresh/`,結束刪暫存目錄。
 - `scripts/verify_youtube_listen.mjs`:YouTube 沒字幕改用聽譯(本機 HTTPS 樣本頁冒充 www.youtube.com:`--host-resolver-rules` + openssl 自簽憑證 + `--ignore-certificate-errors`;TTS 用 Zira)。證據在 `evidence/<時間>-yt/`。三支旅程都用暫存資料目錄(junction 指到 `--data` 的 bin、models),不寫進安裝版的 settings/runtime。跑的時候不要碰鍵盤滑鼠:開發版主視窗會跳到最前面接住輸入。
 - `scripts/bench-shared-server.py`(專案根目錄 `scripts/`):共用伺服器的字幕首字延遲與顯示記憶體量測。
 - 專案腳本:`scripts/tts-smoke.ps1`(TTS 供音)、`scripts/shot-windows.ps1`(截圖)。
