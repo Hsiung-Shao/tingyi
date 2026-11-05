@@ -316,8 +316,10 @@ fn require(dir: &Path, name: &str) -> Result<String> {
 
 #[derive(Debug, Clone)]
 pub struct Qwen3Config {
-    /// 內含 conv_frontend.onnx、encoder*.onnx、decoder*.onnx 與 tokenizer/。
+    /// 內含 conv_frontend.onnx、encoder*.onnx、decoder*.onnx。
     pub dir: PathBuf,
+    /// tokenizer 目錄(0.6B 在 dir/tokenizer;ModelScope 的 1.7B 在上一層)。
+    pub tokenizer: PathBuf,
     pub num_threads: i32,
     pub name: &'static str,
 }
@@ -337,7 +339,11 @@ impl SherpaQwen3 {
             conv_frontend: Some(require(&cfg.dir, "conv_frontend.onnx")?),
             encoder,
             decoder,
-            tokenizer: Some(require(&cfg.dir, "tokenizer")?),
+            tokenizer: Some(if cfg.tokenizer.exists() {
+                cfg.tokenizer.to_string_lossy().to_string()
+            } else {
+                return Err(anyhow!("找不到 tokenizer 目錄 {}", cfg.tokenizer.display()));
+            }),
             max_new_tokens: 256,
             ..Default::default()
         };

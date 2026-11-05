@@ -270,13 +270,12 @@ fn make_engine(
         "parakeet" => Ok((transducer(TransducerConfig::parakeet(threads))?, None)),
         "qwen3-0.6b" | "qwen3-1.7b" => {
             use tingyi_core::asr::{Qwen3Config, SherpaQwen3};
-            let (dir, name) = if engine == "qwen3-0.6b" {
-                ("sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25", "qwen3-asr-0.6b-int8")
-            } else {
-                ("qwen3-asr-1.7B-int8", "qwen3-asr-1.7b-int8")
+            // 與 app 同一套位置(app 內下載放的地方)
+            let Some(tingyi_core::pipeline::AsrEngine::Qwen3 { dir, tokenizer, name }) = tingyi_core::pipeline::experimental_engine(engine) else {
+                unreachable!()
             };
             let t0 = Instant::now();
-            let q = SherpaQwen3::new(&Qwen3Config { dir: paths::models_dir().join(dir), num_threads: threads, name })?;
+            let q = SherpaQwen3::new(&Qwen3Config { dir, tokenizer, num_threads: threads, name })?;
             println!("{name} 載入 {} ms", t0.elapsed().as_millis());
             Ok((Box::new(q), None))
         }
@@ -286,7 +285,7 @@ fn make_engine(
             let lang = lock.ok_or_else(|| anyhow!("cohere 需要指定語言(asr-eval 不可用 --auto;asr-compare 要帶 --lang)"))?;
             let t0 = Instant::now();
             let c = SherpaCohere::new(&CohereConfig {
-                dir: paths::models_dir().join("sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01"),
+                dir: paths::models_dir().join(tingyi_core::model_download::COHERE.dir_name),
                 num_threads: threads,
                 lang,
                 name: "cohere-transcribe-int8",

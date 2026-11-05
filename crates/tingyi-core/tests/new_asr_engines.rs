@@ -72,7 +72,7 @@ fn Q2_qwen3_with_prefix_trims_whitespace() {
 #[test]
 fn Q3_qwen3_empty_dir_errors_mentioning_encoder() {
     let dir = unique_empty_dir("qwen3");
-    let cfg = Qwen3Config { dir: dir.clone(), num_threads: 1, name: "qwen3-test" };
+    let cfg = Qwen3Config { dir: dir.clone(), tokenizer: dir.join("tokenizer"), num_threads: 1, name: "qwen3-test" };
     let err = SherpaQwen3::new(&cfg).err().expect("空目錄不該建立成功");
     let msg = format!("{err:#}");
     assert!(msg.contains("encoder"), "錯誤訊息應提到 encoder,實際:{msg}");

@@ -276,7 +276,7 @@ pub struct WhisperServerProcess {
 impl WhisperServerProcess {
     pub fn spawn(spec: WhisperServerSpec) -> Result<Self> {
         if !spec.exe.exists() {
-            return Err(anyhow!("找不到 whisper-server:{}(請執行 scripts/build-whisper.ps1)", spec.exe.display()));
+            return Err(anyhow!("找不到 whisper-server:{}(請在主視窗「辨識引擎」選 Whisper 後下載)", spec.exe.display()));
         }
         if !spec.model.exists() {
             return Err(anyhow!("找不到 Whisper 模型:{}", spec.model.display()));

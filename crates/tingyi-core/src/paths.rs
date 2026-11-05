@@ -134,7 +134,18 @@ pub fn llama_server_exe() -> PathBuf {
 
 /// whisper-server 執行檔(`scripts/build-whisper.ps1` 產出,放在 `bin/whisper/`)。
 pub fn whisper_server_exe() -> PathBuf {
-    bin_dir().join("whisper").join("whisper-server.exe")
+    whisper_server_exe_in(&bin_dir())
+}
+
+/// 自己編譯的放 `bin/whisper/`;app 內下載的官方 zip 解在 `bin/whisper/Release/`。都沒有回前者。
+pub fn whisper_server_exe_in(bin: &Path) -> PathBuf {
+    let own = bin.join("whisper").join("whisper-server.exe");
+    let official = bin.join("whisper").join("Release").join("whisper-server.exe");
+    if !own.is_file() && official.is_file() {
+        official
+    } else {
+        own
+    }
 }
 
 /// 說話者 embedding 模型(3D-Speaker CAM++ 中英 advanced,16 kHz)。
@@ -144,7 +155,7 @@ pub fn speaker_model() -> PathBuf {
 
 /// Whisper large-v3-turbo q8_0 GGML 模型。
 pub fn whisper_model() -> PathBuf {
-    models_dir().join("ggml-large-v3-turbo-q8_0.bin")
+    find_model_file(&models_dir(), "whisper", "ggml-large-v3-turbo-q8_0.bin")
 }
 
 #[cfg(test)]

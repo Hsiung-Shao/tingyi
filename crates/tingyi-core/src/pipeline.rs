@@ -49,6 +49,39 @@ pub enum AsrEngine {
     Whisper { base_url: String },
     /// 依語言路由專用模型(CPU):日文 ReazonSpeech、英文 Parakeet,其餘 SenseVoice。
     Routed,
+    Qwen3 { dir: std::path::PathBuf, tokenizer: std::path::PathBuf, name: &'static str },
+    Cohere { dir: std::path::PathBuf },
+}
+
+/// 下拉選單的實驗引擎 id → 引擎(模型放在 app 內下載的位置);其他 id 回 None。
+pub fn experimental_engine(id: &str) -> Option<AsrEngine> {
+    use crate::model_download::{COHERE, QWEN3_06B, QWEN3_17B};
+    let models = crate::paths::models_dir();
+    match id {
+        "qwen3-0.6b" => {
+            let dir = models.join(QWEN3_06B.dir_name);
+            Some(AsrEngine::Qwen3 { tokenizer: dir.join("tokenizer"), dir, name: "qwen3-asr-0.6b-int8" })
+        }
+        "qwen3-1.7b" => {
+            let root = models.join(QWEN3_17B.dir_name);
+            Some(AsrEngine::Qwen3 { dir: root.join("model_1.7B"), tokenizer: root.join("tokenizer"), name: "qwen3-asr-1.7b-int8" })
+        }
+        "cohere" => Some(AsrEngine::Cohere { dir: models.join(COHERE.dir_name) }),
+        _ => None,
+    }
+}
+
+/// 回修要時間戳,只有 Whisper 有。
+pub fn refine_supported(engine: &AsrEngine) -> bool {
+    matches!(engine, AsrEngine::Whisper { .. })
+}
+
+/// Cohere Transcribe 只能在建立時指定語言;使用者沒鎖定就不能用(不悄悄當英文)。
+pub fn cohere_lang(lock: Option<Lang>) -> Result<Lang> {
+    match lock {
+        Some(l @ (Lang::En | Lang::Ja | Lang::Ko)) => Ok(l),
+        _ => Err(anyhow!("Cohere Transcribe 需要在「語言」指定日文、英文或韓文")),
+    }
 }
 
 impl AsrEngine {
@@ -56,7 +89,7 @@ impl AsrEngine {
     /// (專用模型 FLEURS 日文 7.13% → 6.65%);Whisper 加長後英文變差(6.11% → 6.36%),維持 200 ms。
     pub fn default_pre_pad_ms(&self) -> u32 {
         match self {
-            AsrEngine::SenseVoice | AsrEngine::Routed => 800,
+            AsrEngine::SenseVoice | AsrEngine::Routed | AsrEngine::Qwen3 { .. } | AsrEngine::Cohere { .. } => 800,
             AsrEngine::Whisper { .. } => 200,
         }
     }
@@ -409,6 +442,18 @@ fn start_inner(
             asr_detail = if loaded.is_empty() { "[僅 SenseVoice]".into() } else { format!("[{}]", loaded.join("+")) };
             Box::new(r)
         }
+        AsrEngine::Qwen3 { dir, tokenizer, name } => Box::new(crate::asr::SherpaQwen3::new(&crate::asr::Qwen3Config {
+            dir: dir.clone(),
+            tokenizer: tokenizer.clone(),
+            num_threads: cfg.asr.num_threads,
+            name,
+        })?),
+        AsrEngine::Cohere { dir } => Box::new(crate::asr::SherpaCohere::new(&crate::asr::CohereConfig {
+            dir: dir.clone(),
+            num_threads: cfg.asr.num_threads,
+            lang: cohere_lang(cfg.lock_lang)?,
+            name: "cohere-transcribe-int8",
+        })?),
     };
     let vad_cfg = VadConfig {
         pre_pad_ms: cfg.vad.pre_pad_ms.or(Some(cfg.asr_engine.default_pre_pad_ms())),
@@ -444,9 +489,9 @@ fn start_inner(
     let stats = Arc::new(PipelineStats::default());
 
     // 回修:只有 Whisper 引擎有時間戳
-    let refine_on = match (&cfg.refine.enabled, &cfg.asr_engine) {
-        (true, AsrEngine::Whisper { .. }) => true,
-        (true, AsrEngine::SenseVoice | AsrEngine::Routed) => {
+    let refine_on = match (&cfg.refine.enabled, refine_supported(&cfg.asr_engine)) {
+        (true, true) => true,
+        (true, false) => {
             let _ = events.send(PipelineEvent::Status { message: "回修僅支援 Whisper 引擎,已停用".into() });
             false
         }
@@ -505,7 +550,7 @@ fn start_inner(
         let whisper_url = match (&cfg.refine.whisper_url, &cfg.asr_engine) {
             (Some(u), _) => u.clone(),
             (None, AsrEngine::Whisper { base_url }) => base_url.clone(),
-            (None, AsrEngine::SenseVoice | AsrEngine::Routed) => unreachable!(),
+            (None, _) => unreachable!(),
         };
         let refine_asr = WhisperServer::new(WhisperServerConfig {
             base_url: whisper_url,

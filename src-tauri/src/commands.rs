@@ -107,7 +107,9 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
         .collect();
     let gpu_info = gpu::nvidia_info();
     let recommended_model = recommend_model(gpu_info.as_ref().map(|g| g.1));
-    let whisper_present = paths::whisper_server_exe().exists() && paths::whisper_model().exists();
+    let data = paths::data_dir();
+    let usable = |id: &str| md::engine_packages(id).iter().all(|m| md::package_usable(m, &data));
+    let whisper_present = usable("whisper-turbo");
     let asr_engines = vec![
         AsrEngineInfo {
             id: "sensevoice".into(),
@@ -126,11 +128,25 @@ fn collect_info(seg_offset_ms: i32, seg_adaptive: bool, seg_current_ms: u32, run
             id: "whisper-turbo".into(),
             label: "Whisper large-v3-turbo(GPU,準)".into(),
             present: whisper_present,
-            note: if whisper_present {
-                "顯示記憶體約 +1.5 GB;預覽仍用 SenseVoice".into()
-            } else {
-                "需先執行 scripts/build-whisper.ps1 並下載模型".into()
-            },
+            note: "需 NVIDIA 顯示卡,顯示記憶體約 +1.5 GB;預覽仍用 SenseVoice".into(),
+        },
+        AsrEngineInfo {
+            id: "qwen3-0.6b".into(),
+            label: "Qwen3-ASR 0.6B(實驗,CPU 較慢)".into(),
+            present: usable("qwen3-0.6b"),
+            note: "每句約 1–2 秒".into(),
+        },
+        AsrEngineInfo {
+            id: "qwen3-1.7b".into(),
+            label: "Qwen3-ASR 1.7B(實驗,CPU 很慢)".into(),
+            present: usable("qwen3-1.7b"),
+            note: "每句約 2–4 秒".into(),
+        },
+        AsrEngineInfo {
+            id: "cohere".into(),
+            label: "Cohere Transcribe(實驗,CPU 較慢)".into(),
+            present: usable("cohere"),
+            note: "需在「語言」指定日/英/韓".into(),
         },
     ];
     Info {
@@ -300,9 +316,28 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
         if let (Some(a), Some(b)) = (before, after) {
             emit_status(&format!("whisper-server 就緒,顯示記憶體 +{} MiB", b.saturating_sub(a)));
         }
-        cfg.asr_engine = AsrEngine::Whisper {
-            base_url: wp.base_url(),
-        };
+        // 預熱:官方 CUDA 版在 RTX 50 系列第一次辨識要現場編譯 20–30 秒,超過一般請求的 10 秒逾時
+        emit_status("準備 Whisper(新電腦第一次使用約需 30 秒)…");
+        let base_url = wp.base_url();
+        let warm_url = base_url.clone();
+        let warm = tokio::task::spawn_blocking(move || {
+            use tingyi_core::asr::{Transcriber, WhisperServer, WhisperServerConfig};
+            let w = WhisperServer::new(WhisperServerConfig {
+                base_url: warm_url,
+                timeout: Duration::from_secs(180),
+                ..Default::default()
+            });
+            w.transcribe(&vec![0.0f32; 16_000], None).map(|_| ())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Err(e) = warm {
+            // Drop 會結束 whisper-server
+            drop(wp);
+            release_subtitles_blocking(&state.translate);
+            return Err(format!("Whisper 預熱失敗(需要 NVIDIA 顯示卡與較新的驅動):{e:#}"));
+        }
+        cfg.asr_engine = AsrEngine::Whisper { base_url };
         state.watched.lock().unwrap().push(("whisper-server".into(), wp.pid()));
         *state.whisper.lock().unwrap() = Some(wp);
     }
@@ -335,6 +370,15 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     }
     if opts.asr_engine.as_deref() == Some("routed") {
         cfg.asr_engine = AsrEngine::Routed;
+    }
+    if let Some(e) = opts.asr_engine.as_deref().and_then(pipeline::experimental_engine) {
+        if matches!(e, AsrEngine::Cohere { .. }) {
+            pipeline::cohere_lang(cfg.lock_lang).map_err(|e| {
+                release_subtitles_blocking(&state.translate);
+                e.to_string()
+            })?;
+        }
+        cfg.asr_engine = e;
     }
     emit_status("載入 SenseVoice 與 VAD…");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -534,24 +578,30 @@ pub struct RoutedModelState {
 /// 專用模型的就緒與下載狀態;只讀檔案大小,不呼叫 nvidia-smi(前端掛載與重載時查一次)。
 #[tauri::command]
 pub async fn routed_models_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
-    packages_status(state.downloads.clone(), md::MODELS).await
+    packages_status(state.downloads.clone(), md::MODELS.iter().collect()).await
 }
 
 /// 翻譯用套件(llama.cpp、Hy-MT2 1.8B)的就緒與下載狀態;安裝版靠它在 app 內下載。
 #[tauri::command]
 pub async fn translate_packages_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
-    packages_status(state.downloads.clone(), md::TRANSLATE_PACKAGES).await
+    packages_status(state.downloads.clone(), md::TRANSLATE_PACKAGES.iter().collect()).await
 }
 
 /// 辨識基本模型(SenseVoice、VAD,說話者選用)的就緒與下載狀態;新電腦裝好後先下載它們才能開始。
 #[tauri::command]
 pub async fn base_packages_status(state: State<'_, AppState>) -> Result<Vec<RoutedModelState>, String> {
-    packages_status(state.downloads.clone(), md::BASE_PACKAGES).await
+    packages_status(state.downloads.clone(), md::BASE_PACKAGES.iter().collect()).await
+}
+
+/// 下拉選單所選引擎要下載的套件(Whisper:伺服器 + 模型;實驗引擎各一個)。
+#[tauri::command]
+pub async fn engine_packages_status(state: State<'_, AppState>, engine: String) -> Result<Vec<RoutedModelState>, String> {
+    packages_status(state.downloads.clone(), md::engine_packages(&engine)).await
 }
 
 async fn packages_status(
     registry: Arc<md::DownloadRegistry>,
-    specs: &'static [md::ModelSpec],
+    specs: Vec<&'static md::ModelSpec>,
 ) -> Result<Vec<RoutedModelState>, String> {
     tokio::task::spawn_blocking(move || {
         specs

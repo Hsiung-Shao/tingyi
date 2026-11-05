@@ -273,9 +273,130 @@ pub const SPEAKER: ModelSpec = ModelSpec {
 /// 辨識基本模型:安裝版第一次使用前必須下載(SenseVoice、VAD),說話者模型選用。
 pub const BASE_PACKAGES: &[ModelSpec] = &[SENSEVOICE, SILERO_VAD, SPEAKER];
 
+/// whisper.cpp 官方預編譯 CUDA 12.4 版(含 whisper-server 與 CUDA DLL);解壓到 `bin/whisper/Release/`。
+/// RTX 50 系列沒有原生程式碼,第一次辨識要現場編譯約 20–30 秒(之後有 CUDA 快取)。
+pub const WHISPER_SERVER: ModelSpec = ModelSpec {
+    id: "whisper-server",
+    lang: Lang::Unknown,
+    label: "whisper.cpp b5454 伺服器(CUDA 12.4,需 NVIDIA 顯示卡)",
+    dir_name: "whisper",
+    repo: "ggml-org/whisper.cpp",
+    commit: "b5454",
+    license: "MIT(ggml-org/whisper.cpp)",
+    license_url: "https://github.com/ggml-org/whisper.cpp",
+    files: &[FileSpec {
+        name: "whisper-bin-win-cuda-12.4.0-x64.zip",
+        size: 684_913_404,
+        sha256: "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a",
+    }],
+    url_base: Some("https://github.com/ggml-org/whisper.cpp/releases/download/b5454"),
+    unzip: true,
+    ready_marker: None,
+};
+
+/// Whisper large-v3-turbo q8_0;安裝到 `models/whisper/`(下載腳本放 models 根目錄,兩處都認)。
+pub const WHISPER_TURBO: ModelSpec = ModelSpec {
+    id: "whisper-turbo-model",
+    lang: Lang::Unknown,
+    label: "Whisper large-v3-turbo q8_0 模型",
+    dir_name: "whisper",
+    repo: "ggerganov/whisper.cpp",
+    commit: "5359861c739e955e79d9a303bcbc70fb988958b1",
+    license: "MIT(openai/whisper)",
+    license_url: "https://huggingface.co/ggerganov/whisper.cpp",
+    files: &[FileSpec {
+        name: "ggml-large-v3-turbo-q8_0.bin",
+        size: 874_188_075,
+        sha256: "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// Qwen3-ASR 0.6B int8(sherpa-onnx 轉出,作者 csukuangfj 的 HF 鏡像)。
+pub const QWEN3_06B: ModelSpec = ModelSpec {
+    id: "qwen3-0.6b",
+    lang: Lang::Unknown,
+    label: "Qwen3-ASR 0.6B int8(實驗)",
+    dir_name: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+    repo: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+    commit: "68818b2313fe77bd06f6a7c5068ff3ef59d02b8a",
+    license: "Apache-2.0(Qwen/Qwen3-ASR)",
+    license_url: "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+    files: &[
+        FileSpec { name: "conv_frontend.onnx", size: 44_148_281, sha256: "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e" },
+        FileSpec { name: "encoder.int8.onnx", size: 182_491_662, sha256: "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9" },
+        FileSpec { name: "decoder.int8.onnx", size: 755_914_231, sha256: "4f6885be5959ae26af3089d38ee7972c5fafbeeb1cf8d5e76eab6d8b61ca5771" },
+        FileSpec { name: "tokenizer/merges.txt", size: 1_671_853, sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5" },
+        FileSpec { name: "tokenizer/vocab.json", size: 2_776_833, sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910" },
+        FileSpec { name: "tokenizer/tokenizer_config.json", size: 12_487, sha256: "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c" },
+    ],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// Qwen3-ASR 1.7B int8:sherpa-onnx 文件指向的 ModelScope 版(GitHub/HF 官方沒有),目錄照原樣保留 `model_1.7B/`。
+pub const QWEN3_17B: ModelSpec = ModelSpec {
+    id: "qwen3-1.7b",
+    lang: Lang::Unknown,
+    label: "Qwen3-ASR 1.7B int8(實驗,ModelScope)",
+    dir_name: "qwen3-asr-onnx-modelscope",
+    repo: "zengshuishui/Qwen3-ASR-onnx",
+    commit: "master",
+    license: "Apache-2.0(Qwen/Qwen3-ASR)",
+    license_url: "https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx",
+    files: &[
+        FileSpec { name: "model_1.7B/conv_frontend.onnx", size: 48_080_441, sha256: "fa894a4ba53da6a4238f2a6ca0b09362e505d39cecbd646051b033e2e8d7e2fb" },
+        FileSpec { name: "model_1.7B/encoder.int8.onnx", size: 314_222_162, sha256: "436fbd910a0c8914851e5ac1354e807be9f283d08a5da728adaa609731c41469" },
+        FileSpec { name: "model_1.7B/decoder.int8.onnx", size: 2_037_458_645, sha256: "c43c853fa6e97d08365cb8a5502b360b595cd43c00dc60e4d8ca7cc18cad460b" },
+        FileSpec { name: "tokenizer/merges.txt", size: 1_671_853, sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5" },
+        FileSpec { name: "tokenizer/vocab.json", size: 2_776_833, sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910" },
+        FileSpec { name: "tokenizer/tokenizer_config.json", size: 12_487, sha256: "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c" },
+    ],
+    url_base: Some("https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/resolve/master"),
+    unzip: false,
+    ready_marker: None,
+};
+
+/// Cohere Transcribe 14 語 int8(sherpa-onnx 轉出,作者 csukuangfj 的 HF 鏡像)。
+pub const COHERE: ModelSpec = ModelSpec {
+    id: "cohere",
+    lang: Lang::Unknown,
+    label: "Cohere Transcribe int8(實驗,需指定語言)",
+    dir_name: "sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01",
+    repo: "csukuangfj2/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01",
+    commit: "156a470cf08eefe706a0004f3c52d9ee567ca7a0",
+    license: "Apache-2.0(CohereLabs/cohere-transcribe-03-2026)",
+    license_url: "https://huggingface.co/CohereLabs/cohere-transcribe-03-2026",
+    files: &[
+        FileSpec { name: "encoder.int8.onnx", size: 3_090_822, sha256: "cf704f8cfa90e3f0a76f9ffc05998bdf00ba9ae983192c14a85a3a5eb008b367" },
+        FileSpec { name: "encoder.int8.onnx.data", size: 2_731_503_072, sha256: "bcf1b7148c8518ae52df1ad2d2fc2b4e89261ea23e6c874eef1d9f55bcbaa4a3" },
+        FileSpec { name: "decoder.int8.onnx", size: 153_250_705, sha256: "8372ca6c8ff4db8b916ca3592f5c757a715e691b9edec751ba19b29fc854baf9" },
+        FileSpec { name: "tokens.txt", size: 207_437, sha256: "013ede043ae2480e3a9205cc34550d9686100cc682bacc90f702facdfbb93035" },
+    ],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// 下拉選單引擎各自要下載的套件(SenseVoice 靠基本模型、專用模型有自己的卡)。
+pub const ENGINE_PACKAGES: &[ModelSpec] = &[WHISPER_SERVER, WHISPER_TURBO, QWEN3_06B, QWEN3_17B, COHERE];
+
+pub fn engine_packages(engine: &str) -> Vec<&'static ModelSpec> {
+    match engine {
+        "whisper-turbo" => vec![&WHISPER_SERVER, &WHISPER_TURBO],
+        "qwen3-0.6b" => vec![&QWEN3_06B],
+        "qwen3-1.7b" => vec![&QWEN3_17B],
+        "cohere" => vec![&COHERE],
+        _ => Vec::new(),
+    }
+}
+
 /// 依 id 找專用辨識模型、翻譯套件或辨識基本模型。
 pub fn spec(id: &str) -> Option<&'static ModelSpec> {
-    MODELS.iter().chain(TRANSLATE_PACKAGES).chain(BASE_PACKAGES).find(|m| m.id == id)
+    MODELS.iter().chain(TRANSLATE_PACKAGES).chain(BASE_PACKAGES).chain(ENGINE_PACKAGES).find(|m| m.id == id)
 }
 
 pub fn spec_for_dir(dir_name: &str) -> Option<&'static ModelSpec> {
@@ -636,7 +757,12 @@ fn staging_dir(spec: &ModelSpec, models_dir: &Path) -> PathBuf {
 }
 
 fn part_path(staging: &Path, f: &FileSpec) -> PathBuf {
-    staging.join(format!("{}.part", f.name))
+    let p = staging.join(format!("{}.part", f.name));
+    // 檔名可含子資料夾(例如 `tokenizer/vocab.json`)
+    if let Some(parent) = p.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    p
 }
 
 /// 已經有的位元組(已提交的檔案算全部,暫存檔算已寫入的部分)。
@@ -861,8 +987,12 @@ fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), Do
         for f in spec.files {
             let src = staging.join(f.name);
             if src.exists() {
+                let dst = final_dir.join(f.name);
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent).map_err(io_err)?;
+                }
                 // Windows 的 rename 會取代既有檔案
-                retry_rename(&src, &final_dir.join(f.name), RENAME_MAX_WAIT).map_err(io_err)?;
+                retry_rename(&src, &dst, RENAME_MAX_WAIT).map_err(io_err)?;
             }
         }
         let _ = fs::remove_dir_all(staging);
@@ -888,7 +1018,10 @@ pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
         // 與主視窗「開始」的條件一致:兩個檔都在就能辨識(下載腳本與 app 內下載放在同一個目錄)
         let dir = data_dir.join("models").join(SENSEVOICE.dir_name);
         SENSEVOICE.files.iter().all(|f| dir.join(f.name).is_file())
-    } else if spec.id == SILERO_VAD.id || spec.id == SPEAKER.id {
+    } else if spec.id == WHISPER_SERVER.id {
+        // 自己編的放 bin/whisper/,官方 zip 解在 bin/whisper/Release/:兩處都算
+        crate::paths::whisper_server_exe_in(&data_dir.join("bin")).is_file()
+    } else if spec.id == SILERO_VAD.id || spec.id == SPEAKER.id || spec.id == WHISPER_TURBO.id {
         // 下載腳本放在 models 根目錄,app 內下載放在子資料夾:兩處都算
         crate::paths::find_model_file(&data_dir.join("models"), spec.dir_name, spec.files[0].name).is_file()
     } else {
@@ -898,7 +1031,7 @@ pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
 
 /// 套件要裝在哪個上層目錄:llama.cpp 在 `bin_dir()`,模型在 `models_dir()`。
 pub fn install_parent(spec: &ModelSpec) -> PathBuf {
-    if spec.id == LLAMA_CPP.id {
+    if spec.id == LLAMA_CPP.id || spec.id == WHISPER_SERVER.id {
         crate::paths::bin_dir()
     } else {
         crate::paths::models_dir()

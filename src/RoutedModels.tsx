@@ -18,6 +18,11 @@ const GROUPS = {
     title: "辨識基本模型(第一次使用前必須下載;說話者辨識選用)",
     scriptFlag: () => "",
   },
+  engine: {
+    command: "engine_packages_status",
+    title: "所選辨識引擎的模型",
+    scriptFlag: () => "",
+  },
   translate: {
     command: "translate_packages_status",
     title: "翻譯模型(本機翻譯與瀏覽器網頁翻譯共用)",
@@ -29,11 +34,14 @@ const GROUPS = {
  *  進度只放在這個元件內,避免每則事件讓整個主視窗重繪。 */
 export default function RoutedModels({
   group = "routed",
+  engine,
   running,
   dataDir,
   onChanged,
 }: {
   group?: keyof typeof GROUPS;
+  /** group="engine" 時:下拉選單所選的引擎 id。 */
+  engine?: string;
   running: boolean;
   dataDir?: string;
   onChanged: () => void;
@@ -49,8 +57,11 @@ export default function RoutedModels({
   modelIds.current = new Set(models.map((m) => m.id));
 
   const refresh = useCallback(
-    () => invoke<RoutedModelState[]>(g.command).then(setModels).catch(() => {}),
-    [g.command],
+    () =>
+      invoke<RoutedModelState[]>(g.command, engine === undefined ? undefined : { engine })
+        .then(setModels)
+        .catch(() => {}),
+    [g.command, engine],
   );
 
   useEffect(() => {
@@ -97,8 +108,11 @@ export default function RoutedModels({
     await invoke("cancel_model_download", { id }).catch(() => {});
   };
 
+  // SenseVoice 等不需另外下載的引擎:不顯示卡片
+  if (models.length === 0) return null;
+
   return (
-    <div className="flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-2 text-xs">
+    <div data-group={group} className="flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-2 text-xs">
       <div className="text-neutral-400">{g.title}</div>
       {models.map((m) => {
         const p = progress[m.id];

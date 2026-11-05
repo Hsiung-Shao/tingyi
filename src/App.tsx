@@ -287,13 +287,23 @@ export default function App() {
     await invoke("set_overlay_mode", { mode: m });
   };
 
-  const ready = info && info.sensevoice_ready && info.vad_ready && (!translate || info.llama_server_ready);
+  const engine = info?.asr_engines.find((e) => e.id === asrEngine);
+  const cohereNoLang = asrEngine === "cohere" && lang === "auto";
+  const ready =
+    info &&
+    info.sensevoice_ready &&
+    info.vad_ready &&
+    (!translate || info.llama_server_ready) &&
+    (engine?.present ?? true) &&
+    !cohereNoLang;
   // 「開始」不能按時直接說缺什麼(新電腦第一次使用常見)
   const missing = info
     ? [
         !info.sensevoice_ready && "SenseVoice 辨識模型",
         !info.vad_ready && "VAD 語音偵測",
         translate && !info.llama_server_ready && "llama.cpp 翻譯伺服器",
+        engine && !engine.present && `${engine.label} 的模型`,
+        cohereNoLang && "語言設定(Cohere 要指定日/英/韓)",
       ].filter(Boolean)
     : [];
 
@@ -403,13 +413,18 @@ export default function App() {
               disabled={running}
             >
               {info?.asr_engines.map((e) => (
-                <option key={e.id} value={e.id} disabled={!e.present}>
+                <option key={e.id} value={e.id}>
                   {e.label} — {e.note}
+                  {e.present ? "" : "(未下載)"}
                 </option>
               ))}
             </select>
             <RoutedModels group="base" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
-            <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+            {asrEngine === "routed" ? (
+              <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+            ) : (
+              <RoutedModels group="engine" engine={asrEngine} running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+            )}
           </section>
 
           <section className="flex flex-col gap-2">
