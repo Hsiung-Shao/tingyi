@@ -108,7 +108,8 @@ window.__v = {
     i.scrollIntoView({ block: 'center' });
     return true;
   },
-  segLabel: () => ([...document.querySelectorAll('label')].find(l => l.textContent.startsWith('斷句')) || {}).textContent || '',
+  // 斷句卡片的標題列(「斷句」+ 目前門檻與上限);2026-11-06 字幕頁改版前是一個 <label>
+  segLabel: () => (document.querySelector('[data-card="斷句"]') || {}).textContent || '',
 };
 true
 """
