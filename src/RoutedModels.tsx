@@ -153,10 +153,13 @@ export default function RoutedModels({
             {errors[m.id] && (
               <div className="text-rose-400" data-role="model-error">
                 {errors[m.id]}
-                <div className="text-neutral-500">
-                  也可以用 repo 的 scripts/download-models.ps1{g.scriptFlag(m.id)} 下載到
-                  {dataDir ? ` ${dataDir}\\models` : " 資料目錄的 models"}。
-                </div>
+                {/* 下載腳本不含這些辨識引擎(whisper-server、Qwen3、Cohere) */}
+                {group !== "engine" && (
+                  <div className="text-neutral-500">
+                    也可以用 repo 的 scripts/download-models.ps1{g.scriptFlag(m.id)} 下載到
+                    {dataDir ? ` ${dataDir}\\models` : " 資料目錄的 models"}。
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -382,6 +382,9 @@ pub const COHERE: ModelSpec = ModelSpec {
 };
 
 /// 下拉選單引擎各自要下載的套件(SenseVoice 靠基本模型、專用模型有自己的卡)。
+/// 壓縮檔全部解完才寫的標記檔(放在解壓目錄);解到一半被中斷時沒有它,就緒判斷才不會誤認。
+pub const UNZIP_DONE_MARKER: &str = ".unzip-done";
+
 pub const ENGINE_PACKAGES: &[ModelSpec] = &[WHISPER_SERVER, WHISPER_TURBO, QWEN3_06B, QWEN3_17B, COHERE];
 
 pub fn engine_packages(engine: &str) -> Vec<&'static ModelSpec> {
@@ -757,12 +760,7 @@ fn staging_dir(spec: &ModelSpec, models_dir: &Path) -> PathBuf {
 }
 
 fn part_path(staging: &Path, f: &FileSpec) -> PathBuf {
-    let p = staging.join(format!("{}.part", f.name));
-    // 檔名可含子資料夾(例如 `tokenizer/vocab.json`)
-    if let Some(parent) = p.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    p
+    staging.join(format!("{}.part", f.name))
 }
 
 /// 已經有的位元組(已提交的檔案算全部,暫存檔算已寫入的部分)。
@@ -1002,6 +1000,7 @@ fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), Do
         for f in spec.files.iter().filter(|f| f.name.ends_with(".zip")) {
             extract_zip(&final_dir.join(f.name), &final_dir).map_err(io_err)?;
         }
+        fs::write(final_dir.join(UNZIP_DONE_MARKER), b"").map_err(io_err)?;
     }
     Ok(())
 }
@@ -1019,8 +1018,10 @@ pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
         let dir = data_dir.join("models").join(SENSEVOICE.dir_name);
         SENSEVOICE.files.iter().all(|f| dir.join(f.name).is_file())
     } else if spec.id == WHISPER_SERVER.id {
-        // 自己編的放 bin/whisper/,官方 zip 解在 bin/whisper/Release/:兩處都算
-        crate::paths::whisper_server_exe_in(&data_dir.join("bin")).is_file()
+        // 自己編的放 bin/whisper/;官方 zip 解在 bin/whisper/Release/,要解壓完成標記才算(解到一半不算)
+        let dir = data_dir.join("bin").join("whisper");
+        dir.join("whisper-server.exe").is_file()
+            || (dir.join("Release").join("whisper-server.exe").is_file() && dir.join(UNZIP_DONE_MARKER).is_file())
     } else if spec.id == SILERO_VAD.id || spec.id == SPEAKER.id || spec.id == WHISPER_TURBO.id {
         // 下載腳本放在 models 根目錄,app 內下載放在子資料夾:兩處都算
         crate::paths::find_model_file(&data_dir.join("models"), spec.dir_name, spec.files[0].name).is_file()
@@ -1069,6 +1070,10 @@ pub fn download_model(
         }
         let committed = staging.join(f.name);
         let part = part_path(&staging, f);
+        // 檔名可含子資料夾(例如 `tokenizer/vocab.json`);只在下載時建,查狀態不動磁碟
+        if let Some(parent) = part.parent() {
+            fs::create_dir_all(parent).map_err(io_err)?;
+        }
         let committed_len = file_len(&committed);
         if committed_len.is_some_and(|n| n != f.size) {
             let _ = fs::remove_file(&committed);

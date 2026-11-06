@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tingyi_core::asr::{Lang, Qwen3Config, SherpaQwen3};
 use tingyi_core::model_download::{
     download_model, engine_packages, package_usable, DownloadCtl, DownloadOptions, FileSpec, ModelSpec, COHERE, QWEN3_06B,
-    QWEN3_17B, WHISPER_SERVER, WHISPER_TURBO,
+    QWEN3_17B, UNZIP_DONE_MARKER, WHISPER_SERVER, WHISPER_TURBO,
 };
 use tingyi_core::paths::whisper_server_exe_in;
 use tingyi_core::pipeline::{cohere_lang, refine_supported, AsrEngine};
@@ -192,8 +192,18 @@ fn e3_official_whisper_in_release_subfolder_is_ready() {
     let data = tmp.path();
     let exe = data.join("bin").join("whisper").join("Release").join("whisper-server.exe");
     touch(&exe);
+    touch(&data.join("bin").join("whisper").join(UNZIP_DONE_MARKER));
     assert_eq!(whisper_server_exe_in(&data.join("bin")), exe);
     assert!(package_usable(&WHISPER_SERVER, data));
+}
+
+// E10:官方 zip 解到一半(exe 已在、沒有解壓完成標記)不算就緒,下載卡才能重下
+#[test]
+fn e10_official_whisper_without_unzip_marker_is_not_ready() {
+    let tmp = Tmp::new();
+    let data = tmp.path();
+    touch(&data.join("bin").join("whisper").join("Release").join("whisper-server.exe"));
+    assert!(!package_usable(&WHISPER_SERVER, data));
 }
 
 // E4:自己編的 whisper-server.exe 放在 bin/whisper 照舊就緒;兩處都沒有則不就緒

@@ -5,7 +5,7 @@
 // 用法(在專案根目錄):node .claude/skills/verify/scripts/verify_engine_downloads.mjs [--data <本機資料目錄>]
 // 暫存資料目錄放 D:\tingyi-verify-tmp(C 槽空間不夠),跑完刪除。只關閉自己啟動的程序(依 PID)。
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, statSync, appendFileSync, createWriteStream, rmSync, copyFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync, statSync, appendFileSync, createWriteStream, rmSync, copyFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
@@ -217,7 +217,11 @@ async function main() {
     }, 300_000, 300);
     result.statuses[e.id] = [...seen];
     check(`${e.id}:按開始後進入執行中`, running.ok, `${Math.round(running.ms / 1000)}s;狀態 ${[...seen].join(' / ')}`);
-    if (e.id === 'whisper-turbo') check('whisper-turbo:有經過預熱步驟', [...seen].some((s) => /準備 Whisper|whisper-server 就緒/.test(s)), [...seen].join(' / '));
+    if (e.id === 'whisper-turbo') {
+      // 有 CUDA 快取時預熱只要約 0.3 秒,狀態列取樣可能錯過,以 app 紀錄為準
+      const warmLine = readFileSync(path.join(OUT, 'app.log'), 'utf8').match(/Whisper 預熱完成 \d+ ms/)?.[0];
+      check('whisper-turbo:有經過預熱步驟', !!warmLine, `${warmLine ?? '紀錄沒有預熱完成'};狀態 ${[...seen].join(' / ')}`);
+    }
     await screenshot(ui, `03-${e.id}-running.png`);
     if (running.ok) {
       await js(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '停止').click(), true`);

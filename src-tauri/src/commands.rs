@@ -320,6 +320,7 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
         emit_status("準備 Whisper(新電腦第一次使用約需 30 秒)…");
         let base_url = wp.base_url();
         let warm_url = base_url.clone();
+        let warm_t0 = std::time::Instant::now();
         let warm = tokio::task::spawn_blocking(move || {
             use tingyi_core::asr::{Transcriber, WhisperServer, WhisperServerConfig};
             let w = WhisperServer::new(WhisperServerConfig {
@@ -337,6 +338,7 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
             release_subtitles_blocking(&state.translate);
             return Err(format!("Whisper 預熱失敗(需要 NVIDIA 顯示卡與較新的驅動):{e:#}"));
         }
+        tracing::info!("Whisper 預熱完成 {} ms", warm_t0.elapsed().as_millis());
         cfg.asr_engine = AsrEngine::Whisper { base_url };
         state.watched.lock().unwrap().push(("whisper-server".into(), wp.pid()));
         *state.whisper.lock().unwrap() = Some(wp);

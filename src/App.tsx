@@ -422,7 +422,8 @@ export default function App() {
             {asrEngine === "routed" ? (
               <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
             ) : (
-              <RoutedModels group="engine" engine={asrEngine} running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+              // 換引擎就重新掛載:別的引擎下載中的進度不會殘留成假的「下載中」
+              <RoutedModels key={asrEngine} group="engine" engine={asrEngine} running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
             )}
           </section>
 
