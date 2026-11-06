@@ -335,9 +335,11 @@ async function main() {
   const idle1 = await waitFor(async () => ({ ok: (await histJs(`document.querySelector('[data-role=overlay-content]')?.dataset.idle`)) === '1' }), 40_000, 500);
   check('OBS /subtitle:講完後字幕收起', idle1.ok, `${Math.round(idle1.ms / 1000)}s`);
   await hist.send('Page.reload', {});
-  await sleep(2000);
+  await sleep(1000);
+  // 開發版頁面模組經 vite 轉送,無頭 Edge 可能要數秒才畫出來:先等頁面出現,再判斷是否收起
+  const loaded = await waitFor(async () => ({ ok: !!(await histJs(`document.querySelector('[data-role=overlay-content]')?.dataset.idle`)) }), 30_000, 300);
   const idle2 = await waitFor(async () => ({ ok: (await histJs(`document.querySelector('[data-role=overlay-content]')?.dataset.idle`)) === '1' }), 5_000, 300);
-  check('OBS /subtitle:閒置中重新整理後仍是收起(不卡住上一句)', idle2.ok);
+  check('OBS /subtitle:閒置中重新整理後仍是收起(不卡住上一句)', loaded.ok && idle2.ok, `頁面出現 ${Math.round(loaded.ms / 1000)}s`);
   await screenshot(hist, '05b-obs-subtitle-idle-reload.png');
   const sse = await sseP;
   const types = sse.map((l) => {

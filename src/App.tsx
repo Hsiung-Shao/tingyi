@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -74,7 +74,12 @@ export default function App() {
   const listRef = useRef<HTMLDivElement>(null);
 
   // get_info 只是狀態列資訊,失敗(例如後端尚未就緒)不影響操作,10 秒後會再查,故不報錯。
-  const refreshInfo = () => invoke<Info>("get_info").then(setInfo).catch(() => {});
+  // 固定參照:設定頁的區塊用 memo,回呼每次重繪都換新會讓它們跟著字幕重繪
+  const refreshInfo = useCallback(() => invoke<Info>("get_info").then(setInfo).catch(() => {}), []);
+  const chooseModel = useCallback((m: string) => {
+    setModel(m);
+    setTranslate(true);
+  }, []);
   const autostarted = useRef(false);
   const modelDefaulted = useRef(false);
 
@@ -363,10 +368,7 @@ export default function App() {
           info={info}
           running={running}
           model={model}
-          onModel={(m) => {
-            setModel(m);
-            setTranslate(true);
-          }}
+          onModel={chooseModel}
           asrEngine={asrEngine}
           onAsrEngine={setAsrEngine}
           onChanged={refreshInfo}

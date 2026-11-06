@@ -117,8 +117,10 @@ pub async fn set_obs_enabled(app: AppHandle, enabled: bool) -> Result<ObsStatus,
                 continue;
             };
             let app = app2.clone();
+            // 接受當下就訂閱關閉訊號:之後才關掉開關的話,讀標頭中的連線也一定看得到
+            let closed = app.state::<AppState>().obs.closed.subscribe();
             tokio::spawn(async move {
-                if let Err(e) = serve(&app, stream).await {
+                if let Err(e) = serve(&app, stream, closed).await {
                     tracing::debug!("OBS 連線結束:{e}");
                 }
             });
@@ -163,13 +165,13 @@ async fn respond(stream: &mut TcpStream, code: &str, mime: &str, body: &[u8]) ->
     stream.write_all(body).await
 }
 
-async fn serve(app: &AppHandle, mut stream: TcpStream) -> std::io::Result<()> {
+async fn serve(app: &AppHandle, mut stream: TcpStream, closed: watch::Receiver<u64>) -> std::io::Result<()> {
     let (method, target, host) = read_head(&mut stream).await?;
     let dev = cfg!(debug_assertions);
     match route(&method, &target, host.as_deref(), dev) {
         Route::Forbidden => respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden").await,
         Route::NotFound => respond(&mut stream, "404 Not Found", "text/plain", b"not found").await,
-        Route::Events => events(app, stream).await,
+        Route::Events => events(app, stream, closed).await,
         Route::Page => file(app, stream, "obs.html", dev).await,
         Route::Asset(path) => file(app, stream, &path, dev).await,
     }
@@ -197,11 +199,10 @@ async fn proxy_vite(mut stream: TcpStream, path: &str) -> std::io::Result<()> {
 }
 
 /// SSE:先送 reset 與本回合快照,之後即時轉發;每 15 秒送註解保持連線。
-async fn events(app: &AppHandle, mut stream: TcpStream) -> std::io::Result<()> {
+async fn events(app: &AppHandle, mut stream: TcpStream, mut closed: watch::Receiver<u64>) -> std::io::Result<()> {
     stream
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n")
         .await?;
-    let mut closed = app.state::<AppState>().obs.closed.subscribe();
     let (snapshot, mut rx) = app.state::<AppState>().obs.subscribe();
     let mut out = format!("data: {RESET}\n\n");
     for line in snapshot {

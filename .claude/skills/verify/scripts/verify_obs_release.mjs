@@ -163,8 +163,12 @@ async function main() {
   const js = (e) => ui.evalJs(e);
   await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-tab=settings]')`) }), 30_000);
   await js(`document.querySelector('[data-tab=settings]').click(), true`);
-  await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-role=obs-toggle]')`) }), 15_000);
-  await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
+  await js(`document.querySelector('[data-nav=live]')?.click(), true`);
+  await waitFor(async () => ({ ok: await js(`document.querySelector('[data-role=obs-toggle]')?.disabled === false`) }), 15_000, 200);
+  // 上次跑完可能留著「自動打開」:已經是開的就不要再點(點了會變關)
+  const wasOn = await js(`document.querySelector('[data-role=obs-toggle]').checked`);
+  log(`直播開關初始狀態:${wasOn ? '已開(上次記住)' : '關'}`);
+  if (!wasOn) await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
   const urlR = await waitFor(async () => {
     const u = await js(`document.querySelector('[data-role=obs-url-history]')?.value ?? ''`);
     return { ok: /^http:\/\/127\.0\.0\.1:\d+\/history/.test(u), u };

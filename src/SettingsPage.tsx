@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, ModelCard, PackageRow, usePackages, type PackageCommand, type PackageView } from "./Packages";
 import type { Info, ObsStatus, Sentence } from "./lib/types";
@@ -20,7 +20,9 @@ interface Props {
 /** 「設定」分頁:左側分類導覽,右側該類的卡片。選用等同字幕頁的下拉選單,下次按「開始」時載入。
  *  三類都保持掛載(只藏起來),切換時下載進度與完成通知不會中斷。 */
 export default function SettingsPage(props: Props) {
-  const { info, running, onChanged } = props;
+  const { info, running, model, onModel, asrEngine, onAsrEngine, onChanged, sentences } = props;
+  // 直播預覽只要最後兩句;設定頁常駐掛載,其他區塊不跟著每個譯文 token 重繪(下面兩區用 memo)
+  const recent = useMemo(() => sentences.filter((s) => !s.recovered).slice(-2), [sentences]);
   const [section, setSection] = useState<Section>("translate");
   const [obs, setObs] = useState<ObsStatus | null>(null);
   const translate = usePackages("translate_packages_status", undefined, running, onChanged);
@@ -56,13 +58,13 @@ export default function SettingsPage(props: Props) {
       </aside>
       <main className="min-w-0 flex-[999_1_560px] overflow-y-auto px-8 py-7">
         <div className={section === "translate" ? "" : "hidden"}>
-          <TranslateSection {...props} views={translate.views} />
+          <TranslateSection info={info} running={running} model={model} onModel={onModel} views={translate.views} />
         </div>
         <div className={section === "recog" ? "" : "hidden"}>
-          <RecogSection {...props} base={base.views} />
+          <RecogSection info={info} running={running} asrEngine={asrEngine} onAsrEngine={onAsrEngine} onChanged={onChanged} base={base.views} />
         </div>
         <div className={section === "live" ? "" : "hidden"}>
-          <LiveSection sentences={props.sentences} onStatus={setObs} />
+          <LiveSection recent={recent} onStatus={setObs} />
         </div>
         {(translate.finishedWhileRunning || base.finishedWhileRunning) && (
           <p className="mt-4 text-xs text-amber-400">下載完成,下次按「開始」時生效。</p>
@@ -87,7 +89,13 @@ const GROUPS: { title: string; hint?: string; warn?: boolean; match: (name: stri
   { title: "其他多語翻譯模型", hint: "只能譯成繁體中文", match: (n) => !n.startsWith("Hy-MT2") && !n.startsWith("Sakura") },
 ];
 
-function TranslateSection({ info, running, model, onModel, views }: Props & { views: PackageView[] }) {
+const TranslateSection = memo(function TranslateSection({
+  info,
+  running,
+  model,
+  onModel,
+  views,
+}: Pick<Props, "info" | "running" | "model" | "onModel"> & { views: PackageView[] }) {
   const server = views.find((v) => !v.m.gguf);
   const note = (name: string) => info?.models.find((m) => m.name === name)?.note;
   return (
@@ -124,9 +132,16 @@ function TranslateSection({ info, running, model, onModel, views }: Props & { vi
       })}
     </section>
   );
-}
+});
 
-function RecogSection({ info, running, asrEngine, onAsrEngine, onChanged, base }: Props & { base: PackageView[] }) {
+const RecogSection = memo(function RecogSection({
+  info,
+  running,
+  asrEngine,
+  onAsrEngine,
+  onChanged,
+  base,
+}: Pick<Props, "info" | "running" | "asrEngine" | "onAsrEngine" | "onChanged"> & { base: PackageView[] }) {
   return (
     <section data-section="recog" className="flex flex-col gap-6">
       <SectionHead title="辨識" desc="基本模型每台電腦都要;辨識引擎選一個,需要的檔案在卡片裡下載。" />
@@ -162,7 +177,7 @@ function RecogSection({ info, running, asrEngine, onAsrEngine, onChanged, base }
       </div>
     </section>
   );
-}
+});
 
 type EngineInfo = Info["asr_engines"][number];
 
@@ -202,7 +217,7 @@ function EngineCard({ e, views, active, running, onUse }: { e: EngineInfo; views
       {views.length > 0 && (
         <div className="flex flex-col gap-2 rounded-lg bg-neutral-800/50 px-3 py-2.5 text-[13px]">
           {views.map((v) => (
-            <PackageRow key={v.m.id} v={v} />
+            <PackageRow key={v.m.id} v={v} scriptHint={e.id === "routed" ? (v.m.id === "reazonspeech" ? " -WithReazonSpeech" : " -WithParakeet") : undefined} />
           ))}
         </div>
       )}
@@ -224,7 +239,7 @@ function EngineCard({ e, views, active, running, onUse }: { e: EngineInfo; views
 const OBS_PREF = "tingyi.obs";
 
 /** 直播用網址:開關、兩個網址卡片(附目前字幕預覽)。開關記在本機,下次開啟自動打開。 */
-function LiveSection({ sentences, onStatus }: { sentences: Sentence[]; onStatus: (s: ObsStatus) => void }) {
+function LiveSection({ recent, onStatus }: { recent: Sentence[]; onStatus: (s: ObsStatus) => void }) {
   const [st, setSt] = useState<ObsStatus | null>(null);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState("");
@@ -262,7 +277,6 @@ function LiveSection({ sentences, onStatus }: { sentences: Sentence[]; onStatus:
   };
 
   const base = st?.port ? `http://127.0.0.1:${st.port}` : "";
-  const recent = sentences.filter((s) => !s.recovered).slice(-2);
   const copy = async (key: string, url: string) => {
     try {
       await navigator.clipboard.writeText(url);

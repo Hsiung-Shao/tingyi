@@ -145,7 +145,7 @@ function ErrorLine({ v, scriptHint }: { v: PackageView; scriptHint?: string }) {
   return (
     <div className="text-xs text-rose-400" data-role="model-error">
       {v.error}
-      {scriptHint && <div className="text-neutral-500">也可以用 repo 的 scripts/download-models.ps1{scriptHint} 下載。</div>}
+      {scriptHint !== undefined && <div className="text-neutral-500">也可以用 repo 的 scripts/download-models.ps1{scriptHint} 下載。</div>}
     </div>
   );
 }
