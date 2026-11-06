@@ -372,9 +372,9 @@ export default function App() {
             }}
           />
         </span>
-        <span className="flex items-center gap-2 text-neutral-300 truncate max-w-[50%]" title={status}>
+        <span className="flex min-w-0 items-center gap-2 text-neutral-300 max-w-[50%]" title={status}>
           {running && <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" aria-hidden="true" />}
-          {status}
+          <span className="truncate">{status}</span>
         </span>
       </header>
 
@@ -504,6 +504,7 @@ export default function App() {
                   譯文轉換
                   <select
                     id="zh-convert"
+                    title="台灣繁體:轉字形並換台灣用語;只轉字形:不換詞;不轉換:照模型輸出"
                     className="min-h-9 rounded-lg border border-neutral-700 bg-neutral-950 px-2 text-[13px] text-neutral-200 disabled:opacity-50"
                     value={zhConvert}
                     onChange={(e) => setZhConvert(e.target.value)}
@@ -572,7 +573,7 @@ export default function App() {
               value={mode}
               onChange={(m) => changeMode(m as OverlayMode)}
             />
-            <div className="flex items-center gap-2 text-[13px]">
+            <div className="flex flex-wrap items-center gap-2 text-[13px]">
               <button
                 onClick={toggleUnlock}
                 className={`min-h-8 rounded-md border px-3 ${unlocked ? "border-yellow-500 bg-yellow-700" : "border-neutral-700 bg-neutral-800 hover:bg-neutral-700"}`}
@@ -597,7 +598,7 @@ export default function App() {
                   onKeyDown={(e) => e.key === "Enter" && applySubtitleHide()}
                   className="w-12 rounded-md border border-neutral-700 bg-neutral-950 px-1.5 py-1 text-neutral-200"
                 />
-                秒收起
+                秒收起(0 = 不隱藏)
               </label>
             </div>
           </Card>
@@ -667,7 +668,7 @@ export default function App() {
                 placeholder={"Exile=流亡者\nWraeclast=瓦爾克拉斯"}
               />
             </Fold>
-            <Fold title="辨識取代表" meta={replaceCount > 0 ? `${replaceCount} 條` : "未設定"}>
+            <Fold title="辨識取代表" meta={replaceCount > 0 ? `${replaceCount} 條` : "未設定"} last>
               <span className="text-xs text-neutral-500">每行 錯字=正字</span>
               <textarea
                 className="h-20 rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 font-mono text-xs"
@@ -677,14 +678,18 @@ export default function App() {
                 placeholder={"(辨識常錯的人名、專有名詞)\n騎士=棋士\n錯字=(留空代表刪除)"}
               />
             </Fold>
-            <Fold title="網頁翻譯" last>
-              <WebTranslateCard models={info?.models ?? []} />
-            </Fold>
           </div>
+
+          {/* 網頁翻譯可能由 Chrome 擴充自動啟動並佔用顯示卡,狀態要一直看得到,不收起 */}
+          <WebTranslateCard models={info?.models ?? []} />
 
           <section className="mt-auto flex flex-col gap-1 px-1 text-xs text-neutral-500">
             <div>輸出裝置:{info?.device ?? "—"}</div>
             <div>GPU:{info?.gpu ? `${info.gpu[0]},已用 ${info.gpu_used_mib ?? "?"} / ${info.gpu[1]} MiB` : "—"}</div>
+            <div>
+              模型:SenseVoice {info?.sensevoice_ready ? "✓" : "✗"} · VAD {info?.vad_ready ? "✓" : "✗"} · llama-server{" "}
+              {info?.llama_server_ready ? "✓" : "✗"}
+            </div>
             <div className="truncate" title={info?.data_dir}>
               資料:{info?.data_dir}
             </div>
