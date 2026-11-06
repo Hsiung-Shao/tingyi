@@ -21,31 +21,14 @@ function latestShown(list: Sentence[]): Sentence[] {
 
 /** 懸浮字幕;OBS 的 `/subtitle` 頁也用它(`obs` 給定時:事件走 SSE、模式與字級由網址參數決定,不聽主視窗)。 */
 export default function Overlay({ bus = tauriBus, obs }: { bus?: SubtitleBus; obs?: { mode: OverlayMode; size: number } }) {
-  const { sentences, partial, partialSpeaker, speakers } = useSubtitles(bus);
+  // 後端判定閒置(沒聲音且字幕沒有新內容)時收起:dismissed 記下當時最新句與預覽,之後只顯示比它新的內容;
+  // 收起時還在等譯文的句子(pending),譯文到了也算新內容。新回合時清掉
+  const { sentences, partial, partialSpeaker, speakers, dismissed } = useSubtitles(bus);
   const [mode, setMode] = useState<OverlayMode>(obs?.mode ?? "translation");
   const size = obs?.size ?? 32;
   const [interactive, setInteractive] = useState(false);
-  // 後端判定閒置(沒聲音且字幕沒有新內容)時收起:記下當時最新句與預覽,之後只顯示比它新的內容;
-  // 收起時還在等譯文的句子(pending),譯文到了也算新內容
-  const [dismissed, setDismissed] = useState<{ id: number; partial: string; pending: Set<number> } | null>(null);
   // 補回句屬於歷史修正,不插進即時字幕;被回修的當前句則會自動更新
   const live = useMemo(() => sentences.filter((s) => !s.recovered), [sentences]);
-  const latest = useRef({ id: -1, partial: "", pending: new Set<number>() });
-  latest.current = {
-    id: live.length > 0 ? live[live.length - 1].id : -1,
-    partial,
-    pending: new Set(live.filter((s) => s.state === "translating" && s.translation === "").map((s) => s.id)),
-  };
-
-  useEffect(() => {
-    const c = bus.onIdle(() => setDismissed({ ...latest.current }));
-    // 新回合句子 id 從頭算,收起標記要清掉
-    const d = bus.onReset(() => setDismissed(null));
-    return () => {
-      c();
-      d();
-    };
-  }, [bus]);
   useEffect(() => {
     if (obs) return;
     const a = listen<string>("overlay-mode", (e) => setMode(e.payload as OverlayMode));

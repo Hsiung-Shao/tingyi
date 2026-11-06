@@ -132,7 +132,8 @@ function ObsCard() {
     <section className="flex flex-col gap-2" data-section="obs">
       <h2 className="text-base font-semibold">直播(OBS 瀏覽器來源)</h2>
       <label className="flex items-center gap-2">
-        <input type="checkbox" checked={!!st?.enabled} onChange={(e) => toggle(e.target.checked)} data-role="obs-toggle" />
+        {/* 狀態讀回前停用:否則看起來是關的,按下去送出的是「開」 */}
+        <input type="checkbox" checked={!!st?.enabled} disabled={!st} onChange={(e) => toggle(e.target.checked)} data-role="obs-toggle" />
         開啟直播用網址(只有這台電腦能連)
       </label>
       {st?.enabled &&

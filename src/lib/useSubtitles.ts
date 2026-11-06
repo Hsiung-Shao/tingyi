@@ -14,16 +14,31 @@ interface State {
   speakers: string[];
   /** 目前斷句參數 */
   segmentation: { min_silence_ms: number; max_speech_ms: number; reason: string } | null;
+  /** 後端判定閒置時的最新句與預覽(懸浮字幕據此收起,之後只顯示比它新的);收起時還在等譯文的句子另記 */
+  dismissed: { id: number; partial: string; pending: Set<number> } | null;
 }
 
 const MAX_SENTENCES = 500;
 
-type Action = PipelineEvent | { type: "reset" };
+type Action = PipelineEvent | { type: "reset" } | { type: "idle" };
 
 function reducer(state: State, ev: Action): State {
   switch (ev.type) {
     case "reset":
-      return { sentences: [], status: state.status, errors: [], partial: "", partialSpeaker: null, speakers: [], segmentation: null };
+      return { sentences: [], status: state.status, errors: [], partial: "", partialSpeaker: null, speakers: [], segmentation: null, dismissed: null };
+    case "idle": {
+      // 在 reducer 裡算:OBS 重新連線時快照一次送到,事件比畫面重繪先到,不能讀畫面上的值
+      // 補回句屬於歷史修正,不算進即時字幕
+      const live = state.sentences.filter((s) => !s.recovered);
+      return {
+        ...state,
+        dismissed: {
+          id: live.length > 0 ? live[live.length - 1].id : -1,
+          partial: state.partial,
+          pending: new Set(live.filter((s) => s.state === "translating" && s.translation === "").map((s) => s.id)),
+        },
+      };
+    }
     case "segmentation":
       return { ...state, segmentation: { min_silence_ms: ev.min_silence_ms, max_speech_ms: ev.max_speech_ms, reason: ev.reason } };
     case "speaker_merged":
@@ -227,13 +242,16 @@ export function useSubtitles(bus: SubtitleBus = tauriBus) {
     partialSpeaker: null,
     speakers: [],
     segmentation: null,
+    dismissed: null,
   });
   useEffect(() => {
     const a = bus.onPipeline((ev) => dispatch(ev));
     const b = bus.onReset(() => dispatch({ type: "reset" }));
+    const c = bus.onIdle(() => dispatch({ type: "idle" }));
     return () => {
       a();
       b();
+      c();
     };
   }, [bus]);
   return state;

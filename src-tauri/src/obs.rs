@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager, State};
 use tingyi_core::obs::{route, EventLog, Route};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::state::AppState;
 
@@ -27,11 +27,21 @@ pub struct Obs {
     log: Mutex<EventLog>,
     tx: broadcast::Sender<String>,
     server: Mutex<Option<(u16, tokio::task::JoinHandle<()>)>>,
+    /// 每次關閉加 1:已連上的 SSE 連線看到就結束(關掉開關後 OBS 不再收到字幕)。
+    closed: watch::Sender<u64>,
+    /// 開關的開啟流程一次只跑一個(開發版 StrictMode 會同時送兩次)。
+    toggling: tokio::sync::Mutex<()>,
 }
 
 impl Default for Obs {
     fn default() -> Self {
-        Self { log: Mutex::new(EventLog::new(LOG_CAP)), tx: broadcast::channel(512).0, server: Mutex::new(None) }
+        Self {
+            log: Mutex::new(EventLog::new(LOG_CAP)),
+            tx: broadcast::channel(512).0,
+            server: Mutex::new(None),
+            closed: watch::channel(0).0,
+            toggling: tokio::sync::Mutex::new(()),
+        }
     }
 }
 
@@ -76,9 +86,11 @@ pub fn obs_status(state: State<'_, AppState>) -> ObsStatus {
 #[tauri::command]
 pub async fn set_obs_enabled(app: AppHandle, enabled: bool) -> Result<ObsStatus, String> {
     let state = app.state::<AppState>();
+    let _one = state.obs.toggling.lock().await;
     if !enabled {
         if let Some((_, task)) = state.obs.server.lock().unwrap().take() {
             task.abort();
+            state.obs.closed.send_modify(|n| *n += 1);
         }
         return Ok(status(&state.obs));
     }
@@ -99,7 +111,11 @@ pub async fn set_obs_enabled(app: AppHandle, enabled: bool) -> Result<ObsStatus,
     let app2 = app.clone();
     let task = tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { continue };
+            let Ok((stream, _)) = listener.accept().await else {
+                // 資源暫時用盡等持續性錯誤:稍等再收,不空轉
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            };
             let app = app2.clone();
             tokio::spawn(async move {
                 if let Err(e) = serve(&app, stream).await {
@@ -108,14 +124,7 @@ pub async fn set_obs_enabled(app: AppHandle, enabled: bool) -> Result<ObsStatus,
             });
         }
     });
-    let mut g = state.obs.server.lock().unwrap();
-    // 兩次快速按開關:後到的那個收掉自己,保留先開好的
-    if g.is_some() {
-        task.abort();
-    } else {
-        *g = Some((port, task));
-    }
-    drop(g);
+    *state.obs.server.lock().unwrap() = Some((port, task));
     Ok(status(&state.obs))
 }
 
@@ -192,6 +201,7 @@ async fn events(app: &AppHandle, mut stream: TcpStream) -> std::io::Result<()> {
     stream
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n")
         .await?;
+    let mut closed = app.state::<AppState>().obs.closed.subscribe();
     let (snapshot, mut rx) = app.state::<AppState>().obs.subscribe();
     let mut out = format!("data: {RESET}\n\n");
     for line in snapshot {
@@ -216,6 +226,8 @@ async fn events(app: &AppHandle, mut stream: TcpStream) -> std::io::Result<()> {
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
             _ = beat.tick() => stream.write_all(b": ping\n\n").await?,
+            // 使用者關掉直播開關
+            _ = closed.changed() => return Ok(()),
         }
     }
 }

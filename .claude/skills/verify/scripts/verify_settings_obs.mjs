@@ -257,6 +257,7 @@ async function main() {
 
   // ── 3. 開 OBS 網址 ──
   await tab('settings');
+  await waitFor(async () => ({ ok: await js(`document.querySelector('[data-role=obs-toggle]')?.disabled === false`) }), 10_000, 200);
   await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
   const urlR = await waitFor(async () => {
     const u = await js(`document.querySelector('[data-role=obs-url-history]')?.value ?? ''`);
@@ -277,14 +278,25 @@ async function main() {
   const edgeDir = mkdtempSync(path.join('D:\\tingyi-verify-tmp', 'edge-'));
   edgeProc = spawn(EDGE, ['--headless=new', `--remote-debugging-port=${EDGE_PORT}`, `--user-data-dir=${edgeDir}`, '--no-first-run', 'about:blank'], { stdio: 'ignore', windowsHide: true });
   await tab('main');
+  // TTS 會循環唸;音訊來源只聽它(不受電腦上其他聲音影響),之後關掉它就是「沒聲音」
+  const linesFile = path.join(OUT, 'tts-lines.txt');
+  writeFileSync(linesFile, ['Good evening everyone, welcome back to the stream.', 'Today we are going to try a brand new strategy.', 'Thank you so much for watching, see you tomorrow.'].join('\n'));
+  ttsProc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, '.claude', 'skills', 'verify', 'scripts', 'tts-window.ps1'), '-Lines', linesFile, '-GapMs', '1500'], { stdio: 'ignore', windowsHide: true });
+  const srcSelect = `[...document.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value.startsWith('win:') || o.value === 'system'))`;
+  const ttsOpt = await waitFor(async () => {
+    await js(`(() => { const b = document.querySelector('button[aria-label="重新整理程式清單"]'); b && b.click(); return true; })()`);
+    await sleep(1500);
+    const v = await js(`[...${srcSelect}.options].find((o) => o.textContent.includes('[powershell.exe]: tingyi verify TTS'))?.value ?? ''`);
+    return { ok: !!v, v };
+  }, 30_000, 500);
+  if (!check('音訊來源清單有 TTS 視窗', ttsOpt.ok)) return;
+  await js(`(() => { const s = ${srcSelect}; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(ttsOpt.v)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(1000);
   await js(`${startBtn}.click(), true`);
   const running = await waitFor(async () => ({ ok: await js(`!![...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '停止')`) }), 180_000, 500);
   if (!check('按開始後進入執行中', running.ok, `${Math.round(running.ms / 1000)}s`)) return;
-  const linesFile = path.join(OUT, 'tts-lines.txt');
-  writeFileSync(linesFile, ['Good evening everyone, welcome back to the stream.', 'Today we are going to try a brand new strategy.', 'Thank you so much for watching, see you tomorrow.'].join('\n'));
   const sseP = sseFor(`${base}/events`, 45_000);
   const hist = await edgePage(`${base}/history?n=6&size=26`);
-  ttsProc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, '.claude', 'skills', 'verify', 'scripts', 'tts-window.ps1'), '-Lines', linesFile, '-GapMs', '1500'], { stdio: 'ignore', windowsHide: true });
   const histJs = (e) => hist.evalJs(e);
   const got = await waitFor(async () => {
     const n = await histJs(`[...document.querySelectorAll('[data-role=translation]')].filter((x) => x.textContent && x.textContent !== '…').length`);
@@ -307,6 +319,15 @@ async function main() {
   }, 15_000);
   check('OBS /subtitle:顯示字幕', sub.ok, (sub.t || '').replace(/\n/g, ' / '));
   await screenshot(hist, '05-obs-subtitle.png');
+  // 講完之後(預設 3 秒沒聲音)字幕收起;這時 OBS 重新整理來源,重播完仍應是收起狀態
+  killTree(ttsProc?.pid, 'TTS powershell(停止說話)');
+  const idle1 = await waitFor(async () => ({ ok: (await histJs(`document.querySelector('[data-role=overlay-content]')?.dataset.idle`)) === '1' }), 40_000, 500);
+  check('OBS /subtitle:講完後字幕收起', idle1.ok, `${Math.round(idle1.ms / 1000)}s`);
+  await hist.send('Page.reload', {});
+  await sleep(2000);
+  const idle2 = await waitFor(async () => ({ ok: (await histJs(`document.querySelector('[data-role=overlay-content]')?.dataset.idle`)) === '1' }), 5_000, 300);
+  check('OBS /subtitle:閒置中重新整理後仍是收起(不卡住上一句)', idle2.ok);
+  await screenshot(hist, '05b-obs-subtitle-idle-reload.png');
   const sse = await sseP;
   const types = sse.map((l) => {
     try {
@@ -318,6 +339,16 @@ async function main() {
   check('/events 第一則是 reset,之後有原文與譯文事件', types[0] === 'reset' && types.some((t) => /transcript/.test(t)) && types.some((t) => /translation/.test(t)), [...new Set(types)].join(','));
   writeFileSync(path.join(OUT, 'sse-sample.txt'), sse.slice(0, 80).join('\n'));
   await screenshot(ui, '06-main-running.png');
+  // 關掉直播開關:已連上的 OBS 連線要斷,不再收到字幕
+  const t0 = Date.now();
+  const openConn = sseFor(`${base}/events`, 20_000).then(() => Date.now() - t0);
+  await sleep(1000);
+  await tab('settings');
+  await waitFor(async () => ({ ok: await js(`document.querySelector('[data-role=obs-toggle]')?.checked === true`) }), 10_000, 200);
+  await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
+  const endedMs = await openConn;
+  check('關掉直播開關後,已連上的 /events 連線 5 秒內結束', endedMs < 6000, `${endedMs} ms`);
+  await tab('main');
 
   await js(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '停止').click(), true`);
   const stopped = await waitFor(async () => ({ ok: await js(`!!${startBtn}`) }), 60_000);
