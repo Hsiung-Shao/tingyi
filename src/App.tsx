@@ -303,7 +303,6 @@ export default function App() {
         !info.vad_ready && "VAD 語音偵測",
         translate && !info.llama_server_ready && "llama.cpp 翻譯伺服器",
         engine && !engine.present && `${engine.label} 的模型`,
-        cohereNoLang && "語言設定(Cohere 要指定日/英/韓)",
       ].filter(Boolean)
     : [];
 
@@ -486,9 +485,11 @@ export default function App() {
               </button>
             )}
           </section>
-          {!running && missing.length > 0 && (
+          {!running && (missing.length > 0 || cohereNoLang) && (
             <p className="text-amber-400 text-xs -mt-2" data-role="start-missing">
-              還不能開始:缺少{missing.join("、")}。請在上方「辨識引擎」與「翻譯模型」下的下載卡下載。
+              還不能開始:
+              {missing.length > 0 && `缺少${missing.join("、")}。請在上方「辨識引擎」與「翻譯模型」下的下載卡下載。`}
+              {cohereNoLang && "Cohere 要在「來源語言」選 en、ja 或 ko。"}
             </p>
           )}
 
