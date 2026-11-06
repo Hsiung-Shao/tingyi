@@ -137,11 +137,12 @@ pub fn whisper_server_exe() -> PathBuf {
     whisper_server_exe_in(&bin_dir())
 }
 
-/// 自己編譯的放 `bin/whisper/`;app 內下載的官方 zip 解在 `bin/whisper/Release/`。都沒有回前者。
+/// 自己編譯的放 `bin/whisper/`;app 內下載的官方 zip 解在 `bin/whisper/Release/`(要有解壓完成標記,解到一半不算)。都沒有回前者。
 pub fn whisper_server_exe_in(bin: &Path) -> PathBuf {
-    let own = bin.join("whisper").join("whisper-server.exe");
-    let official = bin.join("whisper").join("Release").join("whisper-server.exe");
-    if !own.is_file() && official.is_file() {
+    let dir = bin.join("whisper");
+    let own = dir.join("whisper-server.exe");
+    let official = dir.join("Release").join("whisper-server.exe");
+    if !own.is_file() && official.is_file() && dir.join(crate::model_download::UNZIP_DONE_MARKER).is_file() {
         official
     } else {
         own

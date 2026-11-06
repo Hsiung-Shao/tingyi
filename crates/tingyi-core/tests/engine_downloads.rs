@@ -202,8 +202,10 @@ fn e3_official_whisper_in_release_subfolder_is_ready() {
 fn e10_official_whisper_without_unzip_marker_is_not_ready() {
     let tmp = Tmp::new();
     let data = tmp.path();
-    touch(&data.join("bin").join("whisper").join("Release").join("whisper-server.exe"));
+    let official = data.join("bin").join("whisper").join("Release").join("whisper-server.exe");
+    touch(&official);
     assert!(!package_usable(&WHISPER_SERVER, data));
+    assert_ne!(whisper_server_exe_in(&data.join("bin")), official, "啟動也不該用解到一半的 exe");
 }
 
 // E4:自己編的 whisper-server.exe 放在 bin/whisper 照舊就緒;兩處都沒有則不就緒

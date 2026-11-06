@@ -381,10 +381,10 @@ pub const COHERE: ModelSpec = ModelSpec {
     ready_marker: None,
 };
 
-/// 下拉選單引擎各自要下載的套件(SenseVoice 靠基本模型、專用模型有自己的卡)。
 /// 壓縮檔全部解完才寫的標記檔(放在解壓目錄);解到一半被中斷時沒有它,就緒判斷才不會誤認。
 pub const UNZIP_DONE_MARKER: &str = ".unzip-done";
 
+/// 下拉選單引擎各自要下載的套件(SenseVoice 靠基本模型、專用模型有自己的卡)。
 pub const ENGINE_PACKAGES: &[ModelSpec] = &[WHISPER_SERVER, WHISPER_TURBO, QWEN3_06B, QWEN3_17B, COHERE];
 
 pub fn engine_packages(engine: &str) -> Vec<&'static ModelSpec> {
@@ -997,6 +997,8 @@ fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), Do
     }
     // 壓縮檔留在目錄裡(就緒判斷要看它的大小),內容解到同一個目錄
     if spec.unzip {
+        // 舊標記先拿掉:這次解到一半中斷時才不會被當成解完
+        let _ = fs::remove_file(final_dir.join(UNZIP_DONE_MARKER));
         for f in spec.files.iter().filter(|f| f.name.ends_with(".zip")) {
             extract_zip(&final_dir.join(f.name), &final_dir).map_err(io_err)?;
         }
@@ -1018,10 +1020,8 @@ pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
         let dir = data_dir.join("models").join(SENSEVOICE.dir_name);
         SENSEVOICE.files.iter().all(|f| dir.join(f.name).is_file())
     } else if spec.id == WHISPER_SERVER.id {
-        // 自己編的放 bin/whisper/;官方 zip 解在 bin/whisper/Release/,要解壓完成標記才算(解到一半不算)
-        let dir = data_dir.join("bin").join("whisper");
-        dir.join("whisper-server.exe").is_file()
-            || (dir.join("Release").join("whisper-server.exe").is_file() && dir.join(UNZIP_DONE_MARKER).is_file())
+        // 與實際啟動用同一個路徑判斷(自編版或解壓完成的官方版)
+        crate::paths::whisper_server_exe_in(&data_dir.join("bin")).is_file()
     } else if spec.id == SILERO_VAD.id || spec.id == SPEAKER.id || spec.id == WHISPER_TURBO.id {
         // 下載腳本放在 models 根目錄,app 內下載放在子資料夾:兩處都算
         crate::paths::find_model_file(&data_dir.join("models"), spec.dir_name, spec.files[0].name).is_file()
