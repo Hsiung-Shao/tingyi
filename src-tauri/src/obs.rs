@@ -170,9 +170,12 @@ async fn file(app: &AppHandle, mut stream: TcpStream, path: &str, dev: bool) -> 
     if dev {
         return proxy_vite(stream, path).await;
     }
-    match app.asset_resolver().get(path.to_string()) {
-        Some(a) => respond(&mut stream, "200 OK", &a.mime_type, &a.bytes).await,
-        None => respond(&mut stream, "404 Not Found", "text/plain", b"not found").await,
+    let resolver = app.asset_resolver();
+    // 找不到時 Tauri 會退回主視窗的 index.html;那不是這裡要的檔,當 404
+    let index = resolver.get("index.html".to_string()).map(|a| a.bytes);
+    match resolver.get(path.to_string()) {
+        Some(a) if Some(&a.bytes) != index.as_ref() => respond(&mut stream, "200 OK", &a.mime_type, &a.bytes).await,
+        _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found").await,
     }
 }
 
