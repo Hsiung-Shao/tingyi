@@ -27,6 +27,9 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tauri-plugin-dialog = "2"
+# 自動更新(簽章驗證、下載、NSIS 安裝)。不用預設的 rustls-tls:它開 reqwest 的 rustls-no-provider,
+# 功能合併後 tingyi-core 的翻譯 HTTP client 建立時會 panic(沒有 crypto provider);改用 native-tls
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy"] }
 winreg = "0.55"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
 

@@ -7,7 +7,8 @@ import type { Info, OverlayMode, Prefs, Sensitivity, Sentence } from "./lib/type
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
-import SettingsPage from "./SettingsPage";
+import SettingsPage, { type Section } from "./SettingsPage";
+import { UpdateHint, useUpdater } from "./Updater";
 import WebTranslateCard from "./WebTranslateCard";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
@@ -42,6 +43,8 @@ export default function App() {
   const [refine, setRefine] = useState(true);
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
   const [tab, setTab] = useState<"main" | "settings">("main");
+  const [settingsSection, setSettingsSection] = useState<Section>("translate");
+  const updater = useUpdater();
 
   const applySegmentation = async (s: Sensitivity, a: boolean, m: string = maxSpeech) => {
     setSensitivity(s);
@@ -356,7 +359,17 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <span className="ml-auto text-neutral-300 truncate max-w-[50%]" title={status}>
+        <span className="ml-auto">
+          <UpdateHint
+            u={updater}
+            running={running}
+            onOpen={() => {
+              setTab("settings");
+              setSettingsSection("about");
+            }}
+          />
+        </span>
+        <span className="text-neutral-300 truncate max-w-[50%]" title={status}>
           {status}
         </span>
       </header>
@@ -365,6 +378,9 @@ export default function App() {
       <div className={tab === "settings" ? "flex flex-1 min-h-0" : "hidden"}>
         <SettingsPage
           sentences={sentences}
+          section={settingsSection}
+          onSection={setSettingsSection}
+          updater={updater}
           info={info}
           running={running}
           model={model}

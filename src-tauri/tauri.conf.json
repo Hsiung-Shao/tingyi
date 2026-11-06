@@ -61,6 +61,18 @@
           "TradChinese"
         ]
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2OURDODBBMEY4MjMwOEYKUldTUE1JSVBDc2lkZGxPMEcrOFdIMTRXb3JJYlhEeVBHTC9LUmNiQ0hOTXdSLzVxWnlZU04yeG4K",
+      "endpoints": [
+        "https://github.com/Hsiung-Shao/tingyi/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

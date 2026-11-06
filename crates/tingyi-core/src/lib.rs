@@ -24,6 +24,7 @@ pub mod export;
 pub mod eval;
 pub mod model_download;
 pub mod obs;
+pub mod update;
 pub mod paths;
 pub mod llama;
 pub mod job;

@@ -2,8 +2,9 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, ModelCard, PackageRow, usePackages, type PackageCommand, type PackageView } from "./Packages";
 import type { Info, ObsStatus, Sentence } from "./lib/types";
+import { AboutSection, type Updater } from "./Updater";
 
-type Section = "translate" | "recog" | "live";
+export type Section = "translate" | "recog" | "live" | "about";
 
 interface Props {
   info: Info | null;
@@ -15,15 +16,18 @@ interface Props {
   onChanged: () => void;
   /** 直播區預覽用:目前的字幕紀錄 */
   sentences: Sentence[];
+  /** 目前顯示哪一類(App 持有:標題列「有新版」要能直接跳到「關於與更新」) */
+  section: Section;
+  onSection: (s: Section) => void;
+  updater: Updater;
 }
 
 /** 「設定」分頁:左側分類導覽,右側該類的卡片。選用等同字幕頁的下拉選單,下次按「開始」時載入。
  *  三類都保持掛載(只藏起來),切換時下載進度與完成通知不會中斷。 */
 export default function SettingsPage(props: Props) {
-  const { info, running, model, onModel, asrEngine, onAsrEngine, onChanged, sentences } = props;
+  const { info, running, model, onModel, asrEngine, onAsrEngine, onChanged, sentences, section, onSection: setSection, updater } = props;
   // 直播預覽只要最後兩句;設定頁常駐掛載,其他區塊不跟著每個譯文 token 重繪(下面兩區用 memo)
   const recent = useMemo(() => sentences.filter((s) => !s.recovered).slice(-2), [sentences]);
-  const [section, setSection] = useState<Section>("translate");
   const [obs, setObs] = useState<ObsStatus | null>(null);
   const translate = usePackages("translate_packages_status", undefined, running, onChanged);
   const base = usePackages("base_packages_status", undefined, running, onChanged);
@@ -34,6 +38,7 @@ export default function SettingsPage(props: Props) {
     { key: "translate", label: "翻譯模型", meta: `${mtModels.filter((v) => v.m.ready).length} / ${mtModels.length}` },
     { key: "recog", label: "辨識", meta: `${engines.filter((e) => e.present).length} / ${engines.length}` },
     { key: "live", label: "直播(OBS)", meta: obs?.enabled ? "開啟" : "關閉", metaOn: obs?.enabled },
+    { key: "about", label: "關於與更新", meta: updater.info ? "有新版" : updater.current, metaOn: !!updater.info },
   ];
 
   return (
@@ -65,6 +70,9 @@ export default function SettingsPage(props: Props) {
         </div>
         <div className={section === "live" ? "" : "hidden"}>
           <LiveSection recent={recent} onStatus={setObs} />
+        </div>
+        <div className={section === "about" ? "" : "hidden"}>
+          <AboutSection u={updater} running={running} />
         </div>
         {(translate.finishedWhileRunning || base.finishedWhileRunning) && (
           <p className="mt-4 text-xs text-amber-400">下載完成,下次按「開始」時生效。</p>

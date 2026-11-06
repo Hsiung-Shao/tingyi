@@ -3,6 +3,7 @@
 
 mod commands;
 mod obs;
+mod update;
 pub mod listen;
 pub mod native_host;
 pub mod register;
@@ -56,7 +57,9 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| handle_args(app, &args)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state::AppState::default())
+        .manage(update::PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_info,
             commands::start_session,
@@ -88,6 +91,9 @@ pub fn run() {
             commands::save_prefs,
             obs::obs_status,
             obs::set_obs_enabled,
+            update::app_version,
+            update::check_update,
+            update::install_update,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。
