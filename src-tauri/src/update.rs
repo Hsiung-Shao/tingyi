@@ -44,6 +44,8 @@ pub async fn check_update(app: AppHandle, dismissed: Option<String>) -> Result<O
     let mut builder = app.updater_builder().on_before_exit(move || {
         app_exit.state::<AppState>().shutdown_blocking();
         crate::web::remove_runtime_file();
+        // 這個 hook 會取代外掛預設的 hook,預設那步(收系統匣圖示、藏視窗)要自己補
+        app_exit.cleanup_before_exit();
     });
     if let Some(url) = endpoint_override(std::env::var("TINGYI_UPDATE_ENDPOINT").ok().as_deref()) {
         let url = tauri::Url::parse(&url).map_err(|e| e.to_string())?;

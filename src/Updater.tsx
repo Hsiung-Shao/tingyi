@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Badge } from "./Packages";
@@ -30,6 +30,7 @@ export function useUpdater() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<{ done: number; total: number | null }>({ done: 0, total: null });
+  const installing = useRef(false);
 
   const check = useCallback(async (manual: boolean) => {
     setPhase("checking");
@@ -56,6 +57,9 @@ export function useUpdater() {
   }, [check]);
 
   const install = async () => {
+    // 連按兩下不開第二個下載
+    if (installing.current) return;
+    installing.current = true;
     setPhase("downloading");
     setError("");
     setProgress({ done: 0, total: null });
@@ -65,6 +69,8 @@ export function useUpdater() {
     } catch (e) {
       setPhase("error");
       setError(String(e));
+    } finally {
+      installing.current = false;
     }
   };
 
