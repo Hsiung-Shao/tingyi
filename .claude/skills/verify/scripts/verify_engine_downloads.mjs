@@ -164,6 +164,7 @@ async function main() {
   const engineSelect = `[...document.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'whisper-turbo'))`;
   const choose = (id) =>
     js(`(() => { const s = ${engineSelect}; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, '${id}'); s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()`);
+  const tab = (k) => js(`document.querySelector('[data-tab=${k}]').click(), true`);
   const status = () => js(`document.querySelector('header span[title]')?.textContent ?? ''`);
 
   // 先關掉本機翻譯(這個旅程只驗辨識引擎;翻譯伺服器的下載另有旅程)
@@ -176,13 +177,15 @@ async function main() {
   // ── 1. 每個引擎:選了就出現對應下載卡、開始不能按;下載到已下載 ──
   for (const e of ENGINES) {
     await choose(e.id);
-    const card = await waitFor(async () => ({ ok: await js(`${JSON.stringify(e.ids)}.every((id) => !!document.querySelector('[data-group=engine] [data-model-id="' + id + '"]'))`) }), 30_000);
-    check(`選 ${e.id}:下方出現它的下載卡`, card.ok);
     const blocked = await waitFor(async () => {
       const h = await hint();
       return { ok: (await js(`!!${startBtn} && ${startBtn}.disabled`)) && /的模型/.test(h), h };
     }, 15_000);
     check(`選 ${e.id}:沒下載前「開始」不能按並說缺模型`, blocked.ok, blocked.h);
+    // 下載卡在「設定」分頁,每個引擎一區
+    await tab('settings');
+    const card = await waitFor(async () => ({ ok: await js(`${JSON.stringify(e.ids)}.every((id) => !!document.querySelector('[data-engine="${e.id}"] [data-model-id="' + id + '"]'))`) }), 30_000);
+    check(`${e.id}:設定頁有它的下載卡`, card.ok);
     await screenshot(ui, `01-${e.id}-card.png`);
     for (const id of e.ids) {
       await js(`(() => { const b = [...document.querySelectorAll('[data-model-id="${id}"] button')].find((x) => /下載|繼續/.test(x.textContent)); b && b.click(); return !!b; })()`);
@@ -196,6 +199,7 @@ async function main() {
     const missingFiles = e.files.filter((f) => !existsSync(path.join(DATA, f)));
     check(`${e.id}:檔案在預期位置`, !missingFiles.length, missingFiles.join(', ') || e.files.join(', '));
     await screenshot(ui, `02-${e.id}-downloaded.png`);
+    await tab('main');
   }
 
   // ── 2. 每個引擎實際開始一次(Cohere 先指定語言) ──

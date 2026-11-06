@@ -2,6 +2,7 @@
 //! 也兼任瀏覽器擴充的 native messaging host(見 `web.rs`)。
 
 mod commands;
+mod obs;
 pub mod listen;
 pub mod native_host;
 pub mod register;
@@ -85,6 +86,8 @@ pub fn run() {
             commands::set_web_model,
             commands::get_prefs,
             commands::save_prefs,
+            obs::obs_status,
+            obs::set_obs_enabled,
         ])
         .setup(|app| {
             // 懸浮字幕視窗預設滑鼠穿透。

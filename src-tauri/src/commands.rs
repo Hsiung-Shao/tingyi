@@ -235,6 +235,7 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     // 新回合:前端清空上一輪的字幕列表(使用者選擇保留時不清)
     if opts.clear_history.unwrap_or(true) {
         let _ = app.emit("session-start", ());
+        state.obs.reset();
     }
 
     // 回修只在 Whisper 引擎下生效;決定 llama-server 要不要開兩個 slot
@@ -411,7 +412,9 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     let translate_on = translator.is_some();
     // 擴充開的回合由 listen.rs 訂閱,轉給播放器裡的字幕
     let live = state.live.0.clone();
+    let app_obs = app.clone();
     let fwd = tokio::spawn(async move {
+        let obs = &app_obs.state::<AppState>().obs;
         use std::sync::atomic::Ordering;
         use std::time::Instant;
         let mut idle = IdleTracker::new(translate_on, Instant::now());
@@ -422,10 +425,11 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
                     let Some(ev) = ev else { break };
                     idle.on_event(&ev, Instant::now());
                     let _ = app2.emit("pipeline", &ev);
-                    if live.receiver_count() > 0 {
-                        if let Ok(line) = serde_json::to_string(&ev) {
-                            let _ = live.send(line);
+                    if let Ok(line) = serde_json::to_string(&ev) {
+                        if live.receiver_count() > 0 {
+                            let _ = live.send(line.clone());
                         }
+                        obs.push(line);
                     }
                 }
                 _ = tick.tick() => {
@@ -436,6 +440,7 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
                     if idle.poll(Instant::now(), hide, speaking, silence, packets) {
                         let _ = app2.emit("subtitle-idle", ());
                         let _ = live.send(r#"{"type":"idle"}"#.to_string());
+                        obs.push(r#"{"type":"idle"}"#.to_string());
                     }
                 }
             }
@@ -575,6 +580,8 @@ pub struct RoutedModelState {
     pub done: u64,
     pub license: String,
     pub license_url: String,
+    /// 翻譯模型:對應的模型名稱(`KNOWN_MT_MODELS` 的名稱,設定頁「使用這個」用);其他套件為 None。
+    pub gguf: Option<String>,
 }
 
 /// 專用模型的就緒與下載狀態;只讀檔案大小,不呼叫 nvidia-smi(前端掛載與重載時查一次)。
@@ -623,6 +630,7 @@ async fn packages_status(
                     done: snapshot.map(|(d, _)| d).unwrap_or_else(|| total.saturating_sub(md::bytes_needed(m, &dir))),
                     license: m.license.into(),
                     license_url: m.license_url.into(),
+                    gguf: (m.files.len() == 1).then(|| m.files[0].name.strip_suffix(".gguf")).flatten().map(str::to_string),
                 }
             })
             .collect()

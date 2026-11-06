@@ -7,7 +7,7 @@ import type { Info, OverlayMode, Prefs, Sensitivity, Sentence } from "./lib/type
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
-import RoutedModels from "./RoutedModels";
+import SettingsPage, { restoreObs } from "./SettingsPage";
 import WebTranslateCard from "./WebTranslateCard";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
@@ -41,6 +41,7 @@ export default function App() {
   const [speakerId, setSpeakerId] = useState(true);
   const [refine, setRefine] = useState(true);
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
+  const [tab, setTab] = useState<"main" | "settings">("main");
 
   const applySegmentation = async (s: Sensitivity, a: boolean, m: string = maxSpeech) => {
     setSensitivity(s);
@@ -137,6 +138,7 @@ export default function App() {
 
   useEffect(() => {
     refreshInfo();
+    restoreObs();
     const un = listen<string>("status", (e) => setStatus(e.payload));
     // 後端停止時會自動退出拖曳模式,按鈕狀態跟著同步
     const un2 = listen<boolean>("overlay-interactive", (e) => setUnlocked(e.payload));
@@ -289,12 +291,14 @@ export default function App() {
 
   const engine = info?.asr_engines.find((e) => e.id === asrEngine);
   const cohereNoLang = asrEngine === "cohere" && lang === "auto";
+  const mtModel = info?.models.find((m) => m.name === model);
   const ready =
     info &&
     info.sensevoice_ready &&
     info.vad_ready &&
     (!translate || info.llama_server_ready) &&
     (engine?.present ?? true) &&
+    (!translate || (mtModel?.present ?? true)) &&
     !cohereNoLang;
   // 「開始」不能按時直接說缺什麼(新電腦第一次使用常見)
   const missing = info
@@ -302,6 +306,7 @@ export default function App() {
         !info.sensevoice_ready && "SenseVoice 辨識模型",
         !info.vad_ready && "VAD 語音偵測",
         translate && !info.llama_server_ready && "llama.cpp 翻譯伺服器",
+        translate && mtModel && !mtModel.present && `${model} 翻譯模型`,
         engine && !engine.present && `${engine.label} 的模型`,
       ].filter(Boolean)
     : [];
@@ -330,12 +335,44 @@ export default function App() {
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
         <h1 className="text-lg font-semibold tracking-wide">聽譯</h1>
         <span className="text-neutral-400">技術驗證版</span>
+        <nav className="flex gap-1 ml-4" data-role="tabs">
+          {(
+            [
+              ["main", "字幕"],
+              ["settings", "設定"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              data-tab={k}
+              className={`rounded px-3 py-1 ${tab === k ? "bg-neutral-700 text-white" : "text-neutral-400 hover:bg-neutral-800"}`}
+              onClick={() => setTab(k)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
         <span className="ml-auto text-neutral-300 truncate max-w-[50%]" title={status}>
           {status}
         </span>
       </header>
 
-      <div className="flex flex-1 min-h-0">
+      {tab === "settings" && (
+        <SettingsPage
+          info={info}
+          running={running}
+          model={model}
+          onModel={(m) => {
+            setModel(m);
+            setTranslate(true);
+          }}
+          asrEngine={asrEngine}
+          onAsrEngine={setAsrEngine}
+          onChanged={refreshInfo}
+        />
+      )}
+      {/* 切到設定時只藏起來,不卸載:紀錄捲動位置與輸入框內容保留 */}
+      <div className={tab === "main" ? "flex flex-1 min-h-0" : "hidden"}>
         {/* 左:控制 */}
         <aside className="w-[320px] shrink-0 border-r border-neutral-800 p-4 flex flex-col gap-4 overflow-y-auto">
           <AudioSourcePicker running={running} />
@@ -353,7 +390,7 @@ export default function App() {
               disabled={running || !translate}
             >
               {info?.models.map((m) => (
-                <option key={m.name} value={m.name} disabled={!m.present}>
+                <option key={m.name} value={m.name}>
                   {m.name} {m.present ? `(${(m.size_mb / 1000).toFixed(1)} GB)` : "(未下載)"} — {m.note}
                 </option>
               ))}
@@ -398,7 +435,9 @@ export default function App() {
             {targetLang !== "zh-TW" && !model.startsWith("Hy-MT2") && (
               <p className="text-amber-400 text-xs">這個模型只能譯成繁體中文,開始時會改用繁體中文。</p>
             )}
-            <RoutedModels group="translate" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+            {translate && info && (!info.llama_server_ready || (mtModel && !mtModel.present)) && (
+              <GoSettings onClick={() => setTab("settings")} what="翻譯伺服器或這個模型還沒下載" />
+            )}
           </section>
 
           <WebTranslateCard models={info?.models ?? []} />
@@ -418,12 +457,8 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <RoutedModels group="base" running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
-            {asrEngine === "routed" ? (
-              <RoutedModels running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
-            ) : (
-              // 換引擎就重新掛載:別的引擎下載中的進度不會殘留成假的「下載中」
-              <RoutedModels key={asrEngine} group="engine" engine={asrEngine} running={running} dataDir={info?.data_dir} onChanged={refreshInfo} />
+            {info && (!info.sensevoice_ready || !info.vad_ready || (engine && !engine.present)) && (
+              <GoSettings onClick={() => setTab("settings")} what="辨識模型還沒下載" />
             )}
           </section>
 
@@ -489,7 +524,7 @@ export default function App() {
           {!running && (missing.length > 0 || cohereNoLang) && (
             <p className="text-amber-400 text-xs -mt-2" data-role="start-missing">
               還不能開始:
-              {missing.length > 0 && `缺少${missing.join("、")}。請在上方「辨識引擎」與「翻譯模型」下的下載卡下載。`}
+              {missing.length > 0 && `缺少${missing.join("、")}。請到「設定」分頁下載。`}
               {cohereNoLang && "Cohere 要在「來源語言」選 en、ja 或 ko。"}
             </p>
           )}
@@ -696,6 +731,14 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+function GoSettings({ what, onClick }: { what: string; onClick: () => void }) {
+  return (
+    <button className="text-left text-amber-400 text-xs hover:underline" data-role="go-settings" onClick={onClick}>
+      {what},到「設定」下載 →
+    </button>
   );
 }
 

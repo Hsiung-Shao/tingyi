@@ -157,8 +157,12 @@ async function main() {
     return { ok: (await js(`!!${startBtn} && ${startBtn}.disabled`)) && /SenseVoice/.test(h) && /VAD/.test(h), h };
   }, 60_000);
   check('全新資料目錄:開始不能按,提示缺 SenseVoice 與 VAD', blocked.ok, blocked.h);
+  // 下載卡在「設定」分頁;左欄只有一行連結
+  const goSet = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-role=go-settings]')`) }), 15_000);
+  check('左欄提示到「設定」下載', goSet.ok);
+  await js(`document.querySelector('[data-tab=settings]').click(), true`);
   const cards = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-model-id=sensevoice]') && !!document.querySelector('[data-model-id=silero-vad]')`) }), 30_000);
-  check('辨識引擎下方出現「辨識基本模型」下載卡', cards.ok);
+  check('設定頁出現「辨識基本模型」下載卡', cards.ok);
   await screenshot(ui, '01-fresh-blocked.png');
 
   // ── 2. 在 app 內下載 SenseVoice 與 VAD ──
@@ -173,6 +177,7 @@ async function main() {
   const vadFile = path.join(DATA, 'models', 'silero-vad', 'silero_vad.onnx');
   check('模型檔放在預期位置且大小正確', existsSync(svFile) && statSync(svFile).size === 239233841 && existsSync(vadFile) && statSync(vadFile).size === 643854, `${svFile} / ${vadFile}`);
   await screenshot(ui, '02-downloaded.png');
+  await js(`document.querySelector('[data-tab=main]').click(), true`);
 
   // ── 3. 只剩翻譯伺服器沒下載;關掉本機翻譯後就能開始 ──
   const left = await waitFor(async () => {

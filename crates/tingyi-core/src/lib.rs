@@ -23,6 +23,7 @@ pub mod refine;
 pub mod export;
 pub mod eval;
 pub mod model_download;
+pub mod obs;
 pub mod paths;
 pub mod llama;
 pub mod job;

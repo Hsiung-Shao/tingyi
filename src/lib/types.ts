@@ -224,6 +224,14 @@ export interface RoutedModelState {
   done: number;
   license: string;
   license_url: string;
+  /** 翻譯模型的名稱(設定頁「使用這個」用);其他套件為 null */
+  gguf: string | null;
+}
+
+/** 直播用網址(OBS 瀏覽器來源)的狀態。 */
+export interface ObsStatus {
+  enabled: boolean;
+  port: number | null;
 }
 
 /** `model-download` 事件。 */

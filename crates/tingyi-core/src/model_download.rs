@@ -54,8 +54,8 @@ impl ModelSpec {
     /// 有 `url_base` 的套件(GitHub Releases)固定用 `{url_base}/{name}`。
     pub fn url(&self, base: &str, file: &FileSpec) -> String {
         match self.url_base {
-            Some(u) => format!("{}/{}", u.trim_end_matches('/'), file.name),
-            None => format!("{}/{}/resolve/{}/{}", base.trim_end_matches('/'), self.repo, self.commit, file.name),
+            Some(u) => format!("{}/{}", u.trim_end_matches('/'), remote_name(file.name)),
+            None => format!("{}/{}/resolve/{}/{}", base.trim_end_matches('/'), self.repo, self.commit, remote_name(file.name)),
         }
     }
 }
@@ -200,8 +200,160 @@ pub const HY_MT2_1_8B: ModelSpec = ModelSpec {
     ready_marker: None,
 };
 
+/// 其他翻譯模型(與 `scripts/download-models.ps1` 的 -WithSakura、-WithCandidates、-With7B 相同來源與 SHA256)。
+/// 本機檔名沿用下載腳本與 `KNOWN_MT_MODELS`,裝在 `models/<dir_name>/`(`paths::find_gguf` 會找一層子資料夾)。
+pub const HY_MT2_1_8B_Q4: ModelSpec = ModelSpec {
+    id: "hy-mt2-1.8b-q4",
+    lang: Lang::Unknown,
+    label: "Hy-MT2 1.8B Q4 翻譯模型(輕量)",
+    // 與 Q8 分開:同一個資料夾會共用下載暫存區
+    dir_name: "hy-mt2-1.8b-q4",
+    repo: "tencent/Hy-MT2-1.8B-GGUF",
+    commit: "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+    license: "Apache-2.0(tencent/Hy-MT2)",
+    license_url: "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF",
+    files: &[FileSpec { name: "Hy-MT2-1.8B-Q4_K_M.gguf", size: 1_133_080_448, sha256: "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const HY_MT2_7B: ModelSpec = ModelSpec {
+    id: "hy-mt2-7b",
+    lang: Lang::Unknown,
+    label: "Hy-MT2 7B Q4 翻譯模型(品質優先)",
+    dir_name: "hy-mt2-7b",
+    repo: "tencent/Hy-MT2-7B-GGUF",
+    commit: "ab8472660ac61fac25f1af43fac2599d52a8a775",
+    license: "Apache-2.0(tencent/Hy-MT2)",
+    license_url: "https://huggingface.co/tencent/Hy-MT2-7B-GGUF",
+    files: &[FileSpec { name: "Hy-MT2-7B-Q4_K_M.gguf", size: 4_624_648_896, sha256: "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const SAKURA_7B: ModelSpec = ModelSpec {
+    id: "sakura-7b",
+    lang: Lang::Unknown,
+    label: "Sakura 7B 日→中(禁商用)",
+    dir_name: "sakura-7b",
+    repo: "SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF",
+    commit: "24393225dfab4750c6fb9ec2468fb76ad3d2dd1d",
+    license: "CC BY-NC-SA 4.0(禁商用)",
+    license_url: "https://huggingface.co/SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF",
+    files: &[FileSpec { name: "Sakura-7B-Qwen2.5-v1.0-IQ4_XS.gguf", size: 4_250_298_208, sha256: "30e82ca13bc1e321f4f7b77459d533d483d46200522dc5c31eef9d2f2a6335d6" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const SAKURA_1_5B: ModelSpec = ModelSpec {
+    id: "sakura-1.5b",
+    lang: Lang::Unknown,
+    label: "Sakura 1.5B 日→中小模型(禁商用)",
+    dir_name: "sakura-1.5b",
+    repo: "SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF",
+    commit: "959df27e558735027e0e56b65cda800871973538",
+    license: "CC BY-NC-SA 4.0(禁商用)",
+    license_url: "https://huggingface.co/SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF",
+    files: &[FileSpec { name: "Sakura-1.5B-Qwen2.5-v1.0-F16.gguf", size: 3_560_416_256, sha256: "eb0f76c7d52710329c4071d8fbbef5c51f9a4f047c066472e6c7063a53e45764" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const SEED_X_7B: ModelSpec = ModelSpec {
+    id: "seed-x-7b",
+    lang: Lang::Unknown,
+    label: "Seed-X PPO 7B(ByteDance 28 語)",
+    dir_name: "seed-x-7b",
+    repo: "mradermacher/Seed-X-PPO-7B-GGUF",
+    commit: "c9166f2c073d3219fe22e1f35910a41e666e971f",
+    license: "OpenMDW(ByteDance Seed-X)",
+    license_url: "https://huggingface.co/mradermacher/Seed-X-PPO-7B-GGUF",
+    files: &[FileSpec { name: "Seed-X-PPO-7B-Q4_K_M.gguf", size: 4_557_582_848, sha256: "9202183d5b52a1d80271cfdf20e4bf98fb7430c797a225581cd226ba7ba3cdb1" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const LMT_60_4B: ModelSpec = ModelSpec {
+    id: "lmt-60-4b",
+    lang: Lang::Unknown,
+    label: "LMT-60 4B(NiuTrans 60 語)",
+    dir_name: "lmt-60-4b",
+    repo: "mradermacher/LMT-60-4B-GGUF",
+    commit: "fd76914adb08e4aa076ef7044e0f3b54d5987a5d",
+    license: "Apache-2.0(NiuTrans LMT)",
+    license_url: "https://huggingface.co/mradermacher/LMT-60-4B-GGUF",
+    files: &[FileSpec { name: "LMT-60-4B-Q4_K_M.gguf", size: 2_716_068_544, sha256: "6ab245a422b854b4582401c1240b64c35899fe1c816af059aa23b38ac9707bb4" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const LMT_60_8B: ModelSpec = ModelSpec {
+    id: "lmt-60-8b",
+    lang: Lang::Unknown,
+    label: "LMT-60 8B(NiuTrans 60 語)",
+    dir_name: "lmt-60-8b",
+    repo: "mradermacher/LMT-60-8B-GGUF",
+    commit: "5db5f369e614a63c90c4b3100585ef15a0fe53d0",
+    license: "Apache-2.0(NiuTrans LMT)",
+    license_url: "https://huggingface.co/mradermacher/LMT-60-8B-GGUF",
+    files: &[FileSpec { name: "LMT-60-8B-Q4_K_M.gguf", size: 5_027_783_872, sha256: "2661b6d2ffe0c97df9340851aec6b8a97e92d2619d25d4c13596e4b9fb5bcfc7" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const TRANSLATEGEMMA_4B: ModelSpec = ModelSpec {
+    id: "translategemma-4b",
+    lang: Lang::Unknown,
+    label: "TranslateGemma 4B(Google 55 語)",
+    dir_name: "translategemma-4b",
+    repo: "mradermacher/translategemma-4b-it-GGUF",
+    commit: "d37868f759d2f817a43d28dd80cf9f982ffa62fd",
+    license: "Gemma 授權",
+    license_url: "https://ai.google.dev/gemma/terms",
+    files: &[FileSpec { name: "TranslateGemma-4B-it-Q4_K_M.gguf", size: 2_489_909_760, sha256: "81200d03e843d2ec1ece6eeafe7d13cb6e5211e1fcd336ade55790b683a08330" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+pub const TRANSLATEGEMMA_12B: ModelSpec = ModelSpec {
+    id: "translategemma-12b",
+    lang: Lang::Unknown,
+    label: "TranslateGemma 12B(Google 55 語,品質優先)",
+    dir_name: "translategemma-12b",
+    repo: "mradermacher/translategemma-12b-it-GGUF",
+    commit: "41d7c8aa650b26791225ad9d0597e674e680da96",
+    license: "Gemma 授權",
+    license_url: "https://ai.google.dev/gemma/terms",
+    files: &[FileSpec { name: "TranslateGemma-12B-it-Q4_K_M.gguf", size: 7_300_794_112, sha256: "b7aac4b4be7ab0c49b6556c29c4467e74313df7f1e95d9f9676bb2adf0afa528" }],
+    url_base: None,
+    unzip: false,
+    ready_marker: None,
+};
+
+/// 遠端檔名與本機檔名不同的檔(本機名, 遠端名);本機名沿用下載腳本與 `KNOWN_MT_MODELS`。
+pub const REMOTE_NAMES: &[(&str, &str)] = &[
+    ("Sakura-7B-Qwen2.5-v1.0-IQ4_XS.gguf", "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"),
+    ("Sakura-1.5B-Qwen2.5-v1.0-F16.gguf", "sakura-1.5b-qwen2.5-v1.0-fp16.gguf"),
+    ("Seed-X-PPO-7B-Q4_K_M.gguf", "Seed-X-PPO-7B.Q4_K_M.gguf"),
+    ("LMT-60-4B-Q4_K_M.gguf", "LMT-60-4B.Q4_K_M.gguf"),
+    ("LMT-60-8B-Q4_K_M.gguf", "LMT-60-8B.Q4_K_M.gguf"),
+    ("TranslateGemma-4B-it-Q4_K_M.gguf", "translategemma-4b-it.Q4_K_M.gguf"),
+    ("TranslateGemma-12B-it-Q4_K_M.gguf", "translategemma-12b-it.Q4_K_M.gguf"),
+];
+
+/// 下載網址用的檔名:有登記就用遠端名,否則同本機名。
+pub fn remote_name(local: &str) -> &str {
+    REMOTE_NAMES.iter().find(|(l, _)| *l == local).map_or(local, |(_, r)| r)
+}
+
 /// 翻譯用的套件:llama.cpp 裝在 `bin_dir()`,翻譯模型裝在 `models_dir()`。
-pub const TRANSLATE_PACKAGES: &[ModelSpec] = &[LLAMA_CPP, HY_MT2_1_8B];
+pub const TRANSLATE_PACKAGES: &[ModelSpec] = &[LLAMA_CPP, HY_MT2_1_8B, HY_MT2_1_8B_Q4, HY_MT2_7B, SAKURA_7B, SAKURA_1_5B, SEED_X_7B, LMT_60_4B, LMT_60_8B, TRANSLATEGEMMA_4B, TRANSLATEGEMMA_12B];
+
+/// `KNOWN_MT_MODELS` 的名稱(例 `Sakura-7B-Qwen2.5-v1.0-IQ4_XS`)對應的下載規格。
+pub fn mt_spec_for(name: &str) -> Option<&'static ModelSpec> {
+    let file = format!("{name}.gguf");
+    TRANSLATE_PACKAGES.iter().find(|s| s.files.len() == 1 && s.files[0].name == file)
+}
 
 /// SenseVoice-Small int8(2024-07-17 原版);辨識與即時預覽都靠它,必要。與 `scripts/download-models.ps1` 相同。
 pub const SENSEVOICE: ModelSpec = ModelSpec {
@@ -1012,8 +1164,8 @@ fn install(spec: &ModelSpec, staging: &Path, models_dir: &Path) -> Result<(), Do
 pub fn package_usable(spec: &ModelSpec, data_dir: &Path) -> bool {
     if spec.id == LLAMA_CPP.id {
         data_dir.join("bin").join("llama").join("llama-server.exe").is_file()
-    } else if spec.id == HY_MT2_1_8B.id {
-        let stem = HY_MT2_1_8B.files[0].name.trim_end_matches(".gguf");
+    } else if let Some(stem) = spec.files[0].name.strip_suffix(".gguf").filter(|_| spec.files.len() == 1) {
+        // 翻譯模型:下載腳本放 models 根目錄,app 內下載放子資料夾,兩處都算
         crate::paths::find_gguf(&data_dir.join("models"), stem).is_file()
     } else if spec.id == SENSEVOICE.id {
         // 與主視窗「開始」的條件一致:兩個檔都在就能辨識(下載腳本與 app 內下載放在同一個目錄)
@@ -2013,8 +2165,11 @@ mod tests {
             .captures(&text)
             .map(|c| c[1].to_string())
             .expect("ps1 找不到 $llamaBuild");
-        let re = regex::Regex::new(r#"(?s)Name = ["']([^"']+)["'];.*?Url = ["']([^"']+)["'];.*?Sha256 = '([0-9a-f]{64})'"#).unwrap();
+        // 一項 @{ ... } 內配對,不跨到下一項;-WithCandidates 用 @('名稱', '大小', '網址', '來源', 'sha') 陣列寫法
+        let re = regex::Regex::new(r#"(?s)Name = ["']([^"']+)["'];[^}]*?Url = ["']([^"']+)["'];[^}]*?Sha256 = '([0-9a-f]{64})'"#).unwrap();
+        let cand = regex::Regex::new(r"@\('([^']+)', '[^']*', '([^']+)', '[^']*', '([0-9a-f]{64})'\)").unwrap();
         re.captures_iter(&text)
+            .chain(cand.captures_iter(&text))
             .map(|c| {
                 (
                     c[1].replace("$llamaBuild", &build),
@@ -2025,12 +2180,12 @@ mod tests {
             .collect()
     }
 
-    // T15:LLAMA_CPP、HY_MT2_1_8B 的檔名、網址、SHA256 與下載腳本一致
+    // T15:全部翻譯套件(llama.cpp 與 10 個翻譯模型)的檔名、網址、SHA256 與下載腳本一致
     #[test]
     fn t15_translate_packages_match_download_script() {
         let items = ps1_items();
         assert!(!items.is_empty(), "ps1 沒解析出任何項目");
-        for spec in [&LLAMA_CPP, &HY_MT2_1_8B] {
+        for spec in TRANSLATE_PACKAGES {
             let f = &spec.files[0];
             let (_, url, sha) = items
                 .iter()

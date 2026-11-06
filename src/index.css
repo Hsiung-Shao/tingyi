@@ -3,6 +3,7 @@
 @source "../src";
 @source "../index.html";
 @source "../overlay.html";
+@source "../obs.html";
 
 :root {
   font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;

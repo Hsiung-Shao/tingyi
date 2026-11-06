@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useSubtitles } from "./lib/useSubtitles";
+import { tauriBus, useSubtitles, type SubtitleBus } from "./lib/useSubtitles";
 import { speakerColor } from "./lib/speakerColor";
 import type { OverlayMode, Sentence } from "./lib/types";
 
@@ -19,9 +19,11 @@ function latestShown(list: Sentence[]): Sentence[] {
   return recent;
 }
 
-export default function Overlay() {
-  const { sentences, partial, partialSpeaker, speakers } = useSubtitles();
-  const [mode, setMode] = useState<OverlayMode>("translation");
+/** 懸浮字幕;OBS 的 `/subtitle` 頁也用它(`obs` 給定時:事件走 SSE、模式與字級由網址參數決定,不聽主視窗)。 */
+export default function Overlay({ bus = tauriBus, obs }: { bus?: SubtitleBus; obs?: { mode: OverlayMode; size: number } }) {
+  const { sentences, partial, partialSpeaker, speakers } = useSubtitles(bus);
+  const [mode, setMode] = useState<OverlayMode>(obs?.mode ?? "translation");
+  const size = obs?.size ?? 32;
   const [interactive, setInteractive] = useState(false);
   // 後端判定閒置(沒聲音且字幕沒有新內容)時收起:記下當時最新句與預覽,之後只顯示比它新的內容;
   // 收起時還在等譯文的句子(pending),譯文到了也算新內容
@@ -36,18 +38,23 @@ export default function Overlay() {
   };
 
   useEffect(() => {
+    const c = bus.onIdle(() => setDismissed({ ...latest.current }));
+    // 新回合句子 id 從頭算,收起標記要清掉
+    const d = bus.onReset(() => setDismissed(null));
+    return () => {
+      c();
+      d();
+    };
+  }, [bus]);
+  useEffect(() => {
+    if (obs) return;
     const a = listen<string>("overlay-mode", (e) => setMode(e.payload as OverlayMode));
     const b = listen<boolean>("overlay-interactive", (e) => setInteractive(e.payload));
-    const c = listen("subtitle-idle", () => setDismissed({ ...latest.current }));
-    // 新回合句子 id 從頭算,收起標記要清掉
-    const d = listen("session-start", () => setDismissed(null));
     return () => {
       a.then((f) => f());
       b.then((f) => f());
-      c.then((f) => f());
-      d.then((f) => f());
     };
-  }, []);
+  }, [obs]);
 
   const { shown, freshPartial, idle } = useMemo(() => {
     const fresh = dismissed
@@ -69,7 +76,7 @@ export default function Overlay() {
   const faded = idle && !interactive;
 
   const startDrag = (e: React.MouseEvent) => {
-    if (!interactive) return;
+    if (!interactive || obs) return;
     if (e.button !== 0) return;
     void getCurrentWindow().startDragging();
   };
@@ -100,12 +107,16 @@ export default function Overlay() {
           return (
             <div key={s.id} data-sentence-id={s.id} className="fade-in-up text-center max-w-full">
               {mode === "bilingual" && s.state !== "no_translate" && hasTranslation && (
-                <div className="subtitle-text text-[18px] leading-snug text-neutral-300 truncate max-w-[1000px]">
+                <div
+                  className="subtitle-text leading-snug text-neutral-300 truncate max-w-[1000px]"
+                  style={{ fontSize: Math.round(size * 0.56) }}
+                >
                   {s.source}
                 </div>
               )}
               <div
-                className={`subtitle-text text-[32px] leading-tight font-semibold ${
+                style={{ fontSize: size }}
+                className={`subtitle-text leading-tight font-semibold ${
                   pending ? "text-neutral-400" : "text-white"
                 } ${s.state === "failed" ? "text-amber-200" : ""}`}
               >

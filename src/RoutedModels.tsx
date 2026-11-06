@@ -38,6 +38,9 @@ export default function RoutedModels({
   running,
   dataDir,
   onChanged,
+  title,
+  activeKey,
+  onUse,
 }: {
   group?: keyof typeof GROUPS;
   /** group="engine" 時:下拉選單所選的引擎 id。 */
@@ -45,6 +48,11 @@ export default function RoutedModels({
   running: boolean;
   dataDir?: string;
   onChanged: () => void;
+  /** 蓋掉預設標題(設定頁每個引擎一區時用) */
+  title?: string;
+  /** 設定頁:目前選用的翻譯模型名稱;有 onUse 時已下載的翻譯模型顯示「使用這個」 */
+  activeKey?: string;
+  onUse?: (key: string) => void;
 }) {
   const g = GROUPS[group];
   const [models, setModels] = useState<RoutedModelState[]>([]);
@@ -113,7 +121,7 @@ export default function RoutedModels({
 
   return (
     <div data-group={group} className="flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-2 text-xs">
-      <div className="text-neutral-400">{g.title}</div>
+      <div className="text-neutral-400">{title ?? g.title}</div>
       {models.map((m) => {
         const p = progress[m.id];
         const active = m.downloading || p?.phase === "downloading" || p?.phase === "verifying";
@@ -126,6 +134,23 @@ export default function RoutedModels({
                 {m.label}
                 <span className="text-neutral-500"> {mb(m.size_bytes)}</span>
               </span>
+              {m.gguf && onUse && m.ready && (
+                m.gguf === activeKey ? (
+                  <span className="text-sky-300" data-role="model-active">
+                    使用中
+                  </span>
+                ) : (
+                  <button
+                    className="rounded bg-neutral-800 px-2 py-0.5 hover:bg-neutral-700 disabled:opacity-40"
+                    data-role="model-use"
+                    disabled={running}
+                    title={running ? "停止後才能換模型" : undefined}
+                    onClick={() => onUse(m.gguf!)}
+                  >
+                    使用這個
+                  </button>
+                )
+              )}
               {m.ready ? (
                 <span className="text-emerald-400" data-role="model-ready">
                   已下載

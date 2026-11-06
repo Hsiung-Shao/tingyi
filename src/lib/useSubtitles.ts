@@ -171,7 +171,54 @@ function reducer(state: State, ev: Action): State {
   }
 }
 
-export function useSubtitles() {
+/** 字幕事件來源:主視窗與懸浮字幕走 Tauri 事件,OBS 頁面走 `/events`(SSE)。 */
+export interface SubtitleBus {
+  onPipeline(cb: (ev: PipelineEvent) => void): () => void;
+  /** 新回合(清除上一輪) */
+  onReset(cb: () => void): () => void;
+  /** 後端判定閒置(沒聲音且字幕沒新內容) */
+  onIdle(cb: () => void): () => void;
+}
+
+const tauriListen = <T,>(name: string, cb: (p: T) => void) => {
+  const un = listen<T>(name, (e) => cb(e.payload));
+  return () => void un.then((f) => f());
+};
+
+export const tauriBus: SubtitleBus = {
+  onPipeline: (cb) => tauriListen<PipelineEvent>("pipeline", cb),
+  // 後端每次「開始」都會發 session-start:清掉上一輪的句子,避免新舊編號互相覆蓋
+  onReset: (cb) => tauriListen("session-start", () => cb()),
+  onIdle: (cb) => tauriListen("subtitle-idle", () => cb()),
+};
+
+/** OBS 頁面:一條 EventSource 分給各訂閱者;連上時後端先送 reset 與本回合事件,斷線由瀏覽器自動重連。 */
+export function sseBus(url: string): SubtitleBus {
+  const subs = { pipeline: new Set<(ev: PipelineEvent) => void>(), reset: new Set<() => void>(), idle: new Set<() => void>() };
+  const es = new EventSource(url);
+  es.onmessage = (m) => {
+    let ev: { type: string };
+    try {
+      ev = JSON.parse(m.data);
+    } catch {
+      return;
+    }
+    if (ev.type === "reset") subs.reset.forEach((f) => f());
+    else if (ev.type === "idle") subs.idle.forEach((f) => f());
+    else subs.pipeline.forEach((f) => f(ev as PipelineEvent));
+  };
+  const add = <T,>(set: Set<T>, f: T) => {
+    set.add(f);
+    return () => void set.delete(f);
+  };
+  return {
+    onPipeline: (cb) => add(subs.pipeline, cb),
+    onReset: (cb) => add(subs.reset, cb),
+    onIdle: (cb) => add(subs.idle, cb),
+  };
+}
+
+export function useSubtitles(bus: SubtitleBus = tauriBus) {
   const [state, dispatch] = useReducer(reducer, {
     sentences: [],
     status: "",
@@ -182,13 +229,12 @@ export function useSubtitles() {
     segmentation: null,
   });
   useEffect(() => {
-    const un = listen<PipelineEvent>("pipeline", (e) => dispatch(e.payload));
-    // 後端每次「開始」都會發 session-start:清掉上一輪的句子,避免新舊編號互相覆蓋
-    const un2 = listen("session-start", () => dispatch({ type: "reset" }));
+    const a = bus.onPipeline((ev) => dispatch(ev));
+    const b = bus.onReset(() => dispatch({ type: "reset" }));
     return () => {
-      un.then((f) => f());
-      un2.then((f) => f());
+      a();
+      b();
     };
-  }, []);
+  }, [bus]);
   return state;
 }

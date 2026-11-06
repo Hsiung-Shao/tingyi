@@ -40,6 +40,8 @@ pub struct AppState {
     pub listen_prev_source: Mutex<Option<tingyi_core::audio::source::AudioSource>>,
     /// 字幕事件(一行一則 JSON),給擴充的 named pipe 訂閱。
     pub live: LiveBus,
+    /// OBS 瀏覽器來源(直播用網址)的事件緩衝與伺服器。
+    pub obs: crate::obs::Obs,
     /// 有回合正在啟動(載模型要數秒):主視窗與擴充同時開始時只讓一個進去。
     pub starting: std::sync::atomic::AtomicBool,
     /// 擴充斷線後正在停止它開的回合。
