@@ -7,7 +7,7 @@ import type { Info, OverlayMode, Prefs, Sensitivity, Sentence } from "./lib/type
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
-import SettingsPage, { restoreObs } from "./SettingsPage";
+import SettingsPage from "./SettingsPage";
 import WebTranslateCard from "./WebTranslateCard";
 
 type LangOpt = "auto" | "en" | "ja" | "ko";
@@ -138,7 +138,6 @@ export default function App() {
 
   useEffect(() => {
     refreshInfo();
-    restoreObs();
     const un = listen<string>("status", (e) => setStatus(e.payload));
     // 後端停止時會自動退出拖曳模式,按鈕狀態跟著同步
     const un2 = listen<boolean>("overlay-interactive", (e) => setUnlocked(e.payload));
@@ -357,8 +356,10 @@ export default function App() {
         </span>
       </header>
 
-      {tab === "settings" && (
+      {/* 兩個分頁都保持掛載,只藏起來:下載進度、紀錄捲動與輸入框內容都保留 */}
+      <div className={tab === "settings" ? "flex flex-1 min-h-0" : "hidden"}>
         <SettingsPage
+          sentences={sentences}
           info={info}
           running={running}
           model={model}
@@ -370,8 +371,7 @@ export default function App() {
           onAsrEngine={setAsrEngine}
           onChanged={refreshInfo}
         />
-      )}
-      {/* 切到設定時只藏起來,不卸載:紀錄捲動位置與輸入框內容保留 */}
+      </div>
       <div className={tab === "main" ? "flex flex-1 min-h-0" : "hidden"}>
         {/* 左:控制 */}
         <aside className="w-[320px] shrink-0 border-r border-neutral-800 p-4 flex flex-col gap-4 overflow-y-auto">

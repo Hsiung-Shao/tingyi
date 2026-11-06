@@ -211,6 +211,7 @@ async function main() {
   await ui.send('Page.enable');
   const js = (expr) => ui.evalJs(expr);
   const tab = (k) => js(`document.querySelector('[data-tab=${k}]').click(), true`);
+  const nav = (k) => js(`document.querySelector('[data-nav=${k}]').click(), true`);
   const mtSelect = `[...document.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === '${Q4}'))`;
   const startBtn = `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '開始')`;
 
@@ -231,6 +232,10 @@ async function main() {
   }), 15_000);
   check('需要下載的引擎各自有下載卡', engCards.ok);
   await screenshot(ui, '01-settings.png');
+  await nav('recog');
+  await sleep(300);
+  await screenshot(ui, '01b-settings-recog.png');
+  await nav('translate');
 
   // ── 2. 下載 1.8B Q4 並選用 ──
   await js(`(() => { const b = [...document.querySelectorAll('[data-model-id="hy-mt2-1.8b-q4"] button')].find((x) => /下載|繼續/.test(x.textContent)); b && b.click(); return !!b; })()`);
@@ -245,9 +250,11 @@ async function main() {
   await js(`document.querySelector('[data-model-id="hy-mt2-1.8b-q4"] [data-role=model-use]').click(), true`);
   const active = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-model-id="hy-mt2-1.8b-q4"] [data-role=model-active]')`) }), 10_000);
   check('按「使用這個」後標「使用中」', active.ok);
+  await nav('recog');
   await js(`document.querySelector('[data-engine="sensevoice"] [data-role=engine-use]')?.click(), true`);
   const svActive = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-engine="sensevoice"] [data-role=engine-active]')`) }), 5_000);
   check('辨識引擎 SenseVoice 標「使用中」', svActive.ok);
+  await nav('translate');
   await screenshot(ui, '02-settings-q4-active.png');
   await tab('main');
   const sel = await js(`${mtSelect}.value`);
@@ -257,8 +264,12 @@ async function main() {
 
   // ── 3. 開 OBS 網址 ──
   await tab('settings');
+  await nav('live');
   await waitFor(async () => ({ ok: await js(`document.querySelector('[data-role=obs-toggle]')?.disabled === false`) }), 10_000, 200);
-  await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
+  // 上次跑完可能留著「自動打開」:已經是開的就不要再點(點了會變關)
+  const wasOn = await js(`document.querySelector('[data-role=obs-toggle]').checked`);
+  log(`直播開關初始狀態:${wasOn ? '已開(上次記住)' : '關'}`);
+  if (!wasOn) await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
   const urlR = await waitFor(async () => {
     const u = await js(`document.querySelector('[data-role=obs-url-history]')?.value ?? ''`);
     return { ok: /^http:\/\/127\.0\.0\.1:\d+\/history/.test(u), u };
@@ -344,6 +355,8 @@ async function main() {
   const openConn = sseFor(`${base}/events`, 20_000).then(() => Date.now() - t0);
   await sleep(1000);
   await tab('settings');
+  await nav('live');
+  await screenshot(ui, '07-settings-live-running.png');
   await waitFor(async () => ({ ok: await js(`document.querySelector('[data-role=obs-toggle]')?.checked === true`) }), 10_000, 200);
   await js(`document.querySelector('[data-role=obs-toggle]').click(), true`);
   const endedMs = await openConn;

@@ -161,6 +161,7 @@ async function main() {
   const goSet = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-role=go-settings]')`) }), 15_000);
   check('左欄提示到「設定」下載', goSet.ok);
   await js(`document.querySelector('[data-tab=settings]').click(), true`);
+  await js(`document.querySelector('[data-nav=recog]').click(), true`);
   const cards = await waitFor(async () => ({ ok: await js(`!!document.querySelector('[data-model-id=sensevoice]') && !!document.querySelector('[data-model-id=silero-vad]')`) }), 30_000);
   check('設定頁出現「辨識基本模型」下載卡', cards.ok);
   await screenshot(ui, '01-fresh-blocked.png');

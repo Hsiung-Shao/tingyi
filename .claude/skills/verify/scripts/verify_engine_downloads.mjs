@@ -184,6 +184,7 @@ async function main() {
     check(`選 ${e.id}:沒下載前「開始」不能按並說缺模型`, blocked.ok, blocked.h);
     // 下載卡在「設定」分頁,每個引擎一區
     await tab('settings');
+    await js(`document.querySelector('[data-nav=recog]').click(), true`);
     const card = await waitFor(async () => ({ ok: await js(`${JSON.stringify(e.ids)}.every((id) => !!document.querySelector('[data-engine="${e.id}"] [data-model-id="' + id + '"]'))`) }), 30_000);
     check(`${e.id}:設定頁有它的下載卡`, card.ok);
     await screenshot(ui, `01-${e.id}-card.png`);
@@ -191,7 +192,7 @@ async function main() {
       await js(`(() => { const b = [...document.querySelectorAll('[data-model-id="${id}"] button')].find((x) => /下載|繼續/.test(x.textContent)); b && b.click(); return !!b; })()`);
     }
     const dl = await waitFor(async () => {
-      const err = await js(`[...document.querySelectorAll('[data-group=engine] [data-role=model-error]')].map((x) => x.textContent).join(' | ')`);
+      const err = await js(`[...document.querySelectorAll('[data-engine="${e.id}"] [data-role=model-error]')].map((x) => x.textContent).join(' | ')`);
       if (err) return { ok: false, err, stop: true };
       return { ok: await js(`${JSON.stringify(e.ids)}.every((id) => !!document.querySelector('[data-model-id="' + id + '"] [data-role=model-ready]'))`) };
     }, 3_600_000, 5000);
