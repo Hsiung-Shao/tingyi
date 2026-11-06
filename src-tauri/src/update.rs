@@ -21,7 +21,7 @@ pub struct UpdateInfo {
     pub current: String,
     pub notes: String,
     pub date: Option<String>,
-    /// 該不該主動提示(執行中、或使用者略過這版時為 false;設定頁手動檢查照樣顯示)
+    /// 該不該主動提示(使用者略過這版時為 false;執行中由前端另外判斷;設定頁手動檢查照樣顯示)
     pub notify: bool,
 }
 
@@ -39,7 +39,12 @@ pub fn app_version(app: AppHandle) -> String {
 /// 檢查有沒有新版;沒有回 None。`dismissed` 是使用者按過「略過這版」的版本。
 #[tauri::command]
 pub async fn check_update(app: AppHandle, dismissed: Option<String>) -> Result<Option<UpdateInfo>, String> {
-    let mut builder = app.updater_builder();
+    // 安裝時外掛直接 process::exit,不經 RunEvent::Exit:先做同一套收尾(停 whisper-server、放掉翻譯伺服器、刪 runtime 檔)
+    let app_exit = app.clone();
+    let mut builder = app.updater_builder().on_before_exit(move || {
+        app_exit.state::<AppState>().shutdown_blocking();
+        crate::web::remove_runtime_file();
+    });
     if let Some(url) = endpoint_override(std::env::var("TINGYI_UPDATE_ENDPOINT").ok().as_deref()) {
         let url = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
         builder = builder.endpoints(vec![url]).map_err(|e| e.to_string())?;
@@ -50,9 +55,9 @@ pub async fn check_update(app: AppHandle, dismissed: Option<String>) -> Result<O
         *pending.0.lock().unwrap() = None;
         return Ok(None);
     };
-    let running = app.state::<AppState>().pipeline.lock().unwrap().is_some();
+    // 執行中不打擾由前端依當下狀態判斷(這裡算的話,檢查當下在執行中就會一直不提示)
     let info = UpdateInfo {
-        notify: should_notify(running, dismissed.as_deref(), &update.version),
+        notify: should_notify(false, dismissed.as_deref(), &update.version),
         version: update.version.clone(),
         current: update.current_version.clone(),
         notes: update.body.clone().unwrap_or_default(),
@@ -67,7 +72,8 @@ pub async fn check_update(app: AppHandle, dismissed: Option<String>) -> Result<O
 /// 回傳 "dry-run-verified" 表示測試模式只驗證沒安裝。
 #[tauri::command]
 pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
-    let update = app.state::<PendingUpdate>().0.lock().unwrap().take().ok_or("請先檢查更新")?;
+    // 只複製不取走:下載或停回合失敗時,使用者可以直接再按一次
+    let update = app.state::<PendingUpdate>().0.lock().unwrap().clone().ok_or("請先檢查更新")?;
     // 安裝會結束程式:先停回合(子程序另由 Job Object 跟著結束)
     if state.pipeline.lock().unwrap().is_some() {
         crate::commands::stop_inner(app.clone(), &state).await?;

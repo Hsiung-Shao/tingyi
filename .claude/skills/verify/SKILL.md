@@ -16,7 +16,10 @@ description: 聽譯 tingyi(Tauri 2 Windows 桌面 app,即時字幕翻譯)的實�
 python .claude/skills/verify/scripts/verify_audio_source.py
 python .claude/skills/verify/scripts/verify_model_download.py
 python .claude/skills/verify/scripts/verify_download_script.py --existing D:\codeproject\translate\data
-python .claude/skills/verify/scripts/verify_release_build.py      # 先 pnpm tauri build;在 main 的工作目錄跑
+python .claude/skills/verify/scripts/verify_release_build.py      # 先 pnpm tauri build(要設簽章金鑰,見下);在 main 的工作目錄跑
+node .claude/skills/verify/scripts/verify_settings_obs.mjs          # 設定分頁下載選用 + OBS 直播網址(下載 1.1 GB、TTS 會出聲)
+node .claude/skills/verify/scripts/verify_obs_release.mjs          # 先 pnpm tauri build --no-bundle;正式版 OBS 網址
+node .claude/skills/verify/scripts/verify_updater.mjs              # 先建 0.1.99 簽章安裝檔;自動更新(只驗證不安裝)
 node .claude/skills/verify/scripts/verify_web_translate.mjs        # 網頁翻譯(擴充 + 共用翻譯伺服器)
 node .claude/skills/verify/scripts/verify_youtube_listen.mjs       # YouTube 沒字幕改用聽譯(播放器內字幕)
 node .claude/skills/verify/scripts/verify_fresh_install.mjs       # 全新安裝:空資料目錄,在 app 內下載辨識基本模型後能開始(要連網,約 240 MB)
@@ -27,6 +30,8 @@ node .claude/skills/verify/scripts/verify_fresh_install.mjs       # 全新安裝
 第二支驗專用模型的 app 內下載(見 `features/routed-models.md`):自己架假 Hugging Face(本機 Range 伺服器,提供 `data/models` 的真實檔、限速),`TINGYI_DATA_DIR` 指向證據目錄裡的臨時資料目錄,結束後刪掉臨時資料目錄(只留檔案清單)。選項 `--source-data`、`--rate-mbps`。
 
 第三支驗開發用下載腳本 `scripts/download-models.ps1`(真網路,約 3.4 GB,不啟動 app):乾淨資料目錄下載必要項目與日英專用模型包、Python 獨立重算 SHA256、`-Verify`、竄改一個位元組必須失敗且錯誤訊息只點名該檔、竄改已解壓的模型與 llama DLL 也必須被 `-Verify` 抓到,且照訊息「請刪除:」的路徑刪除後重跑可恢復;`--existing` 再對既有資料目錄的全部選配項目跑 `-Verify`(先 `-ListOnly`,有「待下載」就不跑)。結束時刪掉下載的資料(只留檔案清單);腳本會把 llama-server 複製到本 worktree 的 `src-tauri\binaries`(已 gitignore)。
+
+**簽章金鑰**:`tauri.conf.json` 開了 `createUpdaterArtifacts`,`pnpm tauri build`(含打包)前要設 `TAURI_SIGNING_PRIVATE_KEY=C:\Users\jerry\.tauri\tingyi.key` 與 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=`(空字串),否則建置失敗;`--no-bundle` 不需要。`verify_updater.mjs` 要先把 `tauri.conf.json` 的 version 暫改 0.1.99 建一份簽章安裝檔(建完改回),app 以 `TINGYI_UPDATE_ENDPOINT` 指向本機伺服器、`TINGYI_UPDATE_DRY_RUN=1` 只下載驗證不安裝(不能蓋掉使用者已安裝的聽譯);竄改簽章是破壞對照。
 
 第四支驗正式版打包(`pnpm tauri build` 之後):不安裝、不動使用者已安裝的版本,直接啟動 `target\release\tingyi.exe`(CDP,正式版頁面是 `http://tauri.localhost/`);檢查安裝檔與執行檔修改時間相差 120 秒內(同一次建置)、執行檔是 GUI 子系統、執行檔含 tao 修補(位元組有 `(tingyi patch)`,沒有代表 `[patch.crates-io]` 沒生效)、專用模型顯示已下載、專用模型 + 本機翻譯可開始且 llama-server 子程序啟動(PID 取自 app log)、鎖定日文、log 有 `routed[reazonspeech](`、停止後 llama-server 由 app 結束、溫和關閉主視窗(WM_CLOSE)後 app 自行結束且 returncode 0、關閉後自己的 tingyi / llama-server PID 無殘留;另有壓力回歸檢查(`--stress-rounds`,預設 20 輪「清單列舉 + PrintWindow 截圖」同時進行,app 不得當掉;原版 tao 會偶發 panic,已內嵌修補,見 `third_party/tao-0.37.1/TINGYI-PATCH.md`);收尾會統計 app.log 中修補路徑觸發次數(`tao_patch_hits`,只記錄不判定)。正式版的資料目錄是編譯時的 workspace `data/`(存在時),所以要在 main 的工作目錄(`D:\codeproject\translate`)跑;`--data-dir <空目錄>` 是破壞對照(必須失敗)。介面設定不存檔,不會改到使用者平常的設定。
 
