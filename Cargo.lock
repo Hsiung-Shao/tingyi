@@ -4711,7 +4711,7 @@ dependencies = [
 
 [[package]]
 name = "tingyi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -4734,7 +4734,7 @@ dependencies = [
 
 [[package]]
 name = "tingyi-bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -4750,7 +4750,7 @@ dependencies = [
 
 [[package]]
 name = "tingyi-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
