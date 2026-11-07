@@ -192,7 +192,9 @@ async function runSession(ui, { engine, pack, want, tag }) {
   const got = await waitFor(async () => {
     const rows = await js(`[...document.querySelectorAll('[data-sentence-id]')].map((r) => ({ source: r.querySelector('[data-role=source]')?.textContent ?? '', translation: r.querySelector('div.text-base')?.textContent ?? '' }))`);
     const done = rows.filter((r) => r.translation && r.translation !== '…');
-    return { ok: done.length >= want, rows: done };
+    // want 是數字:收到這麼多句;是陣列:每個關鍵字都要出現在某句原文(TTS 循環,開頭可能只收到半句)
+    const ok = Array.isArray(want) ? want.every((k) => done.some((r) => new RegExp(k, 'i').test(r.source))) : done.length >= want;
+    return { ok, rows: done };
   }, 150_000, 1000);
   await screenshot(ui, `${tag}.png`);
   await js(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '停止')?.click(), true`);
@@ -250,10 +252,11 @@ async function main() {
   check('Path of Exile 譯成官方名「流亡黯道」', !!pathRow && pathRow.translation.includes('流亡黯道'), pathRow?.translation ?? '');
 
   // ── 4. Whisper 引擎:送出熱詞 ──
-  const wrows = await runSession(ui, { engine: 'whisper-turbo', pack: 'poe1', want: 2, tag: '03-whisper-poe1' });
+  // 等三句都完整收到(TTS 循環唸,開頭可能只收到半句)
+  const wrows = await runSession(ui, { engine: 'whisper-turbo', pack: 'poe1', want: ['found', 'fight', 'welcome'], tag: '03-whisper-poe1' });
   const hot = appLog().match(/Whisper 熱詞 (\d+) 個/);
   check('Whisper 引擎送出術語包熱詞', !!hot && Number(hot[1]) > 10, hot?.[0] ?? '紀錄沒有 Whisper 熱詞');
-  check('Whisper 引擎也產生字幕', wrows.length >= 2, `${wrows.length} 句`);
+  check('Whisper 引擎三句都辨識出來', ['found', 'fight', 'welcome'].every((k) => wrows.some((r) => new RegExp(k, 'i').test(r.source))), `${wrows.length} 句`);
 
   // 官方譯名:原文「辨識對了」的術語,譯文都要是官方名;兩個引擎合計至少辨識對 3 個不同術語。
   // 原文辨識錯(SenseVoice 把 Kitava 聽成 Ki of it)時術語包對不到,屬辨識問題,另列在 run.log。
