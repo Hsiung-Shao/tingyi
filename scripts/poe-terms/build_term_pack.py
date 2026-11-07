@@ -27,7 +27,7 @@ DEFAULT_DB = {
     "poe1": Path(r"d:\codeproject\Pob2\pob-zh-engine\tools\ggpk_zh\db\ggpk_zh.sqlite"),
     "poe2": Path(r"d:\codeproject\Pob2\pob-zh-engine\tools\ggpk2_zh\db\ggpk2_zh.sqlite"),
 }
-LABEL = {"poe1": "流放之路", "poe2": "流放之路 2"}
+LABEL = {"poe1": "Path of Exile 1", "poe2": "Path of Exile 2"}
 
 # 單字詞只有出自這些表才收(其餘表的單字多半是一般英文,例如技能名 Spark、詞綴片段)。
 # words 表收的是稀有物品名片段(Doom、Storm…),單字一律不收,多字傳奇名照收。

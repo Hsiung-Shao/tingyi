@@ -1,4 +1,4 @@
-# 遊戲術語包(流放之路)
+# 遊戲術語包(Path of Exile 1 / 2)
 
 從本機 POE DB(`pob-zh-engine/tools/ggpk_zh` 的版本化 SQLite)產生聽譯用的術語包。
 術語包是 GGG 的遊戲字串,**只放在資料目錄 `data/terms/`,不進 repo、不打包進公開版**;
