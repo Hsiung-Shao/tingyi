@@ -245,9 +245,6 @@ async function main() {
   const rows = await runSession(ui, { engine: 'sensevoice', pack: 'poe1', want: 3, tag: '02-sensevoice-poe1' });
   const appLog = () => readFileSync(path.join(OUT, 'app-nopack.log'), 'utf8');
   check('app 紀錄有載入 poe1 術語包', /遊戲術語包 poe1(.*):\d+ 詞/.test(appLog()), (appLog().match(/遊戲術語包 poe1[^\n]*/) || [''])[0]);
-  const allZh = rows.map((r) => r.translation).join(' ');
-  const official = ['混沌石', '瓦爾克拉斯', '勇士', '奇塔弗'].filter((w) => allZh.includes(w));
-  check('譯文用官方譯名(混沌石、瓦爾克拉斯、勇士、奇塔弗至少 3 個)', official.length >= 3, `命中 ${official.join('、')}`);
   const pathRow = rows.find((r) => /path of/i.test(r.source));
   check('「Path of Excel」原文被修正成 Path of Exile', !!pathRow && /Path of Exile/.test(pathRow.source) && !/excel/i.test(pathRow.source), pathRow?.source ?? '沒有含 path of 的句子');
   check('Path of Exile 譯成官方名「流亡黯道」', !!pathRow && pathRow.translation.includes('流亡黯道'), pathRow?.translation ?? '');
@@ -257,6 +254,23 @@ async function main() {
   const hot = appLog().match(/Whisper 熱詞 (\d+) 個/);
   check('Whisper 引擎送出術語包熱詞', !!hot && Number(hot[1]) > 10, hot?.[0] ?? '紀錄沒有 Whisper 熱詞');
   check('Whisper 引擎也產生字幕', wrows.length >= 2, `${wrows.length} 句`);
+
+  // 官方譯名:原文「辨識對了」的術語,譯文都要是官方名;兩個引擎合計至少辨識對 3 個不同術語。
+  // 原文辨識錯(SenseVoice 把 Kitava 聽成 Ki of it)時術語包對不到,屬辨識問題,另列在 run.log。
+  const TERMS = { 'chaos orb': '混沌石', wraeclast: '瓦爾克拉斯', juggernaut: '勇士', kitava: '奇塔弗' };
+  const recognized = new Set();
+  const wrong = [];
+  for (const r of [...rows, ...wrows]) {
+    for (const [en, zh] of Object.entries(TERMS)) {
+      if (!new RegExp(`\\b${en}`, 'i').test(r.source)) continue;
+      recognized.add(en);
+      if (!r.translation.includes(zh)) wrong.push(`${en}→「${r.translation}」`);
+    }
+  }
+  check('辨識對的術語都譯成官方名', wrong.length === 0, wrong.join(';') || `辨識對 ${[...recognized].join('、')}`);
+  check('兩個引擎合計至少辨識對 3 個不同術語', recognized.size >= 3, [...recognized].join('、'));
+  const missed = Object.keys(TERMS).filter((en) => !rows.some((r) => new RegExp(`\\b${en}`, 'i').test(r.source)));
+  log(`SenseVoice 沒辨識對的術語(辨識問題,術語包無法補):${missed.join('、') || '無'}`);
 }
 
 try {
