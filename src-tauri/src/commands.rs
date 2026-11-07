@@ -194,6 +194,8 @@ pub struct StartOptions {
     pub target_lang: Option<String>,
     /// 簡體譯文怎麼轉(terms / script / none;None = terms)。
     pub zh_convert: Option<String>,
+    /// 遊戲術語包 id(資料目錄 terms/<id>.json);None 或空字串 = 不使用。
+    pub term_pack: Option<String>,
 }
 
 fn parse_lang(s: &str) -> Option<Lang> {
@@ -370,6 +372,22 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     }
     if let Some(r) = opts.replacements {
         cfg.replacements = r;
+    }
+    if let Some(id) = opts.term_pack.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // id 只能是檔名,不能帶路徑
+        if id.contains(['/', '\\', '.']) {
+            return Err(format!("術語包名稱不合法:{id}"));
+        }
+        let pack = tingyi_core::terms::TermPack::load(&paths::terms_dir().join(format!("{id}.json"))).map_err(|e| format!("{e:#}"))?;
+        tracing::info!(
+            "遊戲術語包 {id}({} {}):{} 詞、誤聽 {}、熱詞 {}",
+            pack.label,
+            pack.game_version,
+            pack.entries.len(),
+            pack.aliases.len(),
+            pack.hotwords.len()
+        );
+        cfg.terms = Some(std::sync::Arc::new(pack));
     }
     if opts.asr_engine.as_deref() == Some("routed") {
         cfg.asr_engine = AsrEngine::Routed;
@@ -954,6 +972,12 @@ pub fn web_stop(app: AppHandle) {
 #[tauri::command]
 pub fn set_web_model(app: AppHandle, model: String) -> Result<(), String> {
     crate::web::set_web_model(&app, model).map_err(|e| format!("{e:#}"))
+}
+
+/// 資料目錄裡的遊戲術語包;沒有就回空清單(字幕頁不顯示「遊戲術語」)。
+#[tauri::command]
+pub fn term_packs_status() -> Vec<tingyi_core::terms::PackInfo> {
+    tingyi_core::terms::list_packs(&paths::terms_dir())
 }
 
 /// 主視窗的開始選項(沒存過回 None,前端用建議模型)。

@@ -454,6 +454,8 @@ pub struct WhisperServerConfig {
     /// 鎖定語言;None = 自動偵測(限 en/ja/ko,由字集啟發式覆核)。
     pub language: Option<Lang>,
     pub timeout: std::time::Duration,
+    /// 熱詞提示(遊戲術語包的專有名詞,只放正確拼寫);每次辨識都當 `prompt` 送出。
+    pub prompt: Option<String>,
 }
 
 impl Default for WhisperServerConfig {
@@ -462,6 +464,7 @@ impl Default for WhisperServerConfig {
             base_url: "http://127.0.0.1:8179".into(),
             language: None,
             timeout: std::time::Duration::from_secs(10),
+            prompt: None,
         }
     }
 }
@@ -594,8 +597,15 @@ impl WhisperServer {
             ("temperature", "0.0".into()),
             ("no_speech_thold", "0.6".into()),
         ];
-        if let Some(p) = prompt.map(str::trim).filter(|p| !p.is_empty()) {
-            let p: String = p.chars().take(100).collect();
+        // 熱詞在前,上一視窗末句(前文)在後
+        let context: String = prompt.map(str::trim).unwrap_or("").chars().take(100).collect();
+        let p = [self.cfg.prompt.as_deref().unwrap_or(""), context.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !p.is_empty() {
             fields.push(("prompt", p));
         }
         let boundary = "----tingyi-boundary-7d1e9c0f";
@@ -630,6 +640,10 @@ impl Transcriber for WhisperServer {
             ("temperature", "0.0".into()),
             ("no_speech_thold", "0.6".into()),
         ];
+        let mut fields = fields;
+        if let Some(p) = self.cfg.prompt.as_deref().filter(|p| !p.is_empty()) {
+            fields.push(("prompt", p.to_string()));
+        }
         let boundary = "----tingyi-boundary-7d1e9c0f";
         let body = build_multipart(boundary, &fields, "file", "seg.wav", "audio/wav", &wav);
         let url = format!("{}/inference", self.cfg.base_url.trim_end_matches('/'));

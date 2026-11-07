@@ -178,6 +178,8 @@ pub struct PipelineConfig {
     /// 使用者鎖定語言(覆蓋自動偵測)。
     pub lock_lang: Option<Lang>,
     pub glossary: Glossary,
+    /// 遊戲術語包:誤聽修正、Whisper 熱詞、每句命中的術語交給翻譯(使用者術語表優先)。
+    pub terms: Option<std::sync::Arc<crate::terms::TermPack>>,
     /// 辨識取代表(錯字 → 正字),四個出口(正式、預覽、回修改原文、回修補回句)都套。
     pub replacements: Vec<Replacement>,
     /// 幻聽式重複壓縮 + 取代表;bench A/B 可關。
@@ -253,6 +255,7 @@ impl Default for PipelineConfig {
             allowed_langs: [Lang::En, Lang::Ja, Lang::Ko].into_iter().collect(),
             lock_lang: None,
             glossary: Glossary::default(),
+            terms: None,
             replacements: Vec::new(),
             cleanup: true,
             transducer_pad_ms: 350,
@@ -422,6 +425,7 @@ fn start_inner(
         AsrEngine::Whisper { base_url } => Box::new(WhisperServer::new(WhisperServerConfig {
             base_url: base_url.clone(),
             language: cfg.lock_lang,
+            prompt: whisper_hotwords(&cfg),
             ..Default::default()
         })),
         AsrEngine::Routed => {
@@ -556,6 +560,7 @@ fn start_inner(
             base_url: whisper_url,
             language: cfg.lock_lang,
             timeout: Duration::from_secs(30),
+            prompt: whisper_hotwords(&cfg),
         });
         let (job_tx, job_rx) = mpsc::unbounded_channel::<RefineJob>();
         let (job_tx, refine_mt_task) = match &translator {
@@ -755,13 +760,24 @@ fn vad_loop(
     tracing::info!("vad thread 結束");
 }
 
+/// 術語包的 Whisper 熱詞提示;沒有術語包或沒有熱詞回 None。
+fn whisper_hotwords(cfg: &PipelineConfig) -> Option<String> {
+    let p = cfg.terms.as_ref()?.hotword_prompt();
+    if p.is_empty() {
+        return None;
+    }
+    tracing::info!("Whisper 熱詞 {} 個", p.split(", ").count());
+    Some(p)
+}
+
 /// 四個出口共用的清理;關閉時原樣回傳。整段是幻聽回 None。
 pub(crate) fn clean(cfg: &PipelineConfig, text: String) -> Option<String> {
-    if cfg.cleanup {
-        clean_transcript(&text, &cfg.replacements)
-    } else {
-        Some(text)
-    }
+    let text = if cfg.cleanup { clean_transcript(&text, &cfg.replacements)? } else { text };
+    // 術語包的同音誤聽修正(在使用者取代表之後;只改英文專名)
+    Some(match &cfg.terms {
+        Some(t) => t.correct_aliases(&text),
+        None => text,
+    })
 }
 
 /// 正式辨識 + 說話者 + 斷句觀察值回饋。
@@ -1052,7 +1068,11 @@ async fn translate_one(
     stats: &PipelineStats,
     refine_tx: &Option<crossbeam_channel::Sender<RefineMsg>>,
 ) {
-    let hits: Vec<_> = cfg.glossary.hits(&u.text).into_iter().cloned().collect();
+    let user_hits: Vec<_> = cfg.glossary.hits(&u.text).into_iter().cloned().collect();
+    let hits = match &cfg.terms {
+        Some(t) => crate::terms::merge_glossary(user_hits, &t.hits(&u.text, crate::terms::MAX_HITS)),
+        None => user_hits,
+    };
     let req = TranslateRequest {
         text: u.text.clone(),
         src_lang: u.lang,

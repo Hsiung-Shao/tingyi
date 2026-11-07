@@ -1,0 +1,8 @@
+# 同音誤聽 / 美式拼寫 → 遊戲內正確英文(每行:誤聽<TAB>正確英文;# 開頭為註解)
+# 只放「辨識會寫錯、而且改了不會誤傷一般句子」的拼法;縮寫(PoE、ES)與詞形變化(複數、-ed)不放,
+# 複數由聽譯的比對處理。正確英文不在術語包裡的列會被產生器略過。
+# 前兩列取自 exilemoulei/shengmu-live-captions extension/lib/glossary-poe.js 的 sources 別名(MIT License)。
+Path of Excel	Path of Exile
+Isamite	Ezomyte
+Scepter	Sceptre
+Jeweler's Orb	Jeweller's Orb

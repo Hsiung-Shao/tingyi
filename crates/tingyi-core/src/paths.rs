@@ -44,6 +44,11 @@ pub fn bin_dir() -> PathBuf {
     data_dir().join("bin")
 }
 
+/// 遊戲術語包(`scripts/poe-terms/build_term_pack.py` 產生的 `<id>.json`);沒有這個目錄就不顯示「遊戲術語」。
+pub fn terms_dir() -> PathBuf {
+    data_dir().join("terms")
+}
+
 /// SenseVoice int8 模型目錄。
 ///
 /// 用 2024-07-17 原版。2025-09-09 版是從 ASLP-lab WSYue-ASR(粵語微調)轉出,

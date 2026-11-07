@@ -26,6 +26,8 @@ pub struct Prefs {
     pub target_lang: String,
     /// 簡體譯文怎麼轉(terms / script / none;空 = terms)
     pub zh_convert: String,
+    /// 遊戲術語包 id;空 = 不使用
+    pub term_pack: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useSubtitles } from "./lib/useSubtitles";
-import type { Info, OverlayMode, Prefs, Sensitivity, Sentence } from "./lib/types";
+import type { Info, OverlayMode, Prefs, Sensitivity, Sentence, TermPackInfo } from "./lib/types";
 import { speakerColor } from "./lib/speakerColor";
 import PerfPanel from "./PerfPanel";
 import AudioSourcePicker from "./AudioSourcePicker";
@@ -31,6 +31,9 @@ export default function App() {
   const [lang, setLang] = useState<LangOpt>("auto");
   const [targetLang, setTargetLang] = useState("zh-TW");
   const [zhConvert, setZhConvert] = useState("terms");
+  /** 遊戲術語包:資料目錄 terms/ 有檔案才顯示選單 */
+  const [termPacks, setTermPacks] = useState<TermPackInfo[]>([]);
+  const [termPack, setTermPack] = useState("");
   const [mode, setMode] = useState<OverlayMode>("translation");
   const [unlocked, setUnlocked] = useState(false);
   const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
@@ -111,6 +114,7 @@ export default function App() {
         setReplaceText(p.replacements);
         if (p.target_lang) setTargetLang(p.target_lang);
         if (p.zh_convert) setZhConvert(p.zh_convert);
+        if (p.term_pack) setTermPack(p.term_pack);
       })
       .catch(() => {})
       .finally(() => setPrefsLoaded(true));
@@ -129,10 +133,17 @@ export default function App() {
       replacements: replaceText,
       target_lang: targetLang,
       zh_convert: zhConvert,
+      term_pack: termPack,
     };
     const t = setTimeout(() => invoke("save_prefs", { prefs }).catch(() => {}), 500);
     return () => clearTimeout(t);
-  }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText, targetLang, zhConvert]);
+  }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText, targetLang, zhConvert, termPack]);
+
+  useEffect(() => {
+    invoke<TermPackInfo[]>("term_packs_status").then(setTermPacks).catch(() => {});
+  }, []);
+  // 存過的術語包被刪掉了:當作不使用
+  const activeTermPack = termPacks.some((p) => p.id === termPack) ? termPack : "";
 
   useEffect(() => {
     // 開發用自動開始(TINGYI_AUTOSTART=1):只在 autostart 旗標首次為 true 時觸發一次;
@@ -229,6 +240,7 @@ export default function App() {
           replacements: parseReplacements(),
           target_lang: targetLang,
           zh_convert: zhConvert,
+          term_pack: activeTermPack || null,
         },
       });
       setRunning(true);
@@ -517,6 +529,25 @@ export default function App() {
                 </label>
               )}
             </div>
+            {termPacks.length > 0 && (
+              <label className="flex flex-col gap-1.5 text-xs text-neutral-400" htmlFor="term-pack" data-role="term-pack">
+                遊戲術語(專有名詞譯成官方名、修正誤聽)
+                <select
+                  id="term-pack"
+                  className="min-h-9 rounded-lg border border-neutral-700 bg-neutral-950 px-2 text-[13px] text-neutral-200 disabled:opacity-50"
+                  value={activeTermPack}
+                  onChange={(e) => setTermPack(e.target.value)}
+                  disabled={running}
+                >
+                  <option value="">不使用</option>
+                  {termPacks.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} {p.game_version} · {p.entries.toLocaleString()} 詞
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {/* 只有 Hy-MT2 能譯成中文以外的語言,其他模型後端會改用繁體中文 */}
             {targetLang !== "zh-TW" && !model.startsWith("Hy-MT2") && (
               <p className="text-amber-400 text-xs">這個模型只能譯成繁體中文,開始時會改用繁體中文。</p>

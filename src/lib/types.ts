@@ -132,6 +132,18 @@ export interface Prefs {
   target_lang: string;
   /** 簡體譯文怎麼轉(目標繁中時):terms / script / none */
   zh_convert: string;
+  /** 遊戲術語包 id;空字串 = 不使用 */
+  term_pack?: string;
+}
+
+/** 資料目錄裡的遊戲術語包(對應 Rust `terms::PackInfo`)。 */
+export interface TermPackInfo {
+  id: string;
+  label: string;
+  game_version: string;
+  entries: number;
+  aliases: number;
+  hotwords: number;
 }
 
 export type Sensitivity = "fast" | "normal" | "slow";

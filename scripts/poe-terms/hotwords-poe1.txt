@@ -1,0 +1,44 @@
+# Whisper 熱詞(PoE1):最容易被聽錯的專有名詞,依優先序;只放正確拼寫。總長超過 400 字元的部分會被捨棄。
+# 名單與排序參考 exilemoulei/shengmu-live-captions 的 glossary-poe.js(MIT License),只取英文專名本身。
+Path of Exile
+Wraeclast
+Oriath
+Ezomyte
+Kalguuran
+Karui
+Maraketh
+Azmeri
+Vaal
+Atziri
+Kitava
+Kalandra
+Sirus
+Venarius
+Kingsmarch
+Doryani
+Zana
+Kirac
+Alva
+Einhar
+Niko
+Jun
+Navali
+Tane Octavius
+Helena
+Maven
+Searing Exarch
+Eater of Worlds
+Shaper
+Elder
+Chayula
+Uber Elder
+Delirium
+Ultimatum
+Sanctum
+Necropolis
+Settlers
+Ascendancy
+Juggernaut
+Necromancer
+Hierophant
+Deadeye

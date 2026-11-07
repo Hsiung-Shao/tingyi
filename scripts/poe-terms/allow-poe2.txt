@@ -1,0 +1,26 @@
+# 單字專名白名單(PoE2):這些字不在專名表(ascendancy、npcs、worldareas…)裡也要收,例如只出現在對話選項的地名。
+Wraeclast
+Oriath
+Ezomyte
+Kalguuran
+Karui
+Maraketh
+Azmeri
+Faridun
+Vaal
+Atziri
+Chayula
+Kitava
+Sekhemas
+Xesht
+Hinekora
+Kalandra
+Doryani
+Lycia
+Olroth
+Zarokh
+Jamanra
+Ogham
+Freythorn
+Kingsmarch
+Verisium

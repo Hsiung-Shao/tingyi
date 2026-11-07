@@ -89,6 +89,7 @@ pub fn run() {
             commands::set_web_model,
             commands::get_prefs,
             commands::save_prefs,
+            commands::term_packs_status,
             obs::obs_status,
             obs::set_obs_enabled,
             update::app_version,
