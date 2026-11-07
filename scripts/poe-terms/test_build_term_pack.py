@@ -157,3 +157,16 @@ def test_G6_對話與介面字串只收白名單_口語片語不收(env):
     assert "The Searing Exarch" in ens
     assert [e.lower() for e in ens].count("herald of ash") == 1
     assert _by_en(env.result()).get("Herald of Ash", {}).get("zh") == "灰燼之捷"
+
+
+def test_G7_覆寫不分大小寫(env):
+    """overrides 的英文與條目只差大小寫時仍改譯或刪除,不新增重複條目。"""
+    env.version(1, "3.29.3")
+    env.cell("baseitemtypes", 1, "Herald Of Ash", "灰燼使者")
+    env.cell("baseitemtypes", 2, "Big Game", "大遊戲")
+    env.config("overrides-poe1.tsv", "herald of ash\t灰燼之捷\nbig game\t\n")
+    assert env.build() == 0
+    ents = env.result()["entries"]
+    assert [e["en"].lower() for e in ents].count("herald of ash") == 1
+    assert next(e for e in ents if e["en"].lower() == "herald of ash")["zh"] == "灰燼之捷"
+    assert all(e["en"].lower() != "big game" for e in ents)

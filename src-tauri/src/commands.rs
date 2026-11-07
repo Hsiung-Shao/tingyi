@@ -980,7 +980,10 @@ pub fn set_web_model(app: AppHandle, model: String) -> Result<(), String> {
 pub async fn term_packs_status() -> Vec<tingyi_core::terms::PackInfo> {
     tauri::async_runtime::spawn_blocking(|| tingyi_core::terms::list_packs(&paths::terms_dir()))
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            tracing::warn!("列出術語包失敗:{e}");
+            Vec::new()
+        })
 }
 
 /// 主視窗的開始選項(沒存過回 None,前端用建議模型)。

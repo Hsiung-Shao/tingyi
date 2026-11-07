@@ -154,18 +154,23 @@ def build(game: str, db: Path, config: Path) -> dict:
             "alt": [z for z, _ in ranked[1:]],
         }
 
-    # 手動覆寫:英文<TAB>中文 新增或改譯;英文<TAB>(空)刪除
+    # 手動覆寫:英文<TAB>中文 新增或改譯;英文<TAB>(空)刪除。不分大小寫對照(大小寫已合併)
+    by_lower = {k.lower(): k for k in entries}
     for line in read_lines(config / f"overrides-{game}.tsv"):
         en, _, zh = line.partition("\t")
         en, zh = en.strip(), zh.strip()
         if not en:
             continue
+        key = by_lower.get(en.lower())
         if not zh:
-            entries.pop(en, None)
-        elif en in entries:
-            entries[en].update(zh=zh, src="override")
+            if key:
+                entries.pop(key)
+                by_lower.pop(en.lower())
+        elif key:
+            entries[key].update(zh=zh, src="override")
         else:
             entries[en] = {"en": en, "zh": zh, "src": "override", "count": 0, "alt": []}
+            by_lower[en.lower()] = en
 
     known = {e.lower() for e in entries}
     aliases = []
