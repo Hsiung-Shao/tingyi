@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { Badge } from "./Packages";
 import type { TermEntry, TermPackInfo } from "./lib/types";
 
@@ -34,12 +34,17 @@ export default function TermsSection({
       setResults([]);
       return;
     }
+    // 打字很快時,較慢的舊查詢可能比新的晚回來:清掉後回來的結果一律丟掉
+    let stale = false;
     const t = setTimeout(() => {
       invoke<TermEntry[]>("search_term_pack", { id: target, query: q })
-        .then(setResults)
-        .catch((e) => setMsg({ tone: "err", text: String(e) }));
+        .then((r) => !stale && setResults(r))
+        .catch((e) => !stale && setMsg({ tone: "err", text: String(e) }));
     }, 200);
-    return () => clearTimeout(t);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
   }, [target, query]);
 
   const doImport = async (path: string, replace: boolean): Promise<void> => {
@@ -51,7 +56,8 @@ export default function TermsSection({
       const s = String(e);
       if (s.startsWith("exists:")) {
         const id = s.slice("exists:".length);
-        if (window.confirm(`已經有「${id}」術語包,要用這份取代嗎?`)) return doImport(path, true);
+        const yes = await ask(`已經有「${id}」術語包,要用這份取代嗎?`, { title: "取代術語包", kind: "warning", okLabel: "取代", cancelLabel: "取消" });
+        if (yes) return doImport(path, true);
         setMsg(null);
         return;
       }
@@ -61,14 +67,20 @@ export default function TermsSection({
 
   const pick = async () => {
     setMsg(null);
-    const path = await open({ multiple: false, directory: false, filters: [{ name: "術語包", extensions: ["json"] }] });
-    if (typeof path === "string") await doImport(path, false);
+    try {
+      const path = await open({ multiple: false, directory: false, filters: [{ name: "術語包", extensions: ["json"] }] });
+      if (typeof path === "string") await doImport(path, false);
+    } catch (e) {
+      setMsg({ tone: "err", text: `無法開啟檔案選擇:${String(e)}` });
+    }
   };
 
   const remove = async (id: string) => {
     setConfirmRemove(null);
     try {
       await invoke("remove_term_pack", { id });
+      // 移除的是使用中的包:改回不使用,日後再匯入同名包不會自動變成使用中
+      if (id === active) onUse("");
       setMsg({ tone: "ok", text: `已移除「${id}」` });
       onChanged();
     } catch (e) {
@@ -191,8 +203,8 @@ export default function TermsSection({
               {results.length === 0 ? (
                 <span className="py-2 text-neutral-500">沒有符合的術語</span>
               ) : (
-                results.map((r) => (
-                  <div key={r.en} className="flex items-baseline gap-3 py-1.5" data-term-en={r.en}>
+                results.map((r, i) => (
+                  <div key={`${i}:${r.en}`} className="flex items-baseline gap-3 py-1.5" data-term-en={r.en}>
                     <span className="w-2/5 min-w-0 truncate text-neutral-200">{r.en}</span>
                     <span className="flex-1 font-medium text-white">{r.zh}</span>
                     {r.alt.length > 0 && <span className="text-xs text-neutral-500">另見:{r.alt.slice(0, 2).join("、")}</span>}
