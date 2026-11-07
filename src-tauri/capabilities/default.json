@@ -16,6 +16,6 @@
     "opener:default",
     "dialog:allow-save",
     "dialog:allow-open",
-    "dialog:allow-ask"
+    "dialog:allow-message"
   ]
 }
