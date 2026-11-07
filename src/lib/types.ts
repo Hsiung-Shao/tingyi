@@ -144,6 +144,16 @@ export interface TermPackInfo {
   entries: number;
   aliases: number;
   hotwords: number;
+  generated_at: string;
+}
+
+/** 術語包裡的一條術語(對應 Rust `terms::TermEntry`)。 */
+export interface TermEntry {
+  en: string;
+  zh: string;
+  src: string;
+  count: number;
+  alt: string[];
 }
 
 export type Sensitivity = "fast" | "normal" | "slow";

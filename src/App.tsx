@@ -139,9 +139,10 @@ export default function App() {
     return () => clearTimeout(t);
   }, [prefsLoaded, model, translate, asrEngine, lang, speakerId, refine, glossaryText, replaceText, targetLang, zhConvert, termPack]);
 
-  useEffect(() => {
+  const refreshTermPacks = useCallback(() => {
     invoke<TermPackInfo[]>("term_packs_status").then(setTermPacks).catch(() => {});
   }, []);
+  useEffect(refreshTermPacks, [refreshTermPacks]);
   // 存過的術語包被刪掉了:當作不使用
   const activeTermPack = termPacks.some((p) => p.id === termPack) ? termPack : "";
 
@@ -397,6 +398,10 @@ export default function App() {
           section={settingsSection}
           onSection={setSettingsSection}
           updater={updater}
+          termPacks={termPacks}
+          termPack={activeTermPack}
+          onTermPack={setTermPack}
+          onTermPacksChanged={refreshTermPacks}
           info={info}
           running={running}
           model={model}

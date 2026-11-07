@@ -10,7 +10,8 @@ python scripts/poe-terms/build_term_pack.py --game poe2      # → data/terms/po
 python -m pytest scripts/poe-terms/test_build_term_pack.py -q
 ```
 
-換季(POE DB 建了新快照)後重跑一次即可;聽譯下次按「開始」就用新的。
+產生後在聽譯「設定 › 遊戲術語」按「匯入術語包…」選這個 JSON,app 會複製到資料目錄的 `terms/`(同名會先問是否取代);同一頁可查詢術語、選用、移除、開啟資料夾。也可以用 `--out` 直接產生到資料目錄的 `terms/`。
+換季(POE DB 建了新快照)後重跑並重新匯入即可;聽譯下次按「開始」就用新的。
 術語包檔名(`--game`)只能是英數、底線、連字號;備份請改名成例如 `poe1-old.json`(`poe1.bak.json` 不會被列出)。
 安裝版在沒有專案 `data/` 的電腦上,資料目錄是 `%LOCALAPPDATA%\tingyi`,這時用 `--out %LOCALAPPDATA%\tingyi\terms`。
 

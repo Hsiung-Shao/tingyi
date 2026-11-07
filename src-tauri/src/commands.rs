@@ -986,6 +986,63 @@ pub async fn term_packs_status() -> Vec<tingyi_core::terms::PackInfo> {
         })
 }
 
+/// 匯入使用者選的術語包 JSON 到資料目錄 `terms/<game>.json`。
+/// 同名已存在且 `replace` 為 false 時回 `exists:<id>`,前端問要不要取代。
+#[tauri::command]
+pub async fn import_term_pack(path: String, replace: bool) -> Result<tingyi_core::terms::PackInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tingyi_core::terms::{import_pack, pack_exists, TermPack};
+        let src = std::path::PathBuf::from(&path);
+        let dir = paths::terms_dir();
+        let pack = TermPack::load(&src).map_err(|e| format!("{e:#}"))?;
+        if !replace && pack_exists(&dir, &pack.game) {
+            return Err(format!("exists:{}", pack.game));
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| format!("建立術語包資料夾失敗:{e}"))?;
+        let info = import_pack(&src, &dir).map_err(|e| format!("{e:#}"))?;
+        tracing::info!("匯入術語包 {}({} 詞)← {}", info.id, info.entries, src.display());
+        Ok(info)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 移除資料目錄裡的術語包(只刪這份複本)。
+#[tauri::command]
+pub async fn remove_term_pack(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tingyi_core::terms::remove_pack(&paths::terms_dir(), &id).map_err(|e| format!("{e:#}"))?;
+        tracing::info!("移除術語包 {id}");
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 查詢術語包內容(英文或中文),最多 50 筆。
+#[tauri::command]
+pub async fn search_term_pack(id: String, query: String) -> Result<Vec<tingyi_core::terms::TermEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !tingyi_core::terms::valid_pack_id(&id) {
+            return Err(format!("術語包名稱不合法:{id}"));
+        }
+        let pack = tingyi_core::terms::TermPack::load(&paths::terms_dir().join(format!("{id}.json"))).map_err(|e| format!("{e:#}"))?;
+        Ok(pack.search(query.trim(), 50).into_iter().cloned().collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 用檔案總管開啟術語包資料夾(沒有就先建立)。
+#[tauri::command]
+pub fn open_term_packs_dir(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = paths::terms_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// 主視窗的開始選項(沒存過回 None,前端用建議模型)。
 #[tauri::command]
 pub fn get_prefs() -> Option<crate::settings::Prefs> {

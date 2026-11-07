@@ -212,6 +212,24 @@ impl TermPack {
         out
     }
 
+    /// 查詢:英文不分大小寫、中文子字串;完全相符(英文或中文)排前面,其餘依英文長度;最多 `limit` 筆。
+    pub fn search(&self, q: &str, limit: usize) -> Vec<&TermEntry> {
+        let q = q.trim();
+        if q.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let ql = q.to_lowercase();
+        let mut found: Vec<&TermEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.en.to_lowercase().contains(&ql) || e.zh.contains(q))
+            .collect();
+        // 完全相符在前,其餘依英文長度(短的通常是基本詞)
+        found.sort_by_key(|e| (!(e.en.eq_ignore_ascii_case(q) || e.zh == q), e.en.len()));
+        found.truncate(limit);
+        found
+    }
+
     /// Whisper 熱詞提示:只用正確拼寫(`hotwords`),以「, 」連接,總長不超過 `HOTWORD_MAX_CHARS`。
     pub fn hotword_prompt(&self) -> String {
         let mut out = String::new();
@@ -262,6 +280,59 @@ pub struct PackInfo {
     pub entries: usize,
     pub aliases: usize,
     pub hotwords: usize,
+    pub generated_at: String,
+}
+
+impl PackInfo {
+    pub fn of(id: &str, t: &TermPack) -> PackInfo {
+        PackInfo {
+            id: id.to_string(),
+            label: if t.label.is_empty() { t.game.clone() } else { t.label.clone() },
+            game_version: t.game_version.clone(),
+            entries: t.entries.len(),
+            aliases: t.aliases.len(),
+            hotwords: t.hotwords.len(),
+            generated_at: t.generated_at.clone(),
+        }
+    }
+}
+
+/// 匯入術語包:驗證(能解析、game 與 entries 非空、game 是合法 id)後複製到 `dir/<game>.json`;
+/// 先寫暫存檔再改名,失敗不留檔。已存在會覆蓋(要不要覆蓋由呼叫端先用 `pack_exists` 問)。
+pub fn import_pack(src: &Path, dir: &Path) -> anyhow::Result<PackInfo> {
+    let pack = TermPack::load(src)?;
+    if pack.game.trim().is_empty() {
+        anyhow::bail!("不是術語包:缺少 game 欄位({})", src.display());
+    }
+    if !valid_pack_id(&pack.game) {
+        anyhow::bail!("術語包的 game 只能是英數、底線、連字號:{:?}", pack.game);
+    }
+    if pack.entries.is_empty() {
+        anyhow::bail!("術語包沒有任何術語({})", src.display());
+    }
+    let bytes = std::fs::read(src).with_context(|| format!("讀不到 {}", src.display()))?;
+    let dest = dir.join(format!("{}.json", pack.game));
+    let tmp = dir.join(format!(".{}.json.{}.tmp", pack.game, std::process::id()));
+    let write = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &dest));
+    if let Err(e) = write {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("寫入 {} 失敗", dest.display()));
+    }
+    Ok(PackInfo::of(&pack.game, &pack))
+}
+
+/// `dir/<id>.json` 是否存在(id 不合法回 false)。
+pub fn pack_exists(dir: &Path, id: &str) -> bool {
+    valid_pack_id(id) && dir.join(format!("{id}.json")).is_file()
+}
+
+/// 移除 `dir/<id>.json`;id 不合法回錯。
+pub fn remove_pack(dir: &Path, id: &str) -> anyhow::Result<()> {
+    if !valid_pack_id(id) {
+        anyhow::bail!("術語包名稱不合法:{id}");
+    }
+    let path = dir.join(format!("{id}.json"));
+    std::fs::remove_file(&path).with_context(|| format!("刪除 {} 失敗", path.display()))
 }
 
 /// 列出目錄裡的術語包(依 id 排序);讀不了的檔略過並記 log。
@@ -275,14 +346,7 @@ pub fn list_packs(dir: &Path) -> Vec<PackInfo> {
         // 與開始時的檢查同一條規則:檔名不合法(例如 poe1.bak.json)不列出
         .filter(|p| p.file_stem().and_then(|s| s.to_str()).is_some_and(valid_pack_id))
         .filter_map(|p| match TermPack::load(&p) {
-            Ok(t) => Some(PackInfo {
-                id: p.file_stem()?.to_string_lossy().into_owned(),
-                label: if t.label.is_empty() { t.game.clone() } else { t.label.clone() },
-                game_version: t.game_version.clone(),
-                entries: t.entries.len(),
-                aliases: t.aliases.len(),
-                hotwords: t.hotwords.len(),
-            }),
+            Ok(t) => Some(PackInfo::of(&p.file_stem()?.to_string_lossy(), &t)),
             Err(e) => {
                 tracing::warn!("{e:#}");
                 None
