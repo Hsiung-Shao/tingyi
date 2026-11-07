@@ -28,7 +28,7 @@ python -m pytest scripts/poe-terms/test_build_term_pack.py -q
 ## 手動調整
 | 檔案 | 用途 |
 |---|---|
-| `overrides-<game>.tsv` | `英文<TAB>中文` 新增或改譯;`英文<TAB>` 刪除 |
+| `overrides-<game>.tsv` | `英文<TAB>中文` 新增或改譯;`英文<TAB>` 刪除;中文填英文本身 = 譯文保留英文(例 `Path of Exile`) |
 | `allow-<game>.txt` | 單字專名白名單 |
 | `stopwords.txt` | 一律不收的常用字 |
 | `aliases.tsv` | 誤聽 → 正確英文 |

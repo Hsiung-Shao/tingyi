@@ -249,7 +249,8 @@ async function main() {
   check('app 紀錄有載入 poe1 術語包', /遊戲術語包 poe1(.*):\d+ 詞/.test(appLog()), (appLog().match(/遊戲術語包 poe1[^\n]*/) || [''])[0]);
   const pathRow = rows.find((r) => /path of/i.test(r.source));
   check('「Path of Excel」原文被修正成 Path of Exile', !!pathRow && /Path of Exile/.test(pathRow.source) && !/excel/i.test(pathRow.source), pathRow?.source ?? '沒有含 path of 的句子');
-  check('Path of Exile 譯成官方名「流亡黯道」', !!pathRow && pathRow.translation.includes('流亡黯道'), pathRow?.translation ?? '');
+  // 使用者指定 Path of Exile 保留英文(overrides 中文欄填英文)
+  check('Path of Exile 譯文保留英文', !!pathRow && /Path of Exile/i.test(pathRow.translation) && !pathRow.translation.includes('流亡黯道'), pathRow?.translation ?? '');
 
   // ── 4. Whisper 引擎:送出熱詞 ──
   // 等三句都完整收到(TTS 循環唸,開頭可能只收到半句)

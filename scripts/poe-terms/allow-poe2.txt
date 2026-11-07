@@ -24,3 +24,7 @@ Ogham
 Freythorn
 Kingsmarch
 Verisium
+# 單字傳奇名(出自 words 表,該表混有稀有物品名片段 Doom、Storm,整表單字不收,知名傳奇手動列入)
+Headhunter
+Mageblood
+Nightfall
