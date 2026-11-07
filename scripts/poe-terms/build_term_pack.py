@@ -36,6 +36,13 @@ SINGLE_WORD_TABLES = PROPER_TABLES - {"words"}
 # 整張不收:商城外觀、成就、季票獎勵等名稱,直播不會講,只會增加誤命中(PoE1 的 mtxtypes 就有 7,700 筆)
 EXCLUDE_TABLES = {"mtxtypes", "achievements", "achievementsetrewards", "battlepassrewards", "mysteryboxes",
                   "shoptag", "music", "hideouts", "awarddisplay", "tieredmicrotransactionsvisuals"}
+# 對話選項與介面字串:大量首字大寫的一般片語(The Boss、Not Supported、I Have),只收白名單
+UI_TABLES = {"npctalk", "clientstrings", "clientstrings2", "queststates", "uitalktext", "commands",
+              "npctextaudio", "charactertextaudio"}
+# 這些字開頭、其餘又都是一般英文字的多字詞是口語片語(The Old Man、My Father),不收
+FUNCTION_START = {"the", "a", "an", "i", "my", "your", "our", "his", "her", "their", "its", "these", "those",
+                  "this", "that", "not", "no", "go", "to", "you", "we", "it", "is", "are", "be", "do", "what",
+                  "how", "why", "who", "where", "when", "yes", "let's", "i'm", "we're", "it's"}
 # 同一譯名次數平手時的出處優先序(越前面越優先)
 TABLE_PRIORITY = ["baseitemtypes", "currencyitems", "ascendancy", "npcs", "worldareas", "characters", "words", "activeskills", "passiveskills"]
 LOWER_OK = {"of", "the", "and", "a", "an", "to", "in", "on", "for", "at"}
@@ -103,11 +110,17 @@ def build(game: str, db: Path, config: Path) -> dict:
         zh = (zh or "").strip()
         if not en or not zh or not CJK.search(zh) or BAD_ZH.search(zh) or not proper_name(en):
             continue
+        low = en.lower()
+        if tbl in UI_TABLES and low not in allow:
+            continue
         if " " not in en:
-            low = en.lower()
             if low in stop:
                 continue
             if low not in allow and (tbl not in SINGLE_WORD_TABLES or low in common):
+                continue
+        elif low not in allow:
+            words = low.split(" ")
+            if words[0] in FUNCTION_START and all(w in common or w in LOWER_OK for w in words[1:]):
                 continue
         seen[en][zh][f"{tbl}.{col}"] += 1
     con.close()
@@ -117,8 +130,20 @@ def build(game: str, db: Path, config: Path) -> dict:
         best_tbl = min((TABLE_PRIORITY.index(s.split(".")[0]) if s.split(".")[0] in TABLE_PRIORITY else 99) for s in srcs)
         return (-sum(srcs.values()), best_tbl, zh)
 
-    entries = {}
+    # 只差大小寫的寫法(Herald of Ash / Herald Of Ash)合併:取出現最多的寫法當 en
+    merged: dict = {}
     for en, by_zh in seen.items():
+        key = en.lower()
+        total = sum(sum(c.values()) for c in by_zh.values())
+        if key not in merged:
+            merged[key] = [en, total, collections.defaultdict(collections.Counter)]
+        elif total > merged[key][1]:
+            merged[key][0], merged[key][1] = en, total
+        for zh, srcs in by_zh.items():
+            merged[key][2][zh].update(srcs)
+
+    entries = {}
+    for en, _, by_zh in merged.values():
         ranked = sorted(by_zh.items(), key=rank)
         zh, srcs = ranked[0]
         entries[en] = {

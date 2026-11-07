@@ -133,3 +133,27 @@ def test_G5_只用最新的完整版本(env):
     assert pack["game_version"] == "3.29.3"
     assert pack["db_version"] == 1
     assert "Phantom Orb" not in _by_en(pack)
+
+
+def test_G6_對話與介面字串只收白名單_口語片語不收(env):
+    """npctalk/clientstrings 只收白名單;虛詞開頭且其餘都是一般字的片語不收;只差大小寫合併成一筆。"""
+    env.version(1, "3.29.3")
+    env.cell("npctalk", 1, "The Boss", "老闆", col="DialogueOption")
+    env.cell("clientstrings", 2, "Not Supported", "非輔助", col="Text")
+    env.cell("clientstrings", 3, "Path of Exile", "流亡黯道", col="Text")
+    env.cell("baseitemtypes", 4, "The Old Man", "老人與海")
+    env.cell("baseitemtypes", 5, "The Searing Exarch", "焚界者")
+    env.cell("flavourtext", 6, "the old man said the boss is here", "老人說老闆在這", col="Text")
+    env.cell("baseitemtypes", 7, "Herald of Ash", "灰燼之捷")
+    env.cell("baseitemtypes", 8, "Herald of Ash", "灰燼之捷")
+    env.cell("activeskills", 9, "Herald Of Ash", "灰燼使者")
+    env.config("allow-poe1.txt", "Path of Exile\n")
+    assert env.build() == 0
+    ens = [e["en"] for e in env.result()["entries"]]
+    assert "The Boss" not in ens
+    assert "Not Supported" not in ens
+    assert "Path of Exile" in ens
+    assert "The Old Man" not in ens
+    assert "The Searing Exarch" in ens
+    assert [e.lower() for e in ens].count("herald of ash") == 1
+    assert _by_en(env.result()).get("Herald of Ash", {}).get("zh") == "灰燼之捷"

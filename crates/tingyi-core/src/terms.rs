@@ -65,7 +65,7 @@ impl PartialEq for TermPack {
     }
 }
 
-/// 一個字:ASCII 英數為主,字中可含 `'`、`’`、`-`(Jeweller's、Blood-Soaked)。
+/// 字界判斷用:ASCII 英數(字中的 `'`、`’`、`-` 由 `tokenize` 另外處理)。
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric()
 }
@@ -272,6 +272,8 @@ pub fn list_packs(dir: &Path) -> Vec<PackInfo> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        // 與開始時的檢查同一條規則:檔名不合法(例如 poe1.bak.json)不列出
+        .filter(|p| p.file_stem().and_then(|s| s.to_str()).is_some_and(valid_pack_id))
         .filter_map(|p| match TermPack::load(&p) {
             Ok(t) => Some(PackInfo {
                 id: p.file_stem()?.to_string_lossy().into_owned(),
@@ -300,4 +302,19 @@ pub fn merge_glossary(user: Vec<GlossaryEntry>, pack_hits: &[&TermEntry]) -> Vec
         }
     }
     out
+}
+
+/// 術語包 id(檔名不含 .json)是否合法:只收 ASCII 英數、底線、連字號。
+pub fn valid_pack_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// 每句交給翻譯模型的術語(快路徑與回修共用)。
+/// 術語包的譯名是繁體中文,只有目標是繁中時才併入(譯成英日韓或簡體時放進去反而混進繁中字)。
+pub fn translation_glossary(user: &crate::postprocess::Glossary, pack: Option<&TermPack>, text: &str, target: crate::mt::Target) -> Vec<GlossaryEntry> {
+    let user_hits: Vec<GlossaryEntry> = user.hits(text).into_iter().cloned().collect();
+    match pack {
+        Some(p) if target == crate::mt::Target::ZhTw => merge_glossary(user_hits, &p.hits(text, MAX_HITS)),
+        _ => user_hits,
+    }
 }

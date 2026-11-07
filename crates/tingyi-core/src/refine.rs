@@ -569,7 +569,8 @@ fn make_job(ledger: &[Ledger], id: u64, cfg: &PipelineConfig, rc: &RefineConfig)
         .rev()
         .collect();
     let lookahead: Vec<String> = ledger[idx + 1..].iter().take(rc.lookahead_sentences).map(|x| x.text.clone()).collect();
-    let glossary = cfg.glossary.hits(&l.text).into_iter().cloned().collect();
+    // 與快路徑同一套:使用者術語表 + 術語包(目標繁中時)
+    let glossary = crate::terms::translation_glossary(&cfg.glossary, cfg.terms.as_deref(), &l.text, cfg.target);
     Some(RefineJob { id, text: l.text.clone(), lang: l.lang, context, lookahead, glossary })
 }
 

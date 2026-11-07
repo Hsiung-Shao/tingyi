@@ -24,7 +24,6 @@ Navali
 Helena
 Maven
 Shaper
-Elder
 Chayula
 Delirium
 Ultimatum
@@ -32,3 +31,4 @@ Sanctum
 Necropolis
 Ascendancy
 Sceptre
+Path of Exile

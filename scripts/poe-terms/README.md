@@ -11,6 +11,8 @@ python -m pytest scripts/poe-terms/test_build_term_pack.py -q
 ```
 
 換季(POE DB 建了新快照)後重跑一次即可;聽譯下次按「開始」就用新的。
+術語包檔名(`--game`)只能是英數、底線、連字號;備份請改名成例如 `poe1-old.json`(`poe1.bak.json` 不會被列出)。
+安裝版在沒有專案 `data/` 的電腦上,資料目錄是 `%LOCALAPPDATA%\tingyi`,這時用 `--out %LOCALAPPDATA%\tingyi\terms`。
 
 ## 選了術語包後聽譯做什麼
 1. **誤聽修正**:原文裡 `aliases.tsv` 的誤聽/美式拼寫(不分大小寫、整字)改成正確英文,在使用者「辨識取代表」之後。

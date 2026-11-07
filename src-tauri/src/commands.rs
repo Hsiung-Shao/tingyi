@@ -375,7 +375,7 @@ pub(crate) async fn start_inner(app: AppHandle, state: &AppState, opts: StartOpt
     }
     if let Some(id) = opts.term_pack.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         // id 只能是檔名,不能帶路徑
-        if id.contains(['/', '\\', '.']) {
+        if !tingyi_core::terms::valid_pack_id(id) {
             return Err(format!("術語包名稱不合法:{id}"));
         }
         let pack = tingyi_core::terms::TermPack::load(&paths::terms_dir().join(format!("{id}.json"))).map_err(|e| format!("{e:#}"))?;
@@ -975,9 +975,12 @@ pub fn set_web_model(app: AppHandle, model: String) -> Result<(), String> {
 }
 
 /// 資料目錄裡的遊戲術語包;沒有就回空清單(字幕頁不顯示「遊戲術語」)。
+/// 非同步:術語包 JSON 有數 MB,不要在主執行緒解析。
 #[tauri::command]
-pub fn term_packs_status() -> Vec<tingyi_core::terms::PackInfo> {
-    tingyi_core::terms::list_packs(&paths::terms_dir())
+pub async fn term_packs_status() -> Vec<tingyi_core::terms::PackInfo> {
+    tauri::async_runtime::spawn_blocking(|| tingyi_core::terms::list_packs(&paths::terms_dir()))
+        .await
+        .unwrap_or_default()
 }
 
 /// 主視窗的開始選項(沒存過回 None,前端用建議模型)。

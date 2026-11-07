@@ -135,3 +135,38 @@ fn T8_壞檔載入失敗且訊息含檔名() {
     let msg = format!("{err:#}");
     assert!(msg.contains("broken-pack.json"), "訊息未含檔名:{msg}");
 }
+
+// T9:目標繁中時,每句術語 = 使用者術語表命中 + 術語包命中(快路徑與回修共用)
+#[test]
+fn T9_繁中目標併入術語包命中() {
+    use tingyi_core::mt::Target;
+    use tingyi_core::postprocess::Glossary;
+    let p = pack(vec![entry("Kitava", "奇塔弗")]);
+    let user = Glossary::new(&[("boss", "首領")]);
+    let g = tingyi_core::terms::translation_glossary(&user, Some(&p), "the boss Kitava", Target::ZhTw);
+    let src: Vec<_> = g.iter().map(|e| e.source.as_str()).collect();
+    assert_eq!(src, vec!["boss", "Kitava"]);
+}
+
+// T10:目標不是繁中時不放繁中譯名(只留使用者術語表)
+#[test]
+fn T10_非繁中目標不併術語包() {
+    use tingyi_core::mt::Target;
+    use tingyi_core::postprocess::Glossary;
+    let p = pack(vec![entry("Kitava", "奇塔弗")]);
+    let user = Glossary::new(&[("boss", "首領")]);
+    for t in [Target::En, Target::ZhCn, Target::Ja] {
+        let g = tingyi_core::terms::translation_glossary(&user, Some(&p), "the boss Kitava", t);
+        assert_eq!(g.len(), 1, "{t:?}");
+    }
+}
+
+// T11:術語包 id 只收英數、底線、連字號(擋路徑與磁碟前綴);清單與開始用同一條規則
+#[test]
+fn T11_術語包id白名單() {
+    use tingyi_core::terms::valid_pack_id;
+    assert!(valid_pack_id("poe1") && valid_pack_id("poe2_old-3"));
+    for bad in ["", "C:x", "../a", "a/b", "a\\b", "poe1.bak", "a b"] {
+        assert!(!valid_pack_id(bad), "{bad}");
+    }
+}

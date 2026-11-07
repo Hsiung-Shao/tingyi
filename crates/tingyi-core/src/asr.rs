@@ -604,7 +604,8 @@ impl WhisperServer {
             .filter(|s| !s.is_empty())
             .copied()
             .collect::<Vec<_>>()
-            .join(" ");
+            // 句點隔開,熱詞清單的最後一個詞才不會跟前文黏成一句
+            .join(". ");
         if !p.is_empty() {
             fields.push(("prompt", p));
         }

@@ -24,3 +24,4 @@ Ogham
 Freythorn
 Kingsmarch
 Verisium
+Path of Exile

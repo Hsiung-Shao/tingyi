@@ -762,6 +762,10 @@ fn vad_loop(
 
 /// 術語包的 Whisper 熱詞提示;沒有術語包或沒有熱詞回 None。
 fn whisper_hotwords(cfg: &PipelineConfig) -> Option<String> {
+    // 熱詞是英文專名:鎖定日文或韓文時不送,免得把 Whisper 帶成英文輸出
+    if !matches!(cfg.lock_lang, None | Some(Lang::En)) {
+        return None;
+    }
     let p = cfg.terms.as_ref()?.hotword_prompt();
     if p.is_empty() {
         return None;
@@ -1068,11 +1072,7 @@ async fn translate_one(
     stats: &PipelineStats,
     refine_tx: &Option<crossbeam_channel::Sender<RefineMsg>>,
 ) {
-    let user_hits: Vec<_> = cfg.glossary.hits(&u.text).into_iter().cloned().collect();
-    let hits = match &cfg.terms {
-        Some(t) => crate::terms::merge_glossary(user_hits, &t.hits(&u.text, crate::terms::MAX_HITS)),
-        None => user_hits,
-    };
+    let hits = crate::terms::translation_glossary(&cfg.glossary, cfg.terms.as_deref(), &u.text, cfg.target);
     let req = TranslateRequest {
         text: u.text.clone(),
         src_lang: u.lang,
